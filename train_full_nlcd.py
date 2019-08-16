@@ -336,4 +336,4 @@ if __name__ == "__main__":
                        '{}/deeplab_{}.pth'.format(dataset_name, UUID))
         del s3
 
-# ./download_run.sh s3://geotrellis-test/courage-services/train_full_nlcd.py 8 8channels1x 5 5 5 15 geotrellis-test courage-services/landsat-cloudless-2016.tif courage-services/nlcd-resized-2016.tif courage-services/central-valley
+# ./download_run.sh s3://geotrellis-test/courage-services/train_full_nlcd.py 8 8channels5x 5 5 5 15 geotrellis-test courage-services/landsat-cloudless-2016.tif courage-services/nlcd-resized-2016.tif courage-services/central-valley-update

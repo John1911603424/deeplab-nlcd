@@ -192,9 +192,4 @@ if __name__ == "__main__":
     s3.upload_file('/tmp/y.npy', bucket_name, gt_prefix)
     del s3
 
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 8 raster-vision-mcclain vegas/data/MUL_AOI_2_Vegas.tif vegas/data/mask_AOI_2_Vegas.tif vegas/deeplab_8channels5x.pth vegas/8channels5x.npy vegas/gt8.npy
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 8 raster-vision-mcclain vegas/data/MUL_AOI_2_Vegas.tif vegas/data/mask_AOI_2_Vegas.tif vegas/deeplab_8channels.pth vegas/8channels.npy vegas/gt8.npy
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 3 raster-vision-mcclain vegas/data/MUL_AOI_2_Vegas.tif vegas/data/mask_AOI_2_Vegas.tif vegas/deeplab_3channels5x.pth vegas/3channels5x.npy vegas/gt3.npy
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 3 raster-vision-mcclain vegas/data/MUL_AOI_2_Vegas.tif vegas/data/mask_AOI_2_Vegas.tif vegas/deeplab_3channels.pth vegas/3channels.npy vegas/gt3.npy
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 8 raster-vision-mcclain vegas_roads/data/MUL_AOI_2_Vegas.tif vegas_roads/data/mask_AOI_2_Vegas.tif vegas_roads/deeplab_8channels.pth vegas_roads/8channels.npy vegas/gt.npy
-# ./download_run.sh s3://raster-vision-mcclain/spacenet/spacenet_eval.py 3 raster-vision-mcclain vegas_roads/data/MUL_AOI_2_Vegas.tif vegas_roads/data/mask_AOI_2_Vegas.tif vegas_roads/deeplab_3channels.pth vegas_roads/3channels.npy vegas/gt.npy
+# ./download_run.sh s3://geotrellis-test/courage-services/eval_full_nlcd.py 8 geotrellis-test landsat-cloudless-2016.tif nlcd-resized-2016.tif central-valley-update/deeplab_8channels5x.pth central-valley-update/8channels5x.npy central-valley-update/gt8.npy
