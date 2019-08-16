@@ -21,6 +21,12 @@ MEANS = []
 STDS = []
 
 
+def numpy_replace(np_arr, replacement_dict):
+    b = np.copy(np_arr)
+    for k, v in replacement_dict.items():
+        b[np_arr==k] = v
+    return b
+
 def get_eval_window(raster_ds, mask_ds, x, y):
     window = rio.windows.Window(
         x * WINDOW_SIZE, y * WINDOW_SIZE,
@@ -31,13 +37,23 @@ def get_eval_window(raster_ds, mask_ds, x, y):
     else:
         bands = raster_ds.indexes[0:CHANNELS]
 
-    replacement_dict = { 0:(2**8)-1, 11:0, 12:1, 21:2, 22:3, 23:4, 24:5, 31:6, 41:7, 42:8, 43:9, 51:10, 52:11, 71:12, 72:13, 73:14, 74:15, 81:16, 82:17, 90:18, 95:19 }
+    replacement_dict = {
+        0:0,
+        11:1, 12:2,
+        21:3, 22:4, 23:5, 24:6,
+        31:7,
+        41:8, 42:9, 43:10,
+        51:11, 52:12,
+        71:13, 72:14, 73:15, 74:16,
+        81:17, 82:18,
+        90:19, 95:20
+    }
     # Labels
     labels = label_ds.read(1, window=window)
     labels = numpy_replace(labels, replacement_dict)
 
     # nodata mask for regions without labels
-    nodata = labels == (2**8)-1
+    nodata = labels == 0
     not_nodata = (nodata == 0)
 
     # Toss out nodata labels
