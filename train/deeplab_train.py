@@ -126,7 +126,7 @@ def train(model, opt, obj,
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/deeplab_{}_checkpoint_{}.pth'.format(s3_output_prefix, arg_hash, i))
+                           '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_output_prefix, arg_hash, i))
             del s3
 
 # https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
@@ -235,8 +235,10 @@ def training_cli_parser():
                         choices=['cpu', 'cuda'],
                         default='cuda')
     parser.add_argument('--s3-bucket',
+                        required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
     parser.add_argument('--s3-prefix',
+                        required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
     parser.add_argument('--inference-previews',
                         help='images against which inferences should be run to generate previews',
@@ -300,6 +302,15 @@ if __name__ == "__main__":
 
     print('COMPUTING')
 
+    # recording parameters in bcuket
+    with open('/tmp/args.txt', 'w') as f:
+        f.write(str(args))
+    s3 = boto3.client('s3')
+    s3.upload_file('/tmp/args.txt', args.s3_bucket,
+                   '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
+    del s3
+
+
     with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
 
         width = raster_ds.width
@@ -362,8 +373,8 @@ if __name__ == "__main__":
 
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/deeplab_{}_0.pth'.format(s3_output_prefix, arg_hash))
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                           '{}/{}/deeplab_0.pth'.format(s3_output_prefix, arg_hash))
             del s3
 
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
@@ -403,8 +414,8 @@ if __name__ == "__main__":
 
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/deeplab_{}_1.pth'.format(s3_output_prefix, arg_hash))
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                           '{}/{}/deeplab_1.pth'.format(s3_output_prefix, arg_hash))
             del s3
 
         print('\t TRAINING ALL LAYERS')
@@ -436,8 +447,8 @@ if __name__ == "__main__":
 
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/deeplab_{}_2.pth'.format(s3_output_prefix, arg_hash))
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                           '{}/{}/deeplab_2.pth'.format(s3_output_prefix, arg_hash))
             del s3
 
         print('\t TRAINING ALL LAYERS AGAIN')
@@ -461,15 +472,15 @@ if __name__ == "__main__":
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
         train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
-              raster_ds, mask_ds, width, height, args.window_size, device, bucket_name, dataset_name,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+              raster_ds, mask_ds, width, height, args.window_size, device,
+              args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
         torch.save(deeplab, 'deeplab.pth')
         s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', bucket_name,
-                       '{}/deeplab_{}.pth'.format(s3_output_prefix, arg_hash))
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab.pth'.format(s3_output_prefix, arg_hash))
         del s3
 
         exit(0)
