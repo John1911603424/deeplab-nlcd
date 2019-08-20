@@ -101,7 +101,7 @@ def train(model, opt, obj,
           raster_ds, label_ds,
           width, height, window_size, device,
           bands, label_mapping, label_nd, img_nd,
-          bucket_name, s3_output_prefix, arg_hash):
+          bucket_name, s3_prefix, arg_hash):
     model.train()
     current_time = time.time()
     for i in range(epochs):
@@ -122,7 +122,7 @@ def train(model, opt, obj,
         current_time = time.time()
         print('\t\t epoch={} time={} avg_loss={}'.format(
             i, current_time - last_time, avg_loss))
-        if (epochs > 5) and (i > 0) and (i % 5 == 0) and bucket_name and s3_output_prefix:
+        if (epochs > 5) and (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix:
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
@@ -374,7 +374,7 @@ if __name__ == "__main__":
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_0.pth'.format(s3_output_prefix, arg_hash))
+                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
@@ -415,7 +415,7 @@ if __name__ == "__main__":
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_1.pth'.format(s3_output_prefix, arg_hash))
+                           '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
         print('\t TRAINING ALL LAYERS')
@@ -448,7 +448,7 @@ if __name__ == "__main__":
             torch.save(deeplab, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_2.pth'.format(s3_output_prefix, arg_hash))
+                           '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
         print('\t TRAINING ALL LAYERS AGAIN')
@@ -480,7 +480,7 @@ if __name__ == "__main__":
         torch.save(deeplab, 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab.pth'.format(s3_output_prefix, arg_hash))
+                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
         exit(0)
