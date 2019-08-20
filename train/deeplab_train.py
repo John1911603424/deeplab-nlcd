@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import copy
 import hashlib
 import argparse
 import os
 import time
 from urllib.parse import urlparse
+from PIL import Image
 
 import boto3
 import numpy as np
@@ -13,9 +15,191 @@ import torch
 import torchvision
 
 # Break s3uris into bucket and prefix
-def parseS3Url(url):
+def parse_s3_url(url):
     parsed = urlparse(url, allow_fragments=False)
     return (parsed.netloc, parsed.path.lstrip('/'))
+
+def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, s3_prefix, arg_hash):
+    s3 = boto3.client('s3')
+    bucket, prefix = parse_s3_url(s3_img_url)
+    preview_filename = prefix.split('/')[-1]
+    local_img = '/tmp/{}'.format(preview_filename)
+    print("Downloading preview from {}".format(s3_img_url))
+    s3.download_file(bucket, prefix, local_img)
+    del s3
+
+    with rio.open(local_img) as preview_ds:
+        # Nodata
+        nodata = preview_ds.read(1) == img_nd
+        not_nodata = nodata == 0
+
+        # Normalized float32 imagery bands
+        data = []
+        for band in bands:
+            a = preview_ds.read(band, window=window)
+            MEAN = a.flatten().mean()
+            STD = a.flatten().std()
+
+            a = np.array((a - MEAN) / STD, dtype=np.float32)
+            a = a * not_nodata
+            data.append(a)
+        data = np.stack(data, axis=0)
+
+    deeplab = torch.load('deeplab.pth').to(device)
+
+    batch = torch.unsqueeze(torch.from_numpy(data), dim=0).to(device)
+    deeplab.eval()
+
+    with torch.no_grad():
+      out = deeplab(batch)['out'].data.cpu().numpy()[0]
+
+    prediction = np.apply_along_axis(np.argmax, 0, out)
+
+    # the expansion coefficient is the amount of spread needed to approach a max of 255
+    expansion_coefficient = (255 / label_count)
+    img = Image.fromarray(np.uint8((prediction * expansion_coefficient).floor))
+
+    minv = out[1].min()
+    maxv = out[1].max()
+    spread = maxv - minv
+    grey = np.uint8(0xff * ((out[1] + minv) / spread))
+    img = Image.fromarray(grey)
+    local_preview = '/tmp/preview_{}'.format(preview_filename)
+    img.save(local_preview)
+
+    s3 = boto3.client('s3')
+    s3.upload_file(local_preview, s3_bucket,
+                   '{}/{}/preview_{}'.format(s3_prefix, arg_hash, preview_filename))
+    del s3
+
+
+def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_nd, replacement_dict):
+    window = rio.windows.Window(
+        x * window_size, y * window_size,
+        window_size, window_size)
+
+    # Labels
+    labels = mask_ds.read(1, window=window)
+    labels = numpy_replace(labels, replacement_dict)
+
+    if label_nd is not None:
+        label_nds = labels == label_nd
+    else:
+        label_nds = np.zeros(labels.shape)
+
+    # We assume here that the ND value will be on the first band
+    if img_nd is not None:
+        img_nds = raster_ds.read(1, window=window) == img_nd
+    else:
+        img_nds = np.zeros(labels.shape)
+
+    # nodata mask for regions without labels
+    nodata = (img_nds + label_nds) > 0
+    not_nodata = (nodata == 0)
+
+    # Toss out nodata labels
+    labels = labels * not_nodata
+
+    # Normalized float32 imagery bands
+    data = []
+    for band in bands:
+        a = raster_ds.read(band, window=window)
+        a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
+        a = a * not_nodata
+        data.append(a)
+    data = np.stack(data, axis=0)
+
+    return (data, labels)
+
+def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_nd, replacement_dict, device):
+    data = []
+    labels = []
+    for x, y in xys:
+        d, l = get_eval_window(raster_ds, label_ds, bands, x, y, window_size, label_nd, img_nd, replacement_dict)
+        data.append(d)
+        labels.append(l)
+
+    data = np.stack(data, axis=0)
+    data = torch.from_numpy(data).to(device)
+    labels = np.array(np.stack(labels, axis=0), dtype=np.long)
+    labels = torch.from_numpy(labels).to(device)
+    return (data, labels)
+
+
+def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img_nd, replacement_dict, device, bucket_name, s3_prefix, arg_hash):
+
+    deeplab.eval()
+    batch_size = 64
+    tps = [0.0 for x in range(label_count)]
+    fps = [0.0 for x in range(label_count)]
+    fns = [0.0 for x in range(label_count)]
+    preds = []
+    ground_truth = []
+
+    with torch.no_grad():
+        width = raster_ds.width
+        height = raster_ds.height
+
+        xys = []
+        for x in range(0, width//window_size):
+            for y in range(0, height//window_size):
+                if ((x + y) % 7 == 0):
+                    xy = (x, y)
+                    xys.append(xy)
+
+        for xy in chunks(xys, batch_size):
+            batch, labels = get_eval_batch(raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, replacement_dict, device)
+            labels = labels.data.cpu().numpy()
+            out = deeplab(batch)['out'].data.cpu().numpy()
+            out = np.apply_along_axis(np.argmax, 1, out)
+
+            if label_nd is not None:
+                dont_care = labels == label_nd
+            else:
+                dont_care = np.zeros(labels.shape)
+
+            out = out + label_count*dont_care
+
+            for i in range(label_count):
+                tps[i] = tps[i] + ((out == i)*(labels == i)).sum()
+                fps[i] = fps[i] + ((out == i)*(labels != i)).sum()
+                fns[i] = fns[i] + ((out != i)*(labels == i)).sum()
+
+            preds.append(out.flatten())
+            ground_truth.append(labels.flatten())
+
+    print('True Positives  {}'.format(tps))
+    print('False Positives {}'.format(fps))
+    print('False Negatives {}'.format(fns))
+
+    recalls = []
+    precisions = []
+    for i in range(label_count):
+        recall = tps[i] / (tps[i] + fns[i])
+        recalls.append(recall)
+        precision = tps[i] / (tps[i] + fps[i])
+        precisions.append(precision)
+
+    print('Recalls    {}'.format(recalls))
+    print('Precisions {}'.format(precisions))
+
+    f1s = []
+    for i in range(label_count):
+        f1 = 2 * (precisions[i] * recalls[i]) / (precisions[i] + recalls[i])
+        f1s.append(f1)
+    print('f1 {}'.format(f1s))
+
+    preds = np.concatenate(preds).flatten()
+    ground_truth = np.concatenate(ground_truth).flatten()
+    preds = np.extract(ground_truth < 2, preds)
+    ground_truth = np.extract(ground_truth < 2, ground_truth)
+    np.save('/tmp/predictions.npy', preds, False)
+    np.save('/tmp/ground_truth.npy', ground_truth, False)
+    s3 = boto3.client('s3')
+    s3.upload_file('/tmp/predictions.npy', bucket_name, '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
+    s3.upload_file('/tmp/ground_truth.npy', bucket_name, '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
+    del s3
+
 
 # break list in chunks of equal size
 def chunks(l, n):
@@ -41,6 +225,7 @@ def numpy_replace(np_arr, replacement_dict):
         b[np_arr==k] = v
     return b
 
+
 def get_random_training_window(raster_ds, label_ds, width, height, window_size, bands, label_mappings, label_nd, img_nd):
     x = 0
     y = 0
@@ -54,19 +239,21 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
     # Labels
     labels = label_ds.read(1, window=window)
     labels = numpy_replace(labels, label_mappings)
+    #print('unique: {}'.format(np.unique(labels)))
 
     if label_nd is not None:
         label_nds = labels == label_nd
     else:
         label_nds = np.zeros(labels.shape)
 
+    # We assume here that the ND value will be on the first band
     if img_nd is not None:
         img_nds = raster_ds.read(1, window=window) == img_nd
     else:
         img_nds = np.zeros(labels.shape)
 
     # nodata mask for regions without labels
-    nodata = img_nds * label_nds
+    nodata = (img_nds + label_nds) > 0
     not_nodata = (nodata == 0)
 
     # Normalized float32 imagery bands
@@ -178,11 +365,11 @@ def training_cli_parser():
                         default=os.environ.get('LEARNING_RATE_4', 0.001),
                         type=float)
     parser.add_argument('--training-img',
-                        help="the input you're training to produce labels for",
-                        default=os.environ.get('TRAINING_IMAGE', None))
+                        required=True,
+                        help="the input you're training to produce labels for")
     parser.add_argument('--label-img',
-                        help='labels to train',
-                        default=os.environ.get('TRAINING_LABELS', None))
+                        required=True,
+                        help='labels to train')
     parser.add_argument('--label-map',
                         help='comma separated list of mappings to apply to training labels',
                         action=StoreDictKeyPair,
@@ -192,7 +379,7 @@ def training_cli_parser():
                         default=os.environ.get('TRAINING_LABEL_ND', None),
                         type=int)
     parser.add_argument('--img-nd',
-                        help='image value to ignore',
+                        help='image value to ignore - must be on the first band',
                         default=os.environ.get('TRAINING_IMAGE_ND', None),
                         type=float)
     parser.add_argument('--weights',
@@ -241,7 +428,7 @@ def training_cli_parser():
                         required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
     parser.add_argument('--inference-previews',
-                        help='images against which inferences should be run to generate previews',
+                        help='tif images against which inferences should be run to generate previews',
                         nargs='+')
     parser.add_argument('--window-size',
                         default=224,
@@ -254,22 +441,25 @@ if __name__ == "__main__":
 
     parser = training_cli_parser()
     args = training_cli_parser().parse_args()
-    arg_hash = hash_string(str(args))
-    print("provided args: {}".format(args))
-    print("hash: {}".format(hash_string(str(args))))
+    hashed_args = copy.copy(args)
+    del hashed_args.backend
+    del hashed_args.inference_previews
+    arg_hash = hash_string(str(hashed_args))
+    print("provided args: {}".format(hashed_args))
+    print("hash: {}".format(arg_hash))
 
     MEANS = []
     STDS = []
 
     if not os.path.exists('/tmp/mul.tif'):
         s3 = boto3.client('s3')
-        bucket, prefix = parseS3Url(args.training_img)
+        bucket, prefix = parse_s3_url(args.training_img)
         print("training image bucket and prefix: {}, {}".format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mul.tif')
         del s3
     if not os.path.exists('/tmp/mask.tif'):
         s3 = boto3.client('s3')
-        bucket, prefix = parseS3Url(args.label_img)
+        bucket, prefix = parse_s3_url(args.label_img)
         print("training labels bucket and prefix: {}, {}".format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mask.tif')
         del s3
@@ -344,7 +534,7 @@ if __name__ == "__main__":
         try:
             s3 = boto3.client('s3')
             s3.download_file(
-                args.s3_bucket, '{}/deeplab_{}_0.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
+                args.s3_bucket, '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
             deeplab = torch.load('deeplab.pth').to(device)
             print('\t\t SUCCESSFULLY RESTARTED')
         except:
@@ -382,7 +572,7 @@ if __name__ == "__main__":
         try:
             s3 = boto3.client('s3')
             s3.download_file(
-                args.bucket, '{}/deeplab_{}_1.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
+                args.s3_bucket, '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
             deeplab = torch.load('deeplab.pth').to(device)
             del s3
             print('\t\t SUCCESSFULLY RESTARTED')
@@ -423,7 +613,7 @@ if __name__ == "__main__":
         try:
             s3 = boto3.client('s3')
             s3.download_file(
-                args.bucket, '{}/deeplab_{}_2.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
+                args.s3_bucket, '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
             deeplab = torch.load('deeplab.pth').to(device)
             del s3
             print('\t\t SUCCESSFULLY RESTARTED')
@@ -483,6 +673,13 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+        evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
+                 args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+                 args.s3_prefix, arg_hash)
+
+        for preview in args.inference_previews:
+            print("generating preview: {}".format(preview))
+            generate_preview(preview, args.bands, args.img_nd, device, len(args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
+
         exit(0)
 
-# ./download_run.sh s3://geotrellis-test/courage-services/train_full_nlcd.py 8 8channels5x 5 5 5 15 geotrellis-test courage-services/landsat-cloudless-2016.tif courage-services/nlcd-resized-2016.tif courage-services/central-valley-update
