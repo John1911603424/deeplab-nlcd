@@ -436,6 +436,9 @@ def training_cli_parser():
     parser.add_argument('--window-size',
                         default=224,
                         type=int)
+    parser.add_argument('--max-epoch-size',
+                        default=sys.maxsize,
+                        type=int)
     parser.add_argument('--start-from')
     return parser
 
@@ -516,8 +519,8 @@ if __name__ == "__main__":
             sys.exit()
 
         batch_size = args.batch_size
-        steps_per_epoch = int((width * height * 6.0) /
-                              (args.window_size * args.window_size * 7.0 * batch_size))
+        steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+                                                       (args.window_size * args.window_size * 7.0 * batch_size)))
 
         print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
 
