@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 
+import argparse
 import copy
 import hashlib
-import argparse
 import os
+import sys
 import time
 from urllib.parse import urlparse
+
+import numpy as np
 from PIL import Image
 
 import boto3
-import numpy as np
 import rasterio as rio
 import torch
 import torchvision
+
 
 os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
@@ -460,6 +463,9 @@ def training_cli_parser():
     parser.add_argument('--approx-mean-std',
                         help='Approximate the mean and standard deviation from a subset of the training raster',
                         action='store_true')
+    parser.add_argument('--max-epoch-size',
+                        default=sys.maxsize,
+                        type=int)
     parser.add_argument('--start-from')
     return parser
 
@@ -556,8 +562,8 @@ if __name__ == "__main__":
             sys.exit()
 
         batch_size = args.batch_size
-        steps_per_epoch = int((width * height * 6.0) /
-                              (args.window_size * args.window_size * 7.0 * batch_size))
+        steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+                                                       (args.window_size * args.window_size * 7.0 * batch_size)))
 
         print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
 
@@ -728,4 +734,3 @@ if __name__ == "__main__":
                 print("something went wrong while generating {}".format(preview))
 
         exit(0)
-
