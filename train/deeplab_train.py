@@ -231,6 +231,25 @@ def numpy_replace(np_arr, replacement_dict):
     return b
 
 
+def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
+    x = np.random.randint(0, width/window_size - 1)
+    y = np.random.randint(0, height/window_size - 1)
+    window = rio.windows.Window(
+        x * window_size, y * window_size,
+        window_size, window_size)
+
+    data = []
+    for band in bands:
+        a = raster_ds.read(band, window=window)
+        if img_nd is not None:
+            a = np.extract(a != img_nd, a)
+        a = a[~np.isnan(a)]
+        data.append(a)
+    data = np.stack(data, axis=1)
+
+    return data
+
+
 def get_random_training_window(raster_ds, label_ds, width, height, window_size, bands, label_mappings, label_nd, img_nd):
     x = 0
     y = 0
@@ -438,6 +457,9 @@ def training_cli_parser():
     parser.add_argument('--window-size',
                         default=224,
                         type=int)
+    parser.add_argument('--approx-mean-std',
+                        help='Approximate the mean and standard deviation from a subset of the training raster',
+                        action='store_true')
     parser.add_argument('--start-from')
     return parser
 
@@ -471,12 +493,28 @@ if __name__ == "__main__":
 
     print('PRE-COMPUTING')
 
-    with rio.open('/tmp/mul.tif') as raster_ds:
+    if args.approx_mean_std:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            def sample():
+                return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
+                                         args.window_size, raster_ds.indexes,
+                                         args.img_nd)
+            ws = [sample() for i in range(0,200)]
         for i in range(0, len(raster_ds.indexes)):
-            a = raster_ds.read(i+1).flatten()
+            a = np.concatenate([w[:,i] for w in ws])
             MEANS.append(a.mean())
             STDS.append(a.std())
         del a
+        del sample
+        del ws
+    else:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            for i in range(0, len(raster_ds.indexes)):
+                a = raster_ds.read(i+1).flatten()
+                MEANS.append(a.mean())
+                STDS.append(a.std())
+            del a
+
 
     print("Means: {}".format(MEANS))
     print("Standard Deviations: {}".format(STDS))
