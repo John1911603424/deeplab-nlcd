@@ -14,6 +14,8 @@ import rasterio as rio
 import torch
 import torchvision
 
+os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+
 # Break s3uris into bucket and prefix
 def parse_s3_url(url):
     parsed = urlparse(url, allow_fragments=False)
