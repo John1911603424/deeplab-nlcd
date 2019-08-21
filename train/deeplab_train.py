@@ -36,7 +36,7 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
         # Normalized float32 imagery bands
         data = []
         for band in bands:
-            a = preview_ds.read(band, window=window)
+            a = preview_ds.read(band)
             MEAN = a.flatten().mean()
             STD = a.flatten().std()
 
@@ -55,15 +55,8 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
 
     prediction = np.apply_along_axis(np.argmax, 0, out)
 
-    # the expansion coefficient is the amount of spread needed to approach a max of 255
-    expansion_coefficient = (255 / label_count)
-    img = Image.fromarray(np.uint8((prediction * expansion_coefficient).floor))
+    img = Image.fromarray(np.uint8(prediction))
 
-    minv = out[1].min()
-    maxv = out[1].max()
-    spread = maxv - minv
-    grey = np.uint8(0xff * ((out[1] + minv) / spread))
-    img = Image.fromarray(grey)
     local_preview = '/tmp/preview_{}'.format(preview_filename)
     img.save(local_preview)
 
@@ -126,7 +119,8 @@ def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_n
     return (data, labels)
 
 
-def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img_nd, replacement_dict, device, bucket_name, s3_prefix, arg_hash):
+def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img_nd,
+             replacement_dict, device, bucket_name, s3_prefix, arg_hash):
 
     deeplab.eval()
     batch_size = 64
@@ -189,6 +183,14 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
         f1s.append(f1)
     print('f1 {}'.format(f1s))
 
+    with open('/tmp/evaluations.txt', w) as evaluations:
+        evaluations.write('True positives: {}\n'.format(tps))
+        evaluations.write('False positives: {}\n'.format(fps))
+        evaluations.write('Recalls: {}\n'.format(recalls))
+        evaluations.write('Precisions: {}\n'.format(precisions))
+        evaluations.write('f1 scores: {}\n'.format(f1s))
+
+
     preds = np.concatenate(preds).flatten()
     ground_truth = np.concatenate(ground_truth).flatten()
     preds = np.extract(ground_truth < 2, preds)
@@ -196,6 +198,7 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     np.save('/tmp/predictions.npy', preds, False)
     np.save('/tmp/ground_truth.npy', ground_truth, False)
     s3 = boto3.client('s3')
+    s3.upload_file('/tmp/evaluations.txt', bucket_name, '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
     s3.upload_file('/tmp/predictions.npy', bucket_name, '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
     s3.upload_file('/tmp/ground_truth.npy', bucket_name, '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
     del s3
@@ -678,8 +681,11 @@ if __name__ == "__main__":
                  args.s3_prefix, arg_hash)
 
         for preview in args.inference_previews:
-            print("generating preview: {}".format(preview))
-            generate_preview(preview, args.bands, args.img_nd, device, len(args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
+            try:
+                print("generating preview: {}".format(preview))
+                generate_preview(preview, args.bands, args.img_nd, device, len(args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
+            except:
+                print("something went wrong while generating {}".format(preview))
 
         exit(0)
 
