@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 
+import argparse
 import copy
 import hashlib
-import argparse
 import os
+import sys
 import time
 from urllib.parse import urlparse
+
+import numpy as np
 from PIL import Image
 
 import boto3
-import numpy as np
 import rasterio as rio
 import torch
 import torchvision
+
 
 # Break s3uris into bucket and prefix
 def parse_s3_url(url):
@@ -691,4 +694,3 @@ if __name__ == "__main__":
                 print("something went wrong while generating {}".format(preview))
 
         exit(0)
-
