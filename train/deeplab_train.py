@@ -526,7 +526,6 @@ def training_cli_parser():
     parser.add_argument('--disable-eval',
                         help='Disable evaluation after training',
                         action='store_true')
-    parser.add_argument('--start-from')
     return parser
 
 
@@ -753,11 +752,6 @@ if __name__ == "__main__":
 
         print('\t TRAINING ALL LAYERS AGAIN')
 
-        if args.start_from:
-            s3 = boto3.client('s3')
-            s3.download_file(
-                args.bucket, args.start_from, 'deeplab.pth')
-            deeplab = torch.load('deeplab.pth').to(device)
 
         for p in deeplab.parameters():
             p.requires_grad = True
