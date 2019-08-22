@@ -19,6 +19,15 @@ import torchvision
 
 os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
+# retry failed reads (they appear to be transient)
+def retry_read(rio_ds, band, window=None, retries = 3):
+    for i in range(retries):
+        try:
+            return rio_ds.read(band, window=window)
+        except rio.errors.RasterioIOError:
+            print("Read error for band {} at window {} on try {} of {}".format(band, window, i+1, retries))
+            continue
+
 # Break s3uris into bucket and prefix
 def parse_s3_url(url):
     parsed = urlparse(url, allow_fragments=False)
@@ -35,13 +44,13 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
 
     with rio.open(local_img) as preview_ds:
         # Nodata
-        a = preview_ds.read(1)
+        a = retry_read(preview_ds, 1)
         nodata = (a == img_nd) + (np.isnan(a))
 
         # Normalized float32 imagery bands
         data = []
         for band in bands:
-            a = preview_ds.read(band)
+            a = retry_read(preview_ds, band)
             MEAN = a.flatten().mean()
             STD = a.flatten().std()
 
@@ -77,7 +86,7 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
         window_size, window_size)
 
     # Labels
-    labels = mask_ds.read(1, window=window)
+    labels = retry_read(mask_ds, 1, window=window)
     labels = numpy_replace(labels, replacement_dict)
 
     if label_nd is not None:
@@ -87,7 +96,7 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        a = raster_ds.read(1, window=window)
+        a = retry_read(raster_ds, 1, window=window)
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
@@ -101,7 +110,7 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
     # Normalized float32 imagery bands
     data = []
     for band in bands:
-        a = raster_ds.read(band, window=window)
+        a = retry_read(raster_ds, band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
         a[nodata != 0] = 0.0
         data.append(a)
@@ -243,7 +252,7 @@ def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
 
     data = []
     for band in bands:
-        a = raster_ds.read(band, window=window)
+        a = retry_read(raster_ds, band, window=window)
         if img_nd is not None:
             a = np.extract(a != img_nd, a)
         a = a[~np.isnan(a)]
@@ -264,7 +273,7 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
         window_size, window_size)
 
     # Labels
-    labels = label_ds.read(1, window=window)
+    labels = retry_read(label_ds, 1, window=window)
     labels = numpy_replace(labels, label_mappings)
     #print('unique: {}'.format(np.unique(labels)))
 
@@ -275,7 +284,7 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        a = raster_ds.read(1, window=window)
+        a = retry_read(raster_ds, 1, window=window)
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
@@ -286,7 +295,7 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
-        a = raster_ds.read(band, window=window)
+        a = retry_read(raster_ds, band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
         a[nodata != 0] = 0.0
         data.append(a)
@@ -544,7 +553,7 @@ if __name__ == "__main__":
     else:
         with rio.open('/tmp/mul.tif') as raster_ds:
             for i in range(0, len(raster_ds.indexes)):
-                a = raster_ds.read(i+1).flatten()
+                a = retry_read(raster_ds, (i+1)).flatten()
                 MEANS.append(a.mean())
                 STDS.append(a.std())
             del a
