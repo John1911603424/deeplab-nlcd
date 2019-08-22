@@ -4,15 +4,16 @@ import argparse
 import copy
 import hashlib
 import os
+import re
 import sys
 import time
 from multiprocessing import Pool
 from urllib.parse import urlparse
 
-import numpy as np
+import boto3
 from PIL import Image
 
-import boto3
+import numpy as np
 import rasterio as rio
 import torch
 import torchvision
@@ -20,10 +21,12 @@ import torchvision
 if os.environ.get('CURL_CA_BUNDLE') is None:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
+
 # Break s3uris into bucket and prefix
 def parse_s3_url(url):
     parsed = urlparse(url, allow_fragments=False)
     return (parsed.netloc, parsed.path.lstrip('/'))
+
 
 def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, s3_prefix, arg_hash):
     s3 = boto3.client('s3')
@@ -57,7 +60,7 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
     deeplab.eval()
 
     with torch.no_grad():
-      out = deeplab(batch)['out'].data.cpu().numpy()[0]
+        out = deeplab(batch)['out'].data.cpu().numpy()[0]
 
     prediction = np.apply_along_axis(np.argmax, 0, out)
 
@@ -117,6 +120,7 @@ def _get_eval_window(xy):
                            Bands, x, y, Window_size,
                            Label_nd, Img_nd, Replacement_dict)
 
+
 def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_nd, replacement_dict, device):
     data = []
     labels = []
@@ -175,7 +179,8 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
                     xys.append(xy)
 
         for xy in chunks(xys, batch_size):
-            batch, labels = get_eval_batch(raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, replacement_dict, device)
+            batch, labels = get_eval_batch(
+                raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, replacement_dict, device)
             labels = labels.data.cpu().numpy()
             out = deeplab(batch)['out'].data.cpu().numpy()
             out = np.apply_along_axis(np.argmax, 1, out)
@@ -216,13 +221,12 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
         f1s.append(f1)
     print('f1 {}'.format(f1s))
 
-    with open('/tmp/evaluations.txt', w) as evaluations:
+    with open('/tmp/evaluations.txt', 'w') as evaluations:
         evaluations.write('True positives: {}\n'.format(tps))
         evaluations.write('False positives: {}\n'.format(fps))
         evaluations.write('Recalls: {}\n'.format(recalls))
         evaluations.write('Precisions: {}\n'.format(precisions))
         evaluations.write('f1 scores: {}\n'.format(f1s))
-
 
     preds = np.concatenate(preds).flatten()
     ground_truth = np.concatenate(ground_truth).flatten()
@@ -231,9 +235,12 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     np.save('/tmp/predictions.npy', preds, False)
     np.save('/tmp/ground_truth.npy', ground_truth, False)
     s3 = boto3.client('s3')
-    s3.upload_file('/tmp/evaluations.txt', bucket_name, '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
-    s3.upload_file('/tmp/predictions.npy', bucket_name, '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
-    s3.upload_file('/tmp/ground_truth.npy', bucket_name, '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
+    s3.upload_file('/tmp/evaluations.txt', bucket_name,
+                   '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
+    s3.upload_file('/tmp/predictions.npy', bucket_name,
+                   '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
+    s3.upload_file('/tmp/ground_truth.npy', bucket_name,
+                   '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
     del s3
 
 
@@ -258,7 +265,7 @@ def hash_string(string):
 def numpy_replace(np_arr, replacement_dict):
     b = np.copy(np_arr)
     for k, v in replacement_dict.items():
-        b[np_arr==k] = v
+        b[np_arr == k] = v
     return b
 
 
@@ -328,6 +335,7 @@ def _get_random_training_window(n):
                                       Width, Height, Window_size, Bands,
                                       Label_mappings, Label_nd, Img_nd)
 
+
 def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, img_nd):
     data = []
     labels = []
@@ -367,15 +375,52 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     return (data, labels)
 
 
+# https://alexwlchan.net/2017/07/listing-s3-keys/
+def get_matching_s3_keys(bucket, prefix='', suffix=''):
+    """
+    Generate the keys in an S3 bucket.
+
+    :param bucket: Name of the S3 bucket.
+    :param prefix: Only fetch keys that start with this prefix (optional).
+    :param suffix: Only fetch keys that end with this suffix (optional).
+    """
+    s3 = boto3.client('s3')
+    kwargs = {'Bucket': bucket}
+
+    # If the prefix is a single string (not a tuple of strings), we can
+    # do the filtering directly in the S3 API.
+    if isinstance(prefix, str):
+        kwargs['Prefix'] = prefix
+
+    while True:
+
+        # The S3 API response is a large blob of metadata.
+        # 'Contents' contains information about the listed objects.
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in resp['Contents']:
+            key = obj['Key']
+            if key.startswith(prefix) and key.endswith(suffix):
+                yield key
+
+        # The S3 API is paginated, returning up to 1000 keys at a time.
+        # Pass the continuation token into the next response, until we
+        # reach the final page (when this field is missing).
+        try:
+            kwargs['ContinuationToken'] = resp['NextContinuationToken']
+        except KeyError:
+            break
+
+
 def train(model, opt, obj,
           steps_per_epoch, epochs, batch_size,
           raster_ds, label_ds,
           width, height, window_size, device,
           bands, label_mapping, label_nd, img_nd,
-          bucket_name, s3_prefix, arg_hash):
+          bucket_name, s3_prefix, arg_hash,
+          no_checkpoints=True, starting_epoch=0):
     model.train()
     current_time = time.time()
-    for i in range(epochs):
+    for i in range(starting_epoch, epochs):
         avg_loss = 0.0
         for j in range(steps_per_epoch):
             batch_tensor = get_random_training_batch(
@@ -393,21 +438,24 @@ def train(model, opt, obj,
         current_time = time.time()
         print('\t\t epoch={} time={} avg_loss={}'.format(
             i, current_time - last_time, avg_loss))
-        if (epochs > 5) and (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix:
+        if (i > 0) and (i % 3 == 0) and bucket_name and s3_prefix and not no_checkpoints:
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_output_prefix, arg_hash, i))
+                           '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
             del s3
 
 # https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
+
+
 class StoreDictKeyPair(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         my_dict = {}
         for kv in values.split(","):
-            k,v = kv.split(":")
+            k, v = kv.split(":")
             my_dict[int(k)] = int(v)
         setattr(namespace, self.dest, my_dict)
+
 
 def training_cli_parser():
     parser = argparse.ArgumentParser()
@@ -421,7 +469,8 @@ def training_cli_parser():
                         default=os.environ.get('TRAINING_EPOCHS_1', 5),
                         type=int)
     parser.add_argument('--learning-rate1',
-                        help='float (probably between 10^-6 and 1) to tune SGD', # https://arxiv.org/abs/1206.5533
+                        # https://arxiv.org/abs/1206.5533
+                        help='float (probably between 10^-6 and 1) to tune SGD',
                         default=os.environ.get('LEARNING_RATE_1', 0.01),
                         type=float)
     parser.add_argument('--epochs2',
@@ -429,7 +478,8 @@ def training_cli_parser():
                         default=os.environ.get('TRAINING_EPOCHS_2', 5),
                         type=int)
     parser.add_argument('--learning-rate2',
-                        help='float (probably between 10^-6 and 1) to tune SGD', # https://arxiv.org/abs/1206.5533
+                        # https://arxiv.org/abs/1206.5533
+                        help='float (probably between 10^-6 and 1) to tune SGD',
                         default=os.environ.get('LEARNING_RATE_2', 0.001),
                         type=float)
     parser.add_argument('--epochs3',
@@ -437,7 +487,8 @@ def training_cli_parser():
                         default=os.environ.get('TRAINING_EPOCHS_2', 5),
                         type=int)
     parser.add_argument('--learning-rate3',
-                        help='float (probably between 10^-6 and 1) to tune SGD', # https://arxiv.org/abs/1206.5533
+                        # https://arxiv.org/abs/1206.5533
+                        help='float (probably between 10^-6 and 1) to tune SGD',
                         default=os.environ.get('LEARNING_RATE_3', 0.01),
                         type=float)
     parser.add_argument('--epochs4',
@@ -445,7 +496,8 @@ def training_cli_parser():
                         default=os.environ.get('TRAINING_EPOCHS_2', 5),
                         type=int)
     parser.add_argument('--learning-rate4',
-                        help='float (probably between 10^-6 and 1) to tune SGD', # https://arxiv.org/abs/1206.5533
+                        # https://arxiv.org/abs/1206.5533
+                        help='float (probably between 10^-6 and 1) to tune SGD',
                         default=os.environ.get('LEARNING_RATE_4', 0.001),
                         type=float)
     parser.add_argument('--training-img',
@@ -526,6 +578,7 @@ def training_cli_parser():
     parser.add_argument('--disable-eval',
                         help='Disable evaluation after training',
                         action='store_true')
+    parser.add_argument('--start-from')
     return parser
 
 
@@ -544,6 +597,9 @@ if __name__ == "__main__":
     MEANS = []
     STDS = []
 
+    # ---------------------------------
+    print('DOWNLOADING DATA')
+
     if not os.path.exists('/tmp/mul.tif'):
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.training_img)
@@ -557,6 +613,7 @@ if __name__ == "__main__":
         s3.download_file(bucket, prefix, '/tmp/mask.tif')
         del s3
 
+    # ---------------------------------
     print('PRE-COMPUTING')
 
     if args.approx_mean_std:
@@ -565,9 +622,9 @@ if __name__ == "__main__":
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
                                          args.window_size, raster_ds.indexes,
                                          args.img_nd)
-            ws = [sample() for i in range(0,133)]
+            ws = [sample() for i in range(0, 133)]
         for i in range(0, len(raster_ds.indexes)):
-            a = np.concatenate([w[:,i] for w in ws])
+            a = np.concatenate([w[:, i] for w in ws])
             MEANS.append(a.mean())
             STDS.append(a.std())
         del a
@@ -581,25 +638,11 @@ if __name__ == "__main__":
                 STDS.append(a.std())
             del a
 
-
-    print("Means: {}".format(MEANS))
+    print("Means:               {}".format(MEANS))
     print("Standard Deviations: {}".format(STDS))
 
-    print('INITIALIZING')
-
-    np.random.seed(seed=args.random_seed)
-    device = torch.device(args.backend)
-    deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-        pretrained=True).to(device)
-    print("label count: {}".format(len(args.weights)))
-    last_class = deeplab.classifier[4] = torch.nn.Conv2d(
-        256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-    last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
-        256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-    input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
-        len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
-
-    print('COMPUTING')
+    # ---------------------------------
+    print('RECORDING RUN')
 
     # recording parameters in bucket
     with open('/tmp/args.txt', 'w') as f:
@@ -609,149 +652,164 @@ if __name__ == "__main__":
                    '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
     del s3
 
+    # ---------------------------------
+    print('INITIALIZING')
+
+    complete_thru = -1
+    current_epoch = 0
+    current_pth = None
+    for pth in get_matching_s3_keys(
+            bucket=args.s3_bucket,
+            prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
+            suffix='pth'):
+        m1 = re.match('.*deeplab_(\d+).pth$', pth)
+        m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
+        if m1:
+            phase = int(m1.group(1))
+            if phase > complete_thru:
+                complete_thru = phase
+                current_pth = pth
+        if m2:
+            phase = 4
+            checkpoint_epoch = int(m2.group(1))
+            if checkpoint_epoch > current_epoch:
+                current_epoch = checkpoint_epoch
+                current_pth = pth
+
+    np.random.seed(seed=args.random_seed)
+    device = torch.device(args.backend)
 
     with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-
         width = raster_ds.width
         height = raster_ds.height
-
         if (height != mask_ds.height) or (width != mask_ds.width):
             print("width", width, mask_ds.width)
             print("height", height, mask_ds.height)
             print('PROBLEM WITH DIMENSIONS')
             sys.exit()
 
-        batch_size = args.batch_size
-        steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
-                                                       (args.window_size * args.window_size * 7.0 * batch_size)))
+    batch_size = args.batch_size
+    steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+                                                   (args.window_size * args.window_size * 7.0 * batch_size)))
 
-        print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
+    print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
 
-        if args.label_nd is not None:
-            obj = torch.nn.CrossEntropyLoss(
-                ignore_index=args.label_nd,
-                weight=torch.FloatTensor(args.weights).to(device)
-            ).to(device)
-        else:
-            obj = torch.nn.CrossEntropyLoss(
-                weight=torch.FloatTensor(args.weights).to(device)
-            ).to(device)
+    if args.label_nd is not None:
+        obj = torch.nn.CrossEntropyLoss(
+            ignore_index=args.label_nd,
+            weight=torch.FloatTensor(args.weights).to(device)
+        ).to(device)
+    else:
+        obj = torch.nn.CrossEntropyLoss(
+            weight=torch.FloatTensor(args.weights).to(device)
+        ).to(device)
 
+    # ---------------------------------
+    print('COMPUTING')
+
+    if complete_thru == -1:
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        print("label count: {}".format(len(args.weights)))
+        last_class = deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+
+    if complete_thru == 0:
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        deeplab = torch.load('deeplab.pth').to(device)
+        del s3
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+    elif complete_thru < 0:
 
         print('\t TRAINING FIRST AND LAST LAYERS')
 
-        try:
-            s3 = boto3.client('s3')
-            s3.download_file(
-                args.s3_bucket, '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
-            deeplab = torch.load('deeplab.pth').to(device)
-            print('\t\t SUCCESSFULLY RESTARTED')
-        except:
-            for p in deeplab.parameters():
-                p.requires_grad = False
-            for p in last_class.parameters():
-                p.requires_grad = True
-            for p in last_class_aux.parameters():
-                p.requires_grad = True
-            for p in input_filters.parameters():
-                p.requires_grad = True
+        for p in deeplab.parameters():
+            p.requires_grad = False
+        for p in last_class.parameters():
+            p.requires_grad = True
+        for p in last_class_aux.parameters():
+            p.requires_grad = True
+        for p in input_filters.parameters():
+            p.requires_grad = True
 
-            ps = []
-            for n, p in deeplab.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
+        ps = []
+        for n, p in deeplab.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
 
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs1, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                raster_ds, mask_ds, width, height, args.window_size, device,
+                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
-            print('\t UPLOADING')
+        print('\t UPLOADING')
 
-            torch.save(deeplab, 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
-            del s3
+        torch.save(deeplab, 'deeplab.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
+        del s3
+
+    if complete_thru == 1:
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        deeplab = torch.load('deeplab.pth').to(device)
+        del s3
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+    elif complete_thru < 1:
 
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
-        try:
-            s3 = boto3.client('s3')
-            s3.download_file(
-                args.s3_bucket, '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
-            deeplab = torch.load('deeplab.pth').to(device)
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED')
-        except:
-            last_class = deeplab.classifier[4]
-            last_class_aux = deeplab.aux_classifier[4]
-            input_filters = deeplab.backbone.conv1
-            for p in deeplab.parameters():
-                p.requires_grad = False
-            for p in last_class.parameters():
-                p.requires_grad = True
-            for p in last_class_aux.parameters():
-                p.requires_grad = True
-            for p in input_filters.parameters():
-                p.requires_grad = True
+        last_class = deeplab.classifier[4]
+        last_class_aux = deeplab.aux_classifier[4]
+        input_filters = deeplab.backbone.conv1
+        for p in deeplab.parameters():
+            p.requires_grad = False
+        for p in last_class.parameters():
+            p.requires_grad = True
+        for p in last_class_aux.parameters():
+            p.requires_grad = True
+        for p in input_filters.parameters():
+            p.requires_grad = True
 
-            ps = []
-            for n, p in deeplab.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+        ps = []
+        for n, p in deeplab.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs2, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                raster_ds, mask_ds, width, height, args.window_size, device,
+                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
-            print('\t UPLOADING')
+        print('\t UPLOADING')
 
-            torch.save(deeplab, 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
-            del s3
+        torch.save(deeplab, 'deeplab.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
+        del s3
+
+    if complete_thru == 2:
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        deeplab = torch.load('deeplab.pth').to(device)
+        del s3
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+    elif complete_thru < 2:
 
         print('\t TRAINING ALL LAYERS')
-
-        try:
-            s3 = boto3.client('s3')
-            s3.download_file(
-                args.s3_bucket, '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash), 'deeplab.pth')
-            deeplab = torch.load('deeplab.pth').to(device)
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED')
-        except:
-            for p in deeplab.parameters():
-                p.requires_grad = True
-
-            ps = []
-            for n, p in deeplab.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
-
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs3, batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
-
-            print('\t UPLOADING')
-
-            torch.save(deeplab, 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
-            del s3
-
-        print('\t TRAINING ALL LAYERS AGAIN')
-
 
         for p in deeplab.parameters():
             p.requires_grad = True
@@ -762,12 +820,47 @@ if __name__ == "__main__":
                 ps.append(p)
             else:
                 p.grad = None
+        opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
 
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
+            train(deeplab, opt, obj, steps_per_epoch, args.epochs3, batch_size,
+                raster_ds, mask_ds, width, height, args.window_size, device,
+                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+
+        print('\t UPLOADING')
+
+        torch.save(deeplab, 'deeplab.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
+        del s3
+
+    if complete_thru == 3:
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        deeplab = torch.load('deeplab.pth').to(device)
+        del s3
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+    elif complete_thru < 3:
+
+        print('\t TRAINING ALL LAYERS AGAIN')
+
+        for p in deeplab.parameters():
+            p.requires_grad = True
+
+        ps = []
+        for n, p in deeplab.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
-        train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
-              raster_ds, mask_ds, width, height, args.window_size, device,
-              args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
+            train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
+                  raster_ds, mask_ds, width, height, args.window_size, device,
+                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  no_checkpoints=False)
 
         print('\t UPLOADING')
 
@@ -777,16 +870,50 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
-        if not args.disable_eval:
-            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                    args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
-                    args.s3_prefix, arg_hash)
+    if complete_thru == 4:
+        print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
-        for preview in args.inference_previews:
-            try:
-                print("generating preview: {}".format(preview))
-                generate_preview(preview, args.bands, args.img_nd, device, len(args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
-            except:
-                print("something went wrong while generating {}".format(preview))
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        deeplab = torch.load('deeplab.pth').to(device)
+        del s3
 
-        exit(0)
+        for p in deeplab.parameters():
+            p.requires_grad = True
+
+        ps = []
+        for n, p in deeplab.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
+            train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
+                raster_ds, mask_ds, width, height, args.window_size, device,
+                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                no_checkpoints=False, starting_epoch=current_epoch)
+
+        print('\t UPLOADING')
+
+        torch.save(deeplab, 'deeplab.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+        del s3
+
+    if not args.disable_eval:
+        evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
+                 args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+                 args.s3_prefix, arg_hash)
+
+    for preview in args.inference_previews:
+        try:
+            print("generating preview: {}".format(preview))
+            generate_preview(preview, args.bands, args.img_nd, device, len(
+                args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
+        except:
+            print("something went wrong while generating {}".format(preview))
+
+    exit(0)
