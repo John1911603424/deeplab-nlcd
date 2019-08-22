@@ -22,13 +22,11 @@ os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 # retry failed reads (they appear to be transient)
 def retry_read(rio_ds, band, window=None, retries = 3):
     for i in range(retries):
-        while True:
-            try:
-                return rio_ds.read(band, window=window)
-            except rio.errors.RasterioIOError:
-                print("Read error for band {} at window {} on try {} of {}".format(band, window, i+1, retries))
-                continue
-            break
+        try:
+            return rio_ds.read(band, window=window)
+        except rio.errors.RasterioIOError:
+            print("Read error for band {} at window {} on try {} of {}".format(band, window, i+1, retries))
+            continue
 
 # Break s3uris into bucket and prefix
 def parse_s3_url(url):
