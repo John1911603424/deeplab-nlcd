@@ -110,13 +110,40 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
 
     return (data, labels)
 
+
+def _get_eval_window(xy):
+    (x, y) = xy
+    return get_eval_window(Raster_ds, Label_ds,
+                           Bands, x, y, Window_size,
+                           Label_nd, Img_nd, Replacement_dict)
+
 def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_nd, replacement_dict, device):
     data = []
     labels = []
-    for x, y in xys:
-        d, l = get_eval_window(raster_ds, label_ds, bands, x, y, window_size, label_nd, img_nd, replacement_dict)
-        data.append(d)
-        labels.append(l)
+
+    # crude but effective
+    global Raster_ds
+    Raster_ds = raster_ds
+    global Label_ds
+    Label_ds = label_ds
+    global Bands
+    Bands = bands
+    global Window_size
+    Window_size = window_size
+    global Label_nd
+    Label_nd = label_nd
+    global Img_nd
+    Img_nd = img_nd
+    global Replacement_dict
+    Replacement_dict = replacement_dict
+
+    with Pool(max(32, len(xys))) as p:
+        for d, l in p.map(_get_eval_window, xys):
+            data.append(d)
+            labels.append(l)
+
+    Raster_ds = None
+    Label_ds = None
 
     data = np.stack(data, axis=0)
     data = torch.from_numpy(data).to(device)
@@ -305,6 +332,7 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     data = []
     labels = []
 
+    # crude but effective
     global Raster_ds
     Raster_ds = raster_ds
     global Label_ds
@@ -324,7 +352,7 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     global Img_nd
     Img_nd = img_nd
 
-    with Pool(32) as p:
+    with Pool(max(32, batch_size)) as p:
         for d, l in p.map(_get_random_training_window, range(0, batch_size)):
             data.append(d)
             labels.append(l)
