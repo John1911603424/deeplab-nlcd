@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 import time
+from multiprocessing import Pool
 from urllib.parse import urlparse
 
 import numpy as np
@@ -15,7 +16,6 @@ import boto3
 import rasterio as rio
 import torch
 import torchvision
-
 
 os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
@@ -35,8 +35,8 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
 
     with rio.open(local_img) as preview_ds:
         # Nodata
-        nodata = preview_ds.read(1) == img_nd
-        not_nodata = nodata == 0
+        a = preview_ds.read(1)
+        nodata = (a == img_nd) + (np.isnan(a))
 
         # Normalized float32 imagery bands
         data = []
@@ -45,8 +45,8 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
             MEAN = a.flatten().mean()
             STD = a.flatten().std()
 
+            a[nodata != 0] = 0.0
             a = np.array((a - MEAN) / STD, dtype=np.float32)
-            a = a * not_nodata
             data.append(a)
         data = np.stack(data, axis=0)
 
@@ -87,23 +87,23 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        img_nds = raster_ds.read(1, window=window) == img_nd
+        a = raster_ds.read(1, window=window)
+        img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
-    not_nodata = (nodata == 0)
 
     # Toss out nodata labels
-    labels = labels * not_nodata
+    labels[nodata != 0] = 0.0
 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
         a = raster_ds.read(band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a = a * not_nodata
+        a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
@@ -275,33 +275,61 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        img_nds = raster_ds.read(1, window=window) == img_nd
+        a = raster_ds.read(1, window=window)
+        img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
-    not_nodata = (nodata == 0)
 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
         a = raster_ds.read(band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a = a * not_nodata
+        a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
     return (data, labels)
 
 
+def _get_random_training_window(n):
+    return get_random_training_window(Raster_ds, Label_ds,
+                                      Width, Height, Window_size, Bands,
+                                      Label_mappings, Label_nd, Img_nd)
+
 def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, img_nd):
     data = []
     labels = []
-    for i in range(0, batch_size):
-        d, l = get_random_training_window(raster_ds, label_ds, width, height, window_size, bands, label_mappings, label_nd, img_nd)
-        data.append(d)
-        labels.append(l)
+
+    global Raster_ds
+    Raster_ds = raster_ds
+    global Label_ds
+    Label_ds = label_ds
+    global Width
+    Width = width
+    global Height
+    Height = height
+    global Window_size
+    Window_size = window_size
+    global Bands
+    Bands = bands
+    global Label_mappings
+    Label_mappings = label_mappings
+    global Label_nd
+    Label_nd = label_nd
+    global Img_nd
+    Img_nd = img_nd
+
+    with Pool(32) as p:
+        for d, l in p.map(_get_random_training_window, range(0, batch_size)):
+            data.append(d)
+            labels.append(l)
+
+    Raster_ds = None
+    Label_ds = None
 
     data = np.stack(data, axis=0)
     data = torch.from_numpy(data).to(device)
@@ -505,7 +533,7 @@ if __name__ == "__main__":
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
                                          args.window_size, raster_ds.indexes,
                                          args.img_nd)
-            ws = [sample() for i in range(0,200)]
+            ws = [sample() for i in range(0,133)]
         for i in range(0, len(raster_ds.indexes)):
             a = np.concatenate([w[:,i] for w in ws])
             MEANS.append(a.mean())
@@ -541,7 +569,7 @@ if __name__ == "__main__":
 
     print('COMPUTING')
 
-    # recording parameters in bcuket
+    # recording parameters in bucket
     with open('/tmp/args.txt', 'w') as f:
         f.write(str(args))
     s3 = boto3.client('s3')
