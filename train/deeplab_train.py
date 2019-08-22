@@ -523,6 +523,9 @@ def training_cli_parser():
     parser.add_argument('--max-epoch-size',
                         default=sys.maxsize,
                         type=int)
+    parser.add_argument('--disable-eval',
+                        help='Disable evaluation after training',
+                        action='store_true')
     parser.add_argument('--start-from')
     return parser
 
@@ -534,6 +537,7 @@ if __name__ == "__main__":
     hashed_args = copy.copy(args)
     del hashed_args.backend
     del hashed_args.inference_previews
+    del hashed_args.disable_eval
     arg_hash = hash_string(str(hashed_args))
     print("provided args: {}".format(hashed_args))
     print("hash: {}".format(arg_hash))
@@ -779,9 +783,10 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
-        evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                 args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
-                 args.s3_prefix, arg_hash)
+        if not args.disable_eval:
+            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
+                    args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+                    args.s3_prefix, arg_hash)
 
         for preview in args.inference_previews:
             try:
