@@ -35,8 +35,8 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
 
     with rio.open(local_img) as preview_ds:
         # Nodata
-        nodata = preview_ds.read(1) == img_nd
-        not_nodata = nodata == 0
+        a = preview_ds.read(1)
+        nodata = (a == img_nd) + (np.isnan(a))
 
         # Normalized float32 imagery bands
         data = []
@@ -45,8 +45,8 @@ def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, 
             MEAN = a.flatten().mean()
             STD = a.flatten().std()
 
+            a[nodata != 0] = 0.0
             a = np.array((a - MEAN) / STD, dtype=np.float32)
-            a = a * not_nodata
             data.append(a)
         data = np.stack(data, axis=0)
 
