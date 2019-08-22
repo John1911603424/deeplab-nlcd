@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 import time
+from multiprocessing import Pool
 from urllib.parse import urlparse
 
 import numpy as np
@@ -15,7 +16,6 @@ import boto3
 import rasterio as rio
 import torch
 import torchvision
-
 
 os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
@@ -295,13 +295,41 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
     return (data, labels)
 
 
+def _get_random_training_window(n):
+    return get_random_training_window(Raster_ds, Label_ds,
+                                      Width, Height, Window_size, Bands,
+                                      Label_mappings, Label_nd, Img_nd)
+
 def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, img_nd):
     data = []
     labels = []
-    for i in range(0, batch_size):
-        d, l = get_random_training_window(raster_ds, label_ds, width, height, window_size, bands, label_mappings, label_nd, img_nd)
-        data.append(d)
-        labels.append(l)
+
+    global Raster_ds
+    Raster_ds = raster_ds
+    global Label_ds
+    Label_ds = label_ds
+    global Width
+    Width = width
+    global Height
+    Height = height
+    global Window_size
+    Window_size = window_size
+    global Bands
+    Bands = bands
+    global Label_mappings
+    Label_mappings = label_mappings
+    global Label_nd
+    Label_nd = label_nd
+    global Img_nd
+    Img_nd = img_nd
+
+    with Pool(32) as p:
+        for d, l in p.map(_get_random_training_window, range(0, batch_size)):
+            data.append(d)
+            labels.append(l)
+
+    Raster_ds = None
+    Label_ds = None
 
     data = np.stack(data, axis=0)
     data = torch.from_numpy(data).to(device)
