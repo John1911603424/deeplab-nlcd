@@ -87,23 +87,23 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        img_nds = raster_ds.read(1, window=window) == img_nd
+        a = raster_ds.read(1, window=window)
+        img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
-    not_nodata = (nodata == 0)
 
     # Toss out nodata labels
-    labels = labels * not_nodata
+    labels[nodata != 0] = 0.0
 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
         a = raster_ds.read(band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a = a * not_nodata
+        a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
@@ -275,20 +275,20 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
 
     # We assume here that the ND value will be on the first band
     if img_nd is not None:
-        img_nds = raster_ds.read(1, window=window) == img_nd
+        a = raster_ds.read(1, window=window)
+        img_nds = (a == img_nd) + (np.isnan(a))
     else:
         img_nds = np.zeros(labels.shape)
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
-    not_nodata = (nodata == 0)
 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
         a = raster_ds.read(band, window=window)
         a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a = a * not_nodata
+        a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
@@ -505,7 +505,7 @@ if __name__ == "__main__":
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
                                          args.window_size, raster_ds.indexes,
                                          args.img_nd)
-            ws = [sample() for i in range(0,200)]
+            ws = [sample() for i in range(0,133)]
         for i in range(0, len(raster_ds.indexes)):
             a = np.concatenate([w[:,i] for w in ws])
             MEANS.append(a.mean())
@@ -541,7 +541,7 @@ if __name__ == "__main__":
 
     print('COMPUTING')
 
-    # recording parameters in bcuket
+    # recording parameters in bucket
     with open('/tmp/args.txt', 'w') as f:
         f.write(str(args))
     s3 = boto3.client('s3')
