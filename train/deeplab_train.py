@@ -99,7 +99,7 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
         label_nds = np.zeros(labels.shape)
 
     # We assume here that the ND value will be on the first band
-    a = raster_ds.retry_read(1, window=window)
+    a = retry_read(raster_ds, 1, window=window)
     if img_nd is not None:
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
@@ -312,7 +312,6 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
     # Labels
     labels = retry_read(label_ds, 1, window=window)
     labels = numpy_replace(labels, label_mappings)
-    #print('unique: {}'.format(np.unique(labels)))
 
     if label_nd is not None:
         label_nds = labels == label_nd
@@ -320,7 +319,7 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
         label_nds = np.zeros(labels.shape)
 
     # We assume here that the ND value will be on the first band
-    a = raster_ds.retry_read(1, window=window)
+    a = retry_read(raster_ds, 1, window=window)
     if img_nd is not None:
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
@@ -918,9 +917,11 @@ if __name__ == "__main__":
         del s3
 
     if not args.disable_eval:
-        evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                 args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
-                 args.s3_prefix, arg_hash)
+        print('\t EVALUATING')
+        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
+            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
+                    args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+                    args.s3_prefix, arg_hash)
 
     for preview in args.inference_previews:
         try:
