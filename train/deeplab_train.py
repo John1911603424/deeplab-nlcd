@@ -670,9 +670,9 @@ if __name__ == "__main__":
                 complete_thru = phase
                 current_pth = pth
         if m2:
-            phase = 4
             checkpoint_epoch = int(m2.group(1))
             if checkpoint_epoch > current_epoch:
+                complete_thru = 4
                 current_epoch = checkpoint_epoch
                 current_pth = pth
 
