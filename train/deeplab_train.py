@@ -90,17 +90,17 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
         label_nds = np.zeros(labels.shape)
 
     # We assume here that the ND value will be on the first band
+    a = raster_ds.read(1, window=window)
     if img_nd is not None:
-        a = raster_ds.read(1, window=window)
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
-        img_nds = np.zeros(labels.shape)
+        img_nds = np.zeros(labels.shape) + (np.isnan(a))
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
 
     # Toss out nodata labels
-    labels[nodata != 0] = 0.0
+    labels[nodata != 0] = label_nd
 
     # Normalized float32 imagery bands
     data = []
@@ -124,6 +124,8 @@ def _get_eval_window(xy):
 def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_nd, replacement_dict, device):
     data = []
     labels = []
+
+    assert(label_nd is not None)
 
     # crude but effective
     global Raster_ds
@@ -309,14 +311,17 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
         label_nds = np.zeros(labels.shape)
 
     # We assume here that the ND value will be on the first band
+    a = raster_ds.read(1, window=window)
     if img_nd is not None:
-        a = raster_ds.read(1, window=window)
         img_nds = (a == img_nd) + (np.isnan(a))
     else:
-        img_nds = np.zeros(labels.shape)
+        img_nds = np.zeros(labels.shape) + (np.isnan(a))
 
     # nodata mask for regions without labels
     nodata = (img_nds + label_nds) > 0
+
+    # Toss out nodata labels
+    labels[nodata != 0] = label_nd
 
     # Normalized float32 imagery bands
     data = []
@@ -339,6 +344,8 @@ def _get_random_training_window(n):
 def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, img_nd):
     data = []
     labels = []
+
+    assert(label_nd is not None)
 
     # crude but effective
     global Raster_ds
@@ -692,17 +699,15 @@ if __name__ == "__main__":
     steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
                                                    (args.window_size * args.window_size * 7.0 * batch_size)))
 
-    print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
+    if args.label_nd is None:
+        args.label_nd = len(args.weights)
+        print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
 
-    if args.label_nd is not None:
-        obj = torch.nn.CrossEntropyLoss(
-            ignore_index=args.label_nd,
-            weight=torch.FloatTensor(args.weights).to(device)
-        ).to(device)
-    else:
-        obj = torch.nn.CrossEntropyLoss(
-            weight=torch.FloatTensor(args.weights).to(device)
-        ).to(device)
+    print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
+    obj = torch.nn.CrossEntropyLoss(
+        ignore_index=args.label_nd,
+        weight=torch.FloatTensor(args.weights).to(device)
+    ).to(device)
 
     # ---------------------------------
     print('COMPUTING')
