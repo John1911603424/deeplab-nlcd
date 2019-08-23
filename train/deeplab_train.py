@@ -21,6 +21,7 @@ import torchvision
 if os.environ.get('CURL_CA_BUNDLE') is None:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
+already_seeded = False
 
 # retry failed reads (they appear to be transient)
 def retry_read(rio_ds, band, window=None, retries = 3):
@@ -344,6 +345,10 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
 
 
 def _get_random_training_window(n):
+    global already_seeded
+    if not already_seeded:
+        already_seeded = True
+        np.random.seed(seed = os.getpid())
     return get_random_training_window(Raster_ds, Label_ds,
                                       Width, Height, Window_size, Bands,
                                       Label_mappings, Label_nd, Img_nd)
