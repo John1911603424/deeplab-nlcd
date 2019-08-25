@@ -177,6 +177,7 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     tps = [0.0 for x in range(label_count)]
     fps = [0.0 for x in range(label_count)]
     fns = [0.0 for x in range(label_count)]
+    tns = [0.0 for x in range(label_count)]
     preds = []
     ground_truth = []
 
@@ -210,6 +211,7 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
                 tps[i] = tps[i] + ((out == i)*(labels == i)).sum()
                 fps[i] = fps[i] + ((out == i)*(labels != i)).sum()
                 fns[i] = fns[i] + ((out != i)*(labels == i)).sum()
+                tns[i] = tns[i] + ((out != i)*(labels != i)).sum()
 
             preds.append(out.flatten())
             ground_truth.append(labels.flatten())
@@ -217,6 +219,7 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     print('True Positives  {}'.format(tps))
     print('False Positives {}'.format(fps))
     print('False Negatives {}'.format(fns))
+    print('True Negatives  {}'.format(tns))
 
     recalls = []
     precisions = []
@@ -238,6 +241,8 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     with open('/tmp/evaluations.txt', 'w') as evaluations:
         evaluations.write('True positives: {}\n'.format(tps))
         evaluations.write('False positives: {}\n'.format(fps))
+        evaluations.write('False negatives: {}\n'.format(fns))
+        evaluations.write('True negatives: {}\n'.format(tns))
         evaluations.write('Recalls: {}\n'.format(recalls))
         evaluations.write('Precisions: {}\n'.format(precisions))
         evaluations.write('f1 scores: {}\n'.format(f1s))
