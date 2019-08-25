@@ -609,7 +609,8 @@ def training_cli_parser():
                         help='The maximum number of windows that will be used for evaluation',
                         default=sys.maxsize,
                         type=int)
-    parser.add_argument('--start-from')
+    parser.add_argument('--start-from',
+                        help='The saved model to start the fourth phase from')
     return parser
 
 
@@ -690,23 +691,28 @@ if __name__ == "__main__":
     complete_thru = -1
     current_epoch = 0
     current_pth = None
-    for pth in get_matching_s3_keys(
-            bucket=args.s3_bucket,
-            prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
-            suffix='pth'):
-        m1 = re.match('.*deeplab_(\d+).pth$', pth)
-        m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
-        if m1:
-            phase = int(m1.group(1))
-            if phase > complete_thru:
-                complete_thru = phase
-                current_pth = pth
-        if m2:
-            checkpoint_epoch = int(m2.group(1))
-            if checkpoint_epoch > current_epoch:
-                complete_thru = 4
-                current_epoch = checkpoint_epoch
-                current_pth = pth
+    if args.start_from is None:
+        for pth in get_matching_s3_keys(
+                bucket=args.s3_bucket,
+                prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
+                suffix='pth'):
+            m1 = re.match('.*deeplab_(\d+).pth$', pth)
+            m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
+            if m1:
+                phase = int(m1.group(1))
+                if phase > complete_thru:
+                    complete_thru = phase
+                    current_pth = pth
+            if m2:
+                checkpoint_epoch = int(m2.group(1))
+                if checkpoint_epoch > current_epoch:
+                    complete_thru = 4
+                    current_epoch = checkpoint_epoch
+                    current_pth = pth
+    elif args.start_from is not None:
+        complete_thru = 4
+        current_epoch = 0
+        current_pth = args.start_from
 
     np.random.seed(seed=args.random_seed)
     device = torch.device(args.backend)
