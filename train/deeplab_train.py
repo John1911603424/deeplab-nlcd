@@ -24,12 +24,13 @@ if os.environ.get('CURL_CA_BUNDLE') is None:
 already_seeded = False
 
 # retry failed reads (they appear to be transient)
-def retry_read(rio_ds, band, window=None, retries = 3):
+def retry_read(rio_ds, band, window=None, retries=3):
     for i in range(retries):
         try:
             return rio_ds.read(band, window=window)
         except rio.errors.RasterioIOError:
-            print("Read error for band {} at window {} on try {} of {}".format(band, window, i+1, retries))
+            print("Read error for band {} at window {} on try {} of {}".format(
+                band, window, i+1, retries))
             continue
 
 # Break s3uris into bucket and prefix
@@ -169,7 +170,7 @@ def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_n
 
 
 def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img_nd,
-             replacement_dict, device, bucket_name, s3_prefix, arg_hash):
+             replacement_dict, device, bucket_name, s3_prefix, arg_hash, max_eval_windows):
 
     deeplab.eval()
     batch_size = 64
@@ -189,6 +190,7 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
                 if ((x + y) % 7 == 0):
                     xy = (x, y)
                     xys.append(xy)
+        xys = xys[0:max_eval_windows]
 
         for xy in chunks(xys, batch_size):
             batch, labels = get_eval_batch(
@@ -348,7 +350,7 @@ def _get_random_training_window(n):
     global already_seeded
     if not already_seeded:
         already_seeded = True
-        np.random.seed(seed = os.getpid())
+        np.random.seed(seed=os.getpid())
     return get_random_training_window(Raster_ds, Label_ds,
                                       Width, Height, Window_size, Bands,
                                       Label_mappings, Label_nd, Img_nd)
@@ -598,6 +600,10 @@ def training_cli_parser():
     parser.add_argument('--disable-eval',
                         help='Disable evaluation after training',
                         action='store_true')
+    parser.add_argument('--max-eval-windows',
+                        help='The maximum number of windows that will be used for evaluation',
+                        default=sys.maxsize,
+                        type=int)
     parser.add_argument('--start-from')
     return parser
 
@@ -610,6 +616,7 @@ if __name__ == "__main__":
     del hashed_args.backend
     del hashed_args.inference_previews
     del hashed_args.disable_eval
+    del hashed_args.max_eval_windows
     arg_hash = hash_string(str(hashed_args))
     print("provided args: {}".format(hashed_args))
     print("hash: {}".format(arg_hash))
@@ -765,8 +772,8 @@ if __name__ == "__main__":
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs1, args.batch_size,
-                raster_ds, mask_ds, width, height, args.window_size, device,
-                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, width, height, args.window_size, device,
+                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -808,8 +815,8 @@ if __name__ == "__main__":
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs2, args.batch_size,
-                raster_ds, mask_ds, width, height, args.window_size, device,
-                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, width, height, args.window_size, device,
+                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -842,8 +849,8 @@ if __name__ == "__main__":
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs3, batch_size,
-                raster_ds, mask_ds, width, height, args.window_size, device,
-                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, width, height, args.window_size, device,
+                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -909,9 +916,9 @@ if __name__ == "__main__":
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
-                raster_ds, mask_ds, width, height, args.window_size, device,
-                args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
-                no_checkpoints=False, starting_epoch=current_epoch)
+                  raster_ds, mask_ds, width, height, args.window_size, device,
+                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  no_checkpoints=False, starting_epoch=current_epoch)
 
         print('\t UPLOADING')
 
@@ -925,15 +932,16 @@ if __name__ == "__main__":
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                    args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
-                    args.s3_prefix, arg_hash)
+                     args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+                     args.s3_prefix, arg_hash, args.max_eval_windows)
 
-    for preview in args.inference_previews:
-        try:
-            print("generating preview: {}".format(preview))
-            generate_preview(preview, args.bands, args.img_nd, device, len(
-                args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
-        except:
-            print("something went wrong while generating {}".format(preview))
+    if args.inference_previews:
+        for preview in args.inference_previews:
+            try:
+                print("generating preview: {}".format(preview))
+                generate_preview(preview, args.bands, args.img_nd, device, len(
+                    args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
+            except:
+                print("something went wrong while generating {}".format(preview))
 
     exit(0)
