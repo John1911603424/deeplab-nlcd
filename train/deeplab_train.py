@@ -23,8 +23,9 @@ if os.environ.get('CURL_CA_BUNDLE') is None:
 
 already_seeded = False
 
-# retry failed reads (they appear to be transient)
+
 def retry_read(rio_ds, band, window=None, retries=3):
+    # retry failed reads (they appear to be transient)
     for i in range(retries):
         try:
             return rio_ds.read(band, window=window)
@@ -33,8 +34,9 @@ def retry_read(rio_ds, band, window=None, retries=3):
                 band, window, i+1, retries))
             continue
 
-# Break s3uris into bucket and prefix
+
 def parse_s3_url(url):
+    # Break s3uris into bucket and prefix
     parsed = urlparse(url, allow_fragments=False)
     return (parsed.netloc, parsed.path.lstrip('/'))
 
@@ -116,9 +118,24 @@ def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_
     # Normalized float32 imagery bands
     data = []
     for band in bands:
-        a = retry_read(raster_ds, band, window=window)
-        a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a[nodata != 0] = 0.0
+        # NDWI
+        # https://en.wikipedia.org/wiki/Normalized_difference_water_index
+        if band == -1:
+            green = np.float32(retry_read(raster_ds, 2, window=window))
+            swir = np.float32(retry_read(raster_ds, 5, window=window))
+            a = (green - swir)/(green + swir)
+            a[nodata != 0] = 0.0
+        # NDVI
+        # https://www.usgs.gov/land-resources/nli/landsat/landsat-normalized-difference-vegetation-index?qt-science_support_page_related_con=0#qt-science_support_page_related_con
+        elif band == -2:
+            red = np.float32(retry_read(raster_ds, 3, window=window))
+            nir = np.float32(retry_read(raster_ds, 4, window=window))
+            a = (nir - red)/(nir + red)
+            a[nodata != 0] = 0.0
+        else:
+            a = np.float32(retry_read(raster_ds, band, window=window))
+            a = (a - MEANS[band-1]) / STDS[band-1]
+            a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
@@ -246,6 +263,8 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
         evaluations.write('Recalls: {}\n'.format(recalls))
         evaluations.write('Precisions: {}\n'.format(precisions))
         evaluations.write('f1 scores: {}\n'.format(f1s))
+        evaluations.write('Means:               {}\n'.format(MEANS))
+        evaluations.write('Standard Deviations: {}\n'.format(STDS))
 
     preds = np.concatenate(preds).flatten()
     ground_truth = np.concatenate(ground_truth).flatten()
@@ -342,9 +361,24 @@ def get_random_training_window(raster_ds, label_ds, width, height, window_size, 
     # Normalized float32 imagery bands
     data = []
     for band in bands:
-        a = retry_read(raster_ds, band, window=window)
-        a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a[nodata != 0] = 0.0
+        # NDWI
+        # https://en.wikipedia.org/wiki/Normalized_difference_water_index
+        if band == -1:
+            green = np.float32(retry_read(raster_ds, 2, window=window))
+            swir = np.float32(retry_read(raster_ds, 5, window=window))
+            a = (green - swir)/(green + swir)
+            a[nodata != 0] = 0.0
+        # NDVI
+        # https://www.usgs.gov/land-resources/nli/landsat/landsat-normalized-difference-vegetation-index?qt-science_support_page_related_con=0#qt-science_support_page_related_con
+        elif band == -2:
+            red = np.float32(retry_read(raster_ds, 3, window=window))
+            nir = np.float32(retry_read(raster_ds, 4, window=window))
+            a = (nir - red)/(nir + red)
+            a[nodata != 0] = 0.0
+        else:
+            a = np.float32(retry_read(raster_ds, band, window=window))
+            a = (a - MEANS[band-1]) / STDS[band-1]
+            a[nodata != 0] = 0.0
         data.append(a)
     data = np.stack(data, axis=0)
 
