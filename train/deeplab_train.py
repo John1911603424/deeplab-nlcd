@@ -389,7 +389,48 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     return (data, labels)
 
 
-# https://alexwlchan.net/2017/07/listing-s3-keys/
+def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, image_nd):
+
+    bands_plus = bands + [0]
+
+    # Create a list of window, band pairs to read
+    plan = []
+    for batch_index in range(batch_size):
+        x = 0
+        y = 0
+        while ((x + y) % 7) == 0:
+            x = np.random.randint(0, width/window_size - 1)
+            y = np.random.randint(0, height/window_size - 1)
+        window = rio.windows.Window(
+            x * window_size, y * window_size,
+            window_size, window_size)
+        for band in bands_plus:
+            plan.append((window, band))
+
+    # Crude but effective
+    global Raster_ds
+    Raster_ds = raster_ds
+    global Label_ds
+    Label_ds = label_ds
+
+    # Do all of the reads
+    data = []
+    labels = []
+    with Pool(max(32, len(plan))) as p:
+        for d in p.map(_get_window, plan):
+            data.append(d)
+
+    Raster_ds = None
+    Label_ds = None
+
+    data = map(lambda chunk: np.stack(chunk, axis=0), chunks(data, len(bands_plus)))
+    data = np.stack(list(data), axis=0)
+    data = torch.from_numpy(data).to(device)
+    labels = np.long(np.stack(labels, axis=0))
+    labels = torch.from_numpy(labels).to(device)
+
+    return (data, labels)
+
 def get_matching_s3_keys(bucket, prefix='', suffix=''):
     """
     Generate the keys in an S3 bucket.
@@ -400,6 +441,8 @@ def get_matching_s3_keys(bucket, prefix='', suffix=''):
     """
     s3 = boto3.client('s3')
     kwargs = {'Bucket': bucket}
+
+    # https://alexwlchan.net/2017/07/listing-s3-keys/
 
     # If the prefix is a single string (not a tuple of strings), we can
     # do the filtering directly in the S3 API.
