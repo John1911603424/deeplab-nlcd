@@ -41,53 +41,6 @@ def parse_s3_url(url):
     return (parsed.netloc, parsed.path.lstrip('/'))
 
 
-def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, s3_prefix, arg_hash):
-    s3 = boto3.client('s3')
-    bucket, prefix = parse_s3_url(s3_img_url)
-    preview_filename = prefix.split('/')[-1]
-    local_img = '/tmp/{}'.format(preview_filename)
-    print("Downloading preview from {}".format(s3_img_url))
-    s3.download_file(bucket, prefix, local_img)
-    del s3
-
-    with rio.open(local_img) as preview_ds:
-        # Nodata
-        a = retry_read(preview_ds, 1)
-        nodata = (a == img_nd) + (np.isnan(a))
-
-        # Normalized float32 imagery bands
-        data = []
-        for band in bands:
-            a = retry_read(preview_ds, band)
-            MEAN = a.flatten().mean()
-            STD = a.flatten().std()
-
-            a[nodata != 0] = 0.0
-            a = np.array((a - MEAN) / STD, dtype=np.float32)
-            data.append(a)
-        data = np.stack(data, axis=0)
-
-    deeplab = torch.load('deeplab.pth').to(device)
-
-    batch = torch.unsqueeze(torch.from_numpy(data), dim=0).to(device)
-    deeplab.eval()
-
-    with torch.no_grad():
-        out = deeplab(batch)['out'].data.cpu().numpy()[0]
-
-    prediction = np.apply_along_axis(np.argmax, 0, out)
-
-    img = Image.fromarray(np.uint8(prediction))
-
-    local_preview = '/tmp/preview_{}'.format(preview_filename)
-    img.save(local_preview)
-
-    s3 = boto3.client('s3')
-    s3.upload_file(local_preview, s3_bucket,
-                   '{}/{}/preview_{}'.format(s3_prefix, arg_hash, preview_filename))
-    del s3
-
-
 def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_nd, replacement_dict):
     window = rio.windows.Window(
         x * window_size, y * window_size,
@@ -499,7 +452,7 @@ def train(model, opt, obj,
         current_time = time.time()
         print('\t\t epoch={} time={} avg_loss={}'.format(
             i, current_time - last_time, avg_loss))
-        if (i > 0) and (i % 3 == 0) and bucket_name and s3_prefix and not no_checkpoints:
+        if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
@@ -624,9 +577,6 @@ def training_cli_parser():
     parser.add_argument('--s3-prefix',
                         required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
-    parser.add_argument('--inference-previews',
-                        help='tif images against which inferences should be run to generate previews',
-                        nargs='+')
     parser.add_argument('--window-size',
                         default=224,
                         type=int)
@@ -654,7 +604,6 @@ if __name__ == "__main__":
     args = training_cli_parser().parse_args()
     hashed_args = copy.copy(args)
     del hashed_args.backend
-    del hashed_args.inference_previews
     del hashed_args.disable_eval
     del hashed_args.max_eval_windows
     arg_hash = hash_string(str(hashed_args))
@@ -979,14 +928,5 @@ if __name__ == "__main__":
             evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
                      args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows)
-
-    if args.inference_previews:
-        for preview in args.inference_previews:
-            try:
-                print("generating preview: {}".format(preview))
-                generate_preview(preview, args.bands, args.img_nd, device, len(
-                    args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
-            except:
-                print("something went wrong while generating {}".format(preview))
 
     exit(0)
