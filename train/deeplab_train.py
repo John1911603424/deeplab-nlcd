@@ -613,7 +613,7 @@ if __name__ == "__main__":
         with rio.open('/tmp/mul.tif') as raster_ds:
             def sample():
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
-                                         args.window_size, raster_ds.indexes,
+                                         224, raster_ds.indexes,
                                          args.img_nd)
             ws = [sample() for i in range(0, 133)]
         for i in range(0, len(raster_ds.indexes)):
@@ -912,7 +912,7 @@ if __name__ == "__main__":
     if not args.disable_eval:
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
+            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), 224,
                      device, args.label_nd, args.img_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows)
 
