@@ -178,7 +178,7 @@ def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd,
 
     data = []
     labels = []
-    with Pool(max(32, len(plan))) as p:
+    with Pool(min(32, len(plan))) as p:
         for d, i in p.map(get_window, plan):
             if i == 0:
                 labels.append(d)
@@ -347,7 +347,7 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     # Do all of the reads
     data = []
     labels = []
-    with Pool(max(32, len(plan))) as p:
+    with Pool(min(32, len(plan))) as p:
         for d, i in p.map(get_window, plan):
             if i == 0:
                 labels.append(d)
