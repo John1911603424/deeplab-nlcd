@@ -6,14 +6,15 @@ import hashlib
 import os
 import re
 import sys
+import threading
 import time
 from multiprocessing import Pool
 from urllib.parse import urlparse
 
-import boto3
+import numpy as np
 from PIL import Image
 
-import numpy as np
+import boto3
 import rasterio as rio
 import torch
 import torchvision
@@ -25,6 +26,8 @@ MEANS = []
 STDS = []
 RASTER_DS = None
 LABEL_DS = None
+MUTEX = threading.Lock()
+WATCHDOG_TIMER = time.time()
 
 
 def retry_read(rio_ds, band, window=None, retries=3):
@@ -271,6 +274,10 @@ def evaluate(raster_ds, label_ds,
             preds.append(out.flatten())
             ground_truth.append(labels.flatten())
 
+            with MUTEX:
+                global WATCHDOG_TIMER
+                WATCHDOG_TIMER = time.time()
+
     print('True Positives  {}'.format(tps))
     print('False Positives {}'.format(fps))
     print('False Negatives {}'.format(fns))
@@ -429,6 +436,10 @@ def train(model, opt, obj,
         print('\t\t epoch={} time={} avg_loss={}'.format(
             i, current_time - last_time, avg_loss))
 
+        with MUTEX:
+            global WATCHDOG_TIMER
+            WATCHDOG_TIMER = time.time()
+
         if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
@@ -573,7 +584,22 @@ def training_cli_parser():
                         type=int)
     parser.add_argument('--start-from',
                         help='The saved model to start the fourth phase from')
+    parser.add_argument('--watchdog-seconds',
+                        help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
+                        default=0,
+                        type=int)
     return parser
+
+
+def wathdog_thread(seconds):
+    while True:
+        time.sleep(max(seconds//2, 1))
+        with MUTEX:
+            gap = time.time() - WATCHDOG_TIMER
+        if gap > seconds:
+            print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
+                gap, seconds), file=sys.stderr)
+            os._exit(-1)
 
 
 if __name__ == "__main__":
@@ -584,6 +610,7 @@ if __name__ == "__main__":
     del hashed_args.backend
     del hashed_args.disable_eval
     del hashed_args.max_eval_windows
+    del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
     print("provided args: {}".format(hashed_args))
     print("hash: {}".format(arg_hash))
@@ -703,6 +730,13 @@ if __name__ == "__main__":
         ignore_index=args.label_nd,
         weight=torch.FloatTensor(args.weights).to(device)
     ).to(device)
+
+    # ---------------------------------
+    if args.watchdog_seconds > 0:
+        print('STARTING WATCHDOG')
+        t = threading.Thread(target=wathdog_thread,
+                             args=(args.watchdog_seconds,))
+        t.start()
 
     # ---------------------------------
     print('COMPUTING')
