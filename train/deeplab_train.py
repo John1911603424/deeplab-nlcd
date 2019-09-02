@@ -718,6 +718,7 @@ if __name__ == "__main__":
         input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
             len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
 
+    np.random.seed(seed=(args.random_seed + 1))
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -758,6 +759,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 2))
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -801,6 +803,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 3))
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -835,6 +838,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 4))
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -870,6 +874,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 5))
     if complete_thru == 4:
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
@@ -903,6 +908,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 6))
     if not args.disable_eval:
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
