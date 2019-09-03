@@ -6,14 +6,15 @@ import hashlib
 import os
 import re
 import sys
+import threading
 import time
 from multiprocessing import Pool
 from urllib.parse import urlparse
 
-import boto3
+import numpy as np
 from PIL import Image
 
-import numpy as np
+import boto3
 import rasterio as rio
 import torch
 import torchvision
@@ -21,10 +22,16 @@ import torchvision
 if os.environ.get('CURL_CA_BUNDLE') is None:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
-already_seeded = False
+MEANS = []
+STDS = []
+RASTER_DS = None
+LABEL_DS = None
+MUTEX = threading.Lock()
+WATCHDOG_TIMER = time.time()
 
-# retry failed reads (they appear to be transient)
+
 def retry_read(rio_ds, band, window=None, retries=3):
+    # retry failed reads (they appear to be transient)
     for i in range(retries):
         try:
             return rio_ds.read(band, window=window)
@@ -33,155 +40,206 @@ def retry_read(rio_ds, band, window=None, retries=3):
                 band, window, i+1, retries))
             continue
 
-# Break s3uris into bucket and prefix
+
 def parse_s3_url(url):
+    # Break s3uris into bucket and prefix
     parsed = urlparse(url, allow_fragments=False)
     return (parsed.netloc, parsed.path.lstrip('/'))
 
 
-def generate_preview(s3_img_url, bands, img_nd, device, label_count, s3_bucket, s3_prefix, arg_hash):
-    s3 = boto3.client('s3')
-    bucket, prefix = parse_s3_url(s3_img_url)
-    preview_filename = prefix.split('/')[-1]
-    local_img = '/tmp/{}'.format(preview_filename)
-    print("Downloading preview from {}".format(s3_img_url))
-    s3.download_file(bucket, prefix, local_img)
-    del s3
+def chunks(l, n):
+    """
+    Break list in chunks of equal size
 
-    with rio.open(local_img) as preview_ds:
-        # Nodata
-        a = retry_read(preview_ds, 1)
-        nodata = (a == img_nd) + (np.isnan(a))
-
-        # Normalized float32 imagery bands
-        data = []
-        for band in bands:
-            a = retry_read(preview_ds, band)
-            MEAN = a.flatten().mean()
-            STD = a.flatten().std()
-
-            a[nodata != 0] = 0.0
-            a = np.array((a - MEAN) / STD, dtype=np.float32)
-            data.append(a)
-        data = np.stack(data, axis=0)
-
-    deeplab = torch.load('deeplab.pth').to(device)
-
-    batch = torch.unsqueeze(torch.from_numpy(data), dim=0).to(device)
-    deeplab.eval()
-
-    with torch.no_grad():
-        out = deeplab(batch)['out'].data.cpu().numpy()[0]
-
-    prediction = np.apply_along_axis(np.argmax, 0, out)
-
-    img = Image.fromarray(np.uint8(prediction))
-
-    local_preview = '/tmp/preview_{}'.format(preview_filename)
-    img.save(local_preview)
-
-    s3 = boto3.client('s3')
-    s3.upload_file(local_preview, s3_bucket,
-                   '{}/{}/preview_{}'.format(s3_prefix, arg_hash, preview_filename))
-    del s3
+    https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
+    """
+    for i in range(0, len(l), n):
+        yield l[i:i+n]
 
 
-def get_eval_window(raster_ds, mask_ds, bands, x, y, window_size, label_nd, img_nd, replacement_dict):
+def hash_string(string):
+    """
+    Return a SHA-256 hash of the given string
+
+    Useful for generating an ID based on a set of parameters
+    https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
+    """
+    return hashlib.sha256(string.encode('utf-8')).hexdigest()
+
+
+def numpy_replace(np_arr, replacement_dict):
+    """
+    Quickly replace contents of a np_arr with mappings provided by
+    replacement_dict used primarily to map mask labels to the
+    (assuming N training labels) 0 to N-1 categories expected.
+    """
+    b = np.copy(np_arr)
+    for k, v in replacement_dict.items():
+        b[np_arr == k] = v
+    return b
+
+
+def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
+    x = np.random.randint(0, width/window_size - 1)
+    y = np.random.randint(0, height/window_size - 1)
     window = rio.windows.Window(
         x * window_size, y * window_size,
         window_size, window_size)
 
-    # Labels
-    labels = retry_read(mask_ds, 1, window=window)
-    labels = numpy_replace(labels, replacement_dict)
-
-    if label_nd is not None:
-        label_nds = labels == label_nd
-    else:
-        label_nds = np.zeros(labels.shape)
-
-    # We assume here that the ND value will be on the first band
-    a = retry_read(raster_ds, 1, window=window)
-    if img_nd is not None:
-        img_nds = (a == img_nd) + (np.isnan(a))
-    else:
-        img_nds = np.zeros(labels.shape) + (np.isnan(a))
-
-    # nodata mask for regions without labels
-    nodata = (img_nds + label_nds) > 0
-
-    # Toss out nodata labels
-    labels[nodata != 0] = label_nd
-
-    # Normalized float32 imagery bands
     data = []
     for band in bands:
         a = retry_read(raster_ds, band, window=window)
-        a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a[nodata != 0] = 0.0
+        if img_nd is not None:
+            a = np.extract(a != img_nd, a)
+        a = a[~np.isnan(a)]
         data.append(a)
-    data = np.stack(data, axis=0)
+    data = np.stack(data, axis=1)
 
-    return (data, labels)
-
-
-def _get_eval_window(xy):
-    (x, y) = xy
-    return get_eval_window(Raster_ds, Label_ds,
-                           Bands, x, y, Window_size,
-                           Label_nd, Img_nd, Replacement_dict)
+    return data
 
 
-def get_eval_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, img_nd, replacement_dict, device):
+def get_matching_s3_keys(bucket, prefix='', suffix=''):
+    """
+    Generate the keys in an S3 bucket.
+
+    :param bucket: Name of the S3 bucket.
+    :param prefix: Only fetch keys that start with this prefix (optional).
+    :param suffix: Only fetch keys that end with this suffix (optional).
+    """
+    s3 = boto3.client('s3')
+    kwargs = {'Bucket': bucket}
+
+    # https://alexwlchan.net/2017/07/listing-s3-keys/
+
+    # If the prefix is a single string (not a tuple of strings), we can
+    # do the filtering directly in the S3 API.
+    if isinstance(prefix, str):
+        kwargs['Prefix'] = prefix
+
+    while True:
+
+        # The S3 API response is a large blob of metadata.
+        # 'Contents' contains information about the listed objects.
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in resp['Contents']:
+            key = obj['Key']
+            if key.startswith(prefix) and key.endswith(suffix):
+                yield key
+
+        # The S3 API is paginated, returning up to 1000 keys at a time.
+        # Pass the continuation token into the next response, until we
+        # reach the final page (when this field is missing).
+        try:
+            kwargs['ContinuationToken'] = resp['NextContinuationToken']
+        except KeyError:
+            break
+
+
+def get_window(arguments):
+    window, band = arguments
+
+    # Labels
+    if band == 0:
+        a = np.array(retry_read(LABEL_DS, 1, window=window), dtype=np.long)
+    # NDWI
+    # https://en.wikipedia.org/wiki/Normalized_difference_water_index
+    elif band == -1:
+        green = np.float32(retry_read(RASTER_DS, 2, window=window))
+        swir = np.float32(retry_read(RASTER_DS, 5, window=window))
+        a = (green - swir)/(green + swir)
+    # NDVI
+    # https://www.usgs.gov/land-resources/nli/landsat/landsat-normalized-difference-vegetation-index?qt-science_support_page_related_con=0#qt-science_support_page_related_con
+    elif band == -2:
+        red = np.float32(retry_read(RASTER_DS, 3, window=window))
+        nir = np.float32(retry_read(RASTER_DS, 4, window=window))
+        a = (nir - red)/(nir + red)
+    else:
+        a = np.float32(retry_read(RASTER_DS, band, window=window))
+        a = (a - MEANS[band-1]) / STDS[band-1]
+
+    return a, band
+
+
+def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, image_nd, label_mappings, device):
+
+    global RASTER_DS
+    global LABEL_DS
+
+    RASTER_DS = raster_ds
+    LABEL_DS = label_ds
+
+    bands_plus = bands + [0]
+    plan = []
+    for xy in xys:
+        x, y = xy
+        window = rio.windows.Window(
+            x * window_size, y * window_size,
+            window_size, window_size)
+        for band in bands_plus:
+            args = (window, band)
+            plan.append(args)
+
     data = []
     labels = []
+    with Pool(min(32, len(bands_plus))) as p:
+        for d, i in p.map(get_window, plan):
+            if i == 0:
+                labels.append(d)
+            else:
+                data.append(d)
 
-    assert(label_nd is not None)
+    RASTER_DS = None
+    LABEL_DS = None
 
-    # crude but effective
-    global Raster_ds
-    Raster_ds = raster_ds
-    global Label_ds
-    Label_ds = label_ds
-    global Bands
-    Bands = bands
-    global Window_size
-    Window_size = window_size
-    global Label_nd
-    Label_nd = label_nd
-    global Img_nd
-    Img_nd = img_nd
-    global Replacement_dict
-    Replacement_dict = replacement_dict
+    raster_batch = []
+    label_batch = []
+    for raster, label in zip(chunks(data, len(bands)), labels):
 
-    with Pool(max(32, len(xys))) as p:
-        for d, l in p.map(_get_eval_window, xys):
-            data.append(d)
-            labels.append(l)
+        label = numpy_replace(label, label_mappings)
+        if label_nd is not None:
+            label_nds = (label == label_nd)
+        else:
+            label_nds = np.zeros(labels.shape)
 
-    Raster_ds = None
-    Label_ds = None
+        nan = np.isnan(raster[0])
+        if image_nd is not None:
+            image_nds = (raster[0] == image_nd) + nan
+        else:
+            image_nds = nan
 
-    data = np.stack(data, axis=0)
-    data = torch.from_numpy(data).to(device)
-    labels = np.array(np.stack(labels, axis=0), dtype=np.long)
-    labels = torch.from_numpy(labels).to(device)
-    return (data, labels)
+        nodata = ((image_nds + label_nds) > 0)
+        label[nodata == True] = label_nd
+        for i in range(len(raster)):
+            raster[i][nan == True] = 0.0
+
+        raster_batch.append(np.stack(raster, axis=0))
+        label_batch.append(label)
+
+    raster_batch = np.stack(raster_batch, axis=0)
+    raster_batch = torch.from_numpy(raster_batch).to(device)
+    label_batch = np.stack(label_batch, axis=0)
+    label_batch = torch.from_numpy(label_batch).to(device)
+
+    return (raster_batch, label_batch)
 
 
-def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img_nd,
-             replacement_dict, device, bucket_name, s3_prefix, arg_hash, max_eval_windows):
+def evaluate(raster_ds, label_ds,
+             bands, label_count, window_size, device,
+             label_nd, img_nd, label_map,
+             bucket_name, s3_prefix, arg_hash,
+             max_eval_windows):
 
     deeplab.eval()
-    batch_size = 64
-    tps = [0.0 for x in range(label_count)]
-    fps = [0.0 for x in range(label_count)]
-    fns = [0.0 for x in range(label_count)]
-    tns = [0.0 for x in range(label_count)]
-    preds = []
-    ground_truth = []
 
     with torch.no_grad():
+        batch_size = 64
+        tps = [0.0 for x in range(label_count)]
+        fps = [0.0 for x in range(label_count)]
+        fns = [0.0 for x in range(label_count)]
+        tns = [0.0 for x in range(label_count)]
+        preds = []
+        ground_truth = []
+
         width = raster_ds.width
         height = raster_ds.height
 
@@ -194,8 +252,8 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
         xys = xys[0:max_eval_windows]
 
         for xy in chunks(xys, batch_size):
-            batch, labels = get_eval_batch(
-                raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, replacement_dict, device)
+            batch, labels = get_evaluation_batch(
+                raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, label_map, device)
             labels = labels.data.cpu().numpy()
             out = deeplab(batch)['out'].data.cpu().numpy()
             out = np.apply_along_axis(np.argmax, 1, out)
@@ -215,6 +273,10 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
 
             preds.append(out.flatten())
             ground_truth.append(labels.flatten())
+
+            with MUTEX:
+                global WATCHDOG_TIMER
+                WATCHDOG_TIMER = time.time()
 
     print('True Positives  {}'.format(tps))
     print('False Positives {}'.format(fps))
@@ -246,6 +308,8 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
         evaluations.write('Recalls: {}\n'.format(recalls))
         evaluations.write('Precisions: {}\n'.format(precisions))
         evaluations.write('f1 scores: {}\n'.format(f1s))
+        evaluations.write('Means:               {}\n'.format(MEANS))
+        evaluations.write('Standard Deviations: {}\n'.format(STDS))
 
     preds = np.concatenate(preds).flatten()
     ground_truth = np.concatenate(ground_truth).flatten()
@@ -263,179 +327,77 @@ def evaluate(raster_ds, label_ds, bands, label_count, window_size, label_nd, img
     del s3
 
 
-# break list in chunks of equal size
-def chunks(l, n):
-    # https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
-    for i in range(0, len(l), n):
-        yield l[i:i+n]
+def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, image_nd):
 
+    global RASTER_DS
+    global LABEL_DS
 
-# Useful for generating an ID based on a set of parameters
-# https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
-def hash_string(string):
-    """
-    Return a SHA-256 hash of the given string
-    """
-    return hashlib.sha256(string.encode('utf-8')).hexdigest()
+    RASTER_DS = raster_ds
+    LABEL_DS = label_ds
 
+    # Create a list of window, band pairs to read
+    bands_plus = bands + [0]
+    plan = []
+    for batch_index in range(batch_size):
+        x = 0
+        y = 0
+        while ((x + y) % 7) == 0:
+            x = np.random.randint(0, width/window_size - 1)
+            y = np.random.randint(0, height/window_size - 1)
+        window = rio.windows.Window(
+            x * window_size, y * window_size,
+            window_size, window_size)
+        for band in bands_plus:
+            args = (window, band)
+            plan.append(args)
 
-# quickly replace contents of a np_arr with mappings provided by replacement_dict
-# used primarily to map mask labels to the (assuming N training labels) 0 to N-1 categories expected
-def numpy_replace(np_arr, replacement_dict):
-    b = np.copy(np_arr)
-    for k, v in replacement_dict.items():
-        b[np_arr == k] = v
-    return b
-
-
-def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
-    x = np.random.randint(0, width/window_size - 1)
-    y = np.random.randint(0, height/window_size - 1)
-    window = rio.windows.Window(
-        x * window_size, y * window_size,
-        window_size, window_size)
-
-    data = []
-    for band in bands:
-        a = retry_read(raster_ds, band, window=window)
-        if img_nd is not None:
-            a = np.extract(a != img_nd, a)
-        a = a[~np.isnan(a)]
-        data.append(a)
-    data = np.stack(data, axis=1)
-
-    return data
-
-
-def get_random_training_window(raster_ds, label_ds, width, height, window_size, bands, label_mappings, label_nd, img_nd):
-    x = 0
-    y = 0
-    while ((x + y) % 7) == 0:
-        x = np.random.randint(0, width/window_size - 1)
-        y = np.random.randint(0, height/window_size - 1)
-    window = rio.windows.Window(
-        x * window_size, y * window_size,
-        window_size, window_size)
-
-    # Labels
-    labels = retry_read(label_ds, 1, window=window)
-    labels = numpy_replace(labels, label_mappings)
-
-    if label_nd is not None:
-        label_nds = labels == label_nd
-    else:
-        label_nds = np.zeros(labels.shape)
-
-    # We assume here that the ND value will be on the first band
-    a = retry_read(raster_ds, 1, window=window)
-    if img_nd is not None:
-        img_nds = (a == img_nd) + (np.isnan(a))
-    else:
-        img_nds = np.zeros(labels.shape) + (np.isnan(a))
-
-    # nodata mask for regions without labels
-    nodata = (img_nds + label_nds) > 0
-
-    # Toss out nodata labels
-    labels[nodata != 0] = label_nd
-
-    # Normalized float32 imagery bands
-    data = []
-    for band in bands:
-        a = retry_read(raster_ds, band, window=window)
-        a = np.array((a - MEANS[band-1]) / STDS[band-1], dtype=np.float32)
-        a[nodata != 0] = 0.0
-        data.append(a)
-    data = np.stack(data, axis=0)
-
-    return (data, labels)
-
-
-def _get_random_training_window(n):
-    global already_seeded
-    if not already_seeded:
-        already_seeded = True
-        np.random.seed(seed=os.getpid())
-    return get_random_training_window(Raster_ds, Label_ds,
-                                      Width, Height, Window_size, Bands,
-                                      Label_mappings, Label_nd, Img_nd)
-
-
-def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, img_nd):
+    # Do all of the reads
     data = []
     labels = []
+    with Pool(min(32, len(bands_plus))) as p:
+        for d, i in p.map(get_window, plan):
+            if i == 0:
+                labels.append(d)
+            else:
+                data.append(d)
 
-    assert(label_nd is not None)
+    RASTER_DS = None
+    LABEL_DS = None
 
-    # crude but effective
-    global Raster_ds
-    Raster_ds = raster_ds
-    global Label_ds
-    Label_ds = label_ds
-    global Width
-    Width = width
-    global Height
-    Height = height
-    global Window_size
-    Window_size = window_size
-    global Bands
-    Bands = bands
-    global Label_mappings
-    Label_mappings = label_mappings
-    global Label_nd
-    Label_nd = label_nd
-    global Img_nd
-    Img_nd = img_nd
+    # NODATA processing
+    raster_batch = []
+    label_batch = []
+    for raster, label in zip(chunks(data, len(bands)), labels):
 
-    with Pool(max(32, batch_size)) as p:
-        for d, l in p.map(_get_random_training_window, range(0, batch_size)):
-            data.append(d)
-            labels.append(l)
+        # NODATA from labels
+        label = numpy_replace(label, label_mappings)
+        if label_nd is not None:
+            label_nds = (label == label_nd)
+        else:
+            label_nds = np.zeros(labels.shape)
 
-    Raster_ds = None
-    Label_ds = None
+        # NODATA from rasters
+        nan = np.isnan(raster[0])
+        if image_nd is not None:
+            image_nds = (raster[0] == image_nd) + nan
+        else:
+            image_nds = nan
 
-    data = np.stack(data, axis=0)
-    data = torch.from_numpy(data).to(device)
-    labels = np.array(np.stack(labels, axis=0), dtype=np.long)
-    labels = torch.from_numpy(labels).to(device)
-    return (data, labels)
+        # Set label NODATA, remove NaNs from rasters
+        nodata = ((image_nds + label_nds) > 0)
+        label[nodata == True] = label_nd
+        for i in range(len(raster)):
+            raster[i][nan == True] = 0.0
 
+        raster_batch.append(np.stack(raster, axis=0))
+        label_batch.append(label)
 
-# https://alexwlchan.net/2017/07/listing-s3-keys/
-def get_matching_s3_keys(bucket, prefix='', suffix=''):
-    """
-    Generate the keys in an S3 bucket.
+    raster_batch = np.stack(raster_batch, axis=0)
+    raster_batch = torch.from_numpy(raster_batch).to(device)
+    label_batch = np.stack(label_batch, axis=0)
+    label_batch = torch.from_numpy(label_batch).to(device)
 
-    :param bucket: Name of the S3 bucket.
-    :param prefix: Only fetch keys that start with this prefix (optional).
-    :param suffix: Only fetch keys that end with this suffix (optional).
-    """
-    s3 = boto3.client('s3')
-    kwargs = {'Bucket': bucket}
-
-    # If the prefix is a single string (not a tuple of strings), we can
-    # do the filtering directly in the S3 API.
-    if isinstance(prefix, str):
-        kwargs['Prefix'] = prefix
-
-    while True:
-
-        # The S3 API response is a large blob of metadata.
-        # 'Contents' contains information about the listed objects.
-        resp = s3.list_objects_v2(**kwargs)
-        for obj in resp['Contents']:
-            key = obj['Key']
-            if key.startswith(prefix) and key.endswith(suffix):
-                yield key
-
-        # The S3 API is paginated, returning up to 1000 keys at a time.
-        # Pass the continuation token into the next response, until we
-        # reach the final page (when this field is missing).
-        try:
-            kwargs['ContinuationToken'] = resp['NextContinuationToken']
-        except KeyError:
-            break
+    return (raster_batch, label_batch)
 
 
 def train(model, opt, obj,
@@ -445,34 +407,45 @@ def train(model, opt, obj,
           bands, label_mapping, label_nd, img_nd,
           bucket_name, s3_prefix, arg_hash,
           no_checkpoints=True, starting_epoch=0):
+
     model.train()
+
     current_time = time.time()
+
     for i in range(starting_epoch, epochs):
+
         avg_loss = 0.0
+
         for j in range(steps_per_epoch):
             batch_tensor = get_random_training_batch(
                 raster_ds, label_ds, width, height, window_size, batch_size, device,
                 bands, label_mapping, label_nd, img_nd)
             opt.zero_grad()
             pred = model(batch_tensor[0])
-            loss = 1.0*obj(pred.get('out'), batch_tensor[1]) \
-                + 0.4*obj(pred.get('aux'), batch_tensor[1])
+            loss = 1.0 * \
+                obj(pred.get('out'), batch_tensor[1]) + \
+                0.4*obj(pred.get('aux'), batch_tensor[1])
             loss.backward()
             opt.step()
             avg_loss = avg_loss + loss.item()
+
         avg_loss = avg_loss / steps_per_epoch
+
         last_time = current_time
         current_time = time.time()
         print('\t\t epoch={} time={} avg_loss={}'.format(
             i, current_time - last_time, avg_loss))
-        if (i > 0) and (i % 3 == 0) and bucket_name and s3_prefix and not no_checkpoints:
+
+        with MUTEX:
+            global WATCHDOG_TIMER
+            WATCHDOG_TIMER = time.time()
+
+        if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
             torch.save(model, 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
                            '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
             del s3
-
-# https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
 
 
 class StoreDictKeyPair(argparse.Action):
@@ -485,6 +458,9 @@ class StoreDictKeyPair(argparse.Action):
 
 
 def training_cli_parser():
+    """
+    https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--bands',
                         help='list of bands to train (1 indexed)',
@@ -590,9 +566,6 @@ def training_cli_parser():
     parser.add_argument('--s3-prefix',
                         required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
-    parser.add_argument('--inference-previews',
-                        help='tif images against which inferences should be run to generate previews',
-                        nargs='+')
     parser.add_argument('--window-size',
                         default=224,
                         type=int)
@@ -611,7 +584,22 @@ def training_cli_parser():
                         type=int)
     parser.add_argument('--start-from',
                         help='The saved model to start the fourth phase from')
+    parser.add_argument('--watchdog-seconds',
+                        help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
+                        default=0,
+                        type=int)
     return parser
+
+
+def wathdog_thread(seconds):
+    while True:
+        time.sleep(max(seconds//2, 1))
+        with MUTEX:
+            gap = time.time() - WATCHDOG_TIMER
+        if gap > seconds:
+            print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
+                gap, seconds), file=sys.stderr)
+            os._exit(-1)
 
 
 if __name__ == "__main__":
@@ -620,15 +608,14 @@ if __name__ == "__main__":
     args = training_cli_parser().parse_args()
     hashed_args = copy.copy(args)
     del hashed_args.backend
-    del hashed_args.inference_previews
     del hashed_args.disable_eval
     del hashed_args.max_eval_windows
+    del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
     print("provided args: {}".format(hashed_args))
     print("hash: {}".format(arg_hash))
 
-    MEANS = []
-    STDS = []
+    np.random.seed(seed=args.random_seed)
 
     # ---------------------------------
     print('DOWNLOADING DATA')
@@ -653,7 +640,7 @@ if __name__ == "__main__":
         with rio.open('/tmp/mul.tif') as raster_ds:
             def sample():
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
-                                         args.window_size, raster_ds.indexes,
+                                         224, raster_ds.indexes,
                                          args.img_nd)
             ws = [sample() for i in range(0, 133)]
         for i in range(0, len(raster_ds.indexes)):
@@ -679,7 +666,8 @@ if __name__ == "__main__":
 
     # recording parameters in bucket
     with open('/tmp/args.txt', 'w') as f:
-        f.write(str(args))
+        f.write(str(args) + '\n')
+        f.write(str(sys.argv) + '\n')
     s3 = boto3.client('s3')
     s3.upload_file('/tmp/args.txt', args.s3_bucket,
                    '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
@@ -714,7 +702,6 @@ if __name__ == "__main__":
         current_epoch = 0
         current_pth = args.start_from
 
-    np.random.seed(seed=args.random_seed)
     device = torch.device(args.backend)
 
     with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
@@ -726,19 +713,30 @@ if __name__ == "__main__":
             print('PROBLEM WITH DIMENSIONS')
             sys.exit()
 
-    batch_size = args.batch_size
-    steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
-                                                   (args.window_size * args.window_size * 7.0 * batch_size)))
-
     if args.label_nd is None:
         args.label_nd = len(args.weights)
         print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
+
+    batch_size = args.batch_size
+    if batch_size < 2:
+        batch_size = 2
+        print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
+
+    steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+                                                   (args.window_size * args.window_size * 7.0 * batch_size)))
 
     print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
     obj = torch.nn.CrossEntropyLoss(
         ignore_index=args.label_nd,
         weight=torch.FloatTensor(args.weights).to(device)
     ).to(device)
+
+    # ---------------------------------
+    if args.watchdog_seconds > 0:
+        print('STARTING WATCHDOG')
+        t = threading.Thread(target=wathdog_thread,
+                             args=(args.watchdog_seconds,))
+        t.start()
 
     # ---------------------------------
     print('COMPUTING')
@@ -754,6 +752,7 @@ if __name__ == "__main__":
         input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
             len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
 
+    np.random.seed(seed=(args.random_seed + 1))
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -782,7 +781,7 @@ if __name__ == "__main__":
         opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs1, args.batch_size,
+            train(deeplab, opt, obj, steps_per_epoch, args.epochs1, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
@@ -794,6 +793,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 2))
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -825,7 +825,7 @@ if __name__ == "__main__":
         opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs2, args.batch_size,
+            train(deeplab, opt, obj, steps_per_epoch, args.epochs2, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
@@ -837,6 +837,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 3))
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -871,6 +872,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 4))
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -906,6 +908,7 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 5))
     if complete_thru == 4:
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
@@ -939,20 +942,12 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
+    np.random.seed(seed=(args.random_seed + 6))
     if not args.disable_eval:
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                     args.label_nd, args.img_nd, args.label_map, device, args.s3_bucket,
+            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), 224,
+                     device, args.label_nd, args.img_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows)
-
-    if args.inference_previews:
-        for preview in args.inference_previews:
-            try:
-                print("generating preview: {}".format(preview))
-                generate_preview(preview, args.bands, args.img_nd, device, len(
-                    args.weights), args.s3_bucket, args.s3_prefix, arg_hash)
-            except:
-                print("something went wrong while generating {}".format(preview))
 
     exit(0)
