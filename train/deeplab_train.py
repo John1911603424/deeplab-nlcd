@@ -413,7 +413,6 @@ def train(model, opt, obj,
     current_time = time.time()
 
     for i in range(starting_epoch, epochs):
-
         avg_loss = 0.0
 
         for j in range(steps_per_epoch):
@@ -441,7 +440,7 @@ def train(model, opt, obj,
             WATCHDOG_TIMER = time.time()
 
         if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
-            torch.save(model, 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', bucket_name,
                            '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
@@ -757,7 +756,15 @@ if __name__ == "__main__":
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torch.load('deeplab.pth').to(device)
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 0:
@@ -788,7 +795,7 @@ if __name__ == "__main__":
 
         print('\t UPLOADING')
 
-        torch.save(deeplab, 'deeplab.pth')
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
                        '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
@@ -798,7 +805,15 @@ if __name__ == "__main__":
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torch.load('deeplab.pth').to(device)
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 1:
@@ -832,7 +847,7 @@ if __name__ == "__main__":
 
         print('\t UPLOADING')
 
-        torch.save(deeplab, 'deeplab.pth')
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
@@ -842,7 +857,15 @@ if __name__ == "__main__":
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torch.load('deeplab.pth').to(device)
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 2:
@@ -867,7 +890,7 @@ if __name__ == "__main__":
 
         print('\t UPLOADING')
 
-        torch.save(deeplab, 'deeplab.pth')
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
@@ -877,7 +900,15 @@ if __name__ == "__main__":
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torch.load('deeplab.pth').to(device)
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 3:
@@ -903,7 +934,7 @@ if __name__ == "__main__":
 
         print('\t UPLOADING')
 
-        torch.save(deeplab, 'deeplab.pth')
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
@@ -915,7 +946,15 @@ if __name__ == "__main__":
 
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torch.load('deeplab.pth').to(device)
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True).to(device)
+        deeplab.classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
+        deeplab.backbone.conv1 = torch.nn.Conv2d(
+            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
 
         for p in deeplab.parameters():
@@ -937,7 +976,7 @@ if __name__ == "__main__":
 
         print('\t UPLOADING')
 
-        torch.save(deeplab, 'deeplab.pth')
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
         s3 = boto3.client('s3')
         s3.upload_file('deeplab.pth', args.s3_bucket,
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
