@@ -36,7 +36,7 @@ def retry_read(rio_ds, band, window=None, retries=3):
         try:
             return rio_ds.read(band, window=window)
         except rio.errors.RasterioIOError:
-            print("Read error for band {} at window {} on try {} of {}".format(
+            print('Read error for band {} at window {} on try {} of {}'.format(
                 band, window, i+1, retries))
             continue
 
@@ -450,8 +450,8 @@ def train(model, opt, obj,
 class StoreDictKeyPair(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         my_dict = {}
-        for kv in values.split(","):
-            k, v = kv.split(":")
+        for kv in values.split(','):
+            k, v = kv.split(':')
             my_dict[int(k)] = int(v)
         setattr(namespace, self.dest, my_dict)
 
@@ -486,7 +486,7 @@ def training_cli_parser():
                         type=float)
     parser.add_argument('--epochs3',
                         help='',
-                        default=os.environ.get('TRAINING_EPOCHS_2', 5),
+                        default=os.environ.get('TRAINING_EPOCHS_3', 5),
                         type=int)
     parser.add_argument('--learning-rate3',
                         # https://arxiv.org/abs/1206.5533
@@ -495,7 +495,7 @@ def training_cli_parser():
                         type=float)
     parser.add_argument('--epochs4',
                         help='',
-                        default=os.environ.get('TRAINING_EPOCHS_2', 5),
+                        default=os.environ.get('TRAINING_EPOCHS_4', 5),
                         type=int)
     parser.add_argument('--learning-rate4',
                         # https://arxiv.org/abs/1206.5533
@@ -525,26 +525,6 @@ def training_cli_parser():
                         nargs='+',
                         required=True,
                         type=float)
-    parser.add_argument('--output-dilation',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('OUTPUT_DILATION', 1),
-                        type=int)
-    parser.add_argument('--output-kernel',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('OUTPUT_KERNEL', 1),
-                        type=int)
-    parser.add_argument('--output-stride',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('OUTPUT_STRIDE', 1),
-                        type=int)
-    parser.add_argument('--input-dilation',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('INPUT_DILATION', 1),
-                        type=int)
-    parser.add_argument('--input-kernel',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('INPUT_KERNEL', 7),
-                        type=int)
     parser.add_argument('--input-stride',
                         help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
                         default=os.environ.get('INPUT_STRIDE', 2),
@@ -590,7 +570,7 @@ def training_cli_parser():
     return parser
 
 
-def wathdog_thread(seconds):
+def watchdog_thread(seconds):
     while True:
         time.sleep(max(seconds//2, 1))
         with MUTEX:
@@ -601,7 +581,19 @@ def wathdog_thread(seconds):
             os._exit(-1)
 
 
-if __name__ == "__main__":
+def make_model(device, band_count, input_stride=1, class_count=2):
+    deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+        pretrained=True)
+    last_class = deeplab.classifier[4] = torch.nn.Conv2d(
+        256, class_count, kernel_size=7, stride=1, dilation=1)
+    last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
+        256, class_count, kernel_size=7, stride=1, dilation=1)
+    input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
+        band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
+    return deeplab.to(device)
+
+
+if __name__ == '__main__':
 
     parser = training_cli_parser()
     args = training_cli_parser().parse_args()
@@ -612,8 +604,8 @@ if __name__ == "__main__":
     del hashed_args.max_eval_windows
     del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
-    print("provided args: {}".format(hashed_args))
-    print("hash: {}".format(arg_hash))
+    print('provided args: {}'.format(hashed_args))
+    print('hash: {}'.format(arg_hash))
 
     np.random.seed(seed=args.random_seed)
 
@@ -623,13 +615,13 @@ if __name__ == "__main__":
     if not os.path.exists('/tmp/mul.tif'):
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.training_img)
-        print("training image bucket and prefix: {}, {}".format(bucket, prefix))
+        print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mul.tif')
         del s3
     if not os.path.exists('/tmp/mask.tif'):
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.label_img)
-        print("training labels bucket and prefix: {}, {}".format(bucket, prefix))
+        print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mask.tif')
         del s3
 
@@ -658,8 +650,8 @@ if __name__ == "__main__":
                 STDS.append(a.std())
             del a
 
-    print("Means:               {}".format(MEANS))
-    print("Standard Deviations: {}".format(STDS))
+    print('Means:               {}'.format(MEANS))
+    print('Standard Deviations: {}'.format(STDS))
 
     # ---------------------------------
     print('RECORDING RUN')
@@ -708,8 +700,8 @@ if __name__ == "__main__":
         width = raster_ds.width
         height = raster_ds.height
         if (height != mask_ds.height) or (width != mask_ds.width):
-            print("width", width, mask_ds.width)
-            print("height", height, mask_ds.height)
+            print('width', width, mask_ds.width)
+            print('height', height, mask_ds.height)
             print('PROBLEM WITH DIMENSIONS')
             sys.exit()
 
@@ -734,7 +726,7 @@ if __name__ == "__main__":
     # ---------------------------------
     if args.watchdog_seconds > 0:
         print('STARTING WATCHDOG')
-        t = threading.Thread(target=wathdog_thread,
+        t = threading.Thread(target=watchdog_thread,
                              args=(args.watchdog_seconds,))
         t.daemon = True
         t.start()
@@ -743,35 +735,30 @@ if __name__ == "__main__":
     print('COMPUTING')
 
     if complete_thru == -1:
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        print("label count: {}".format(len(args.weights)))
-        last_class = deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
 
     np.random.seed(seed=(args.random_seed + 1))
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 0:
-
         print('\t TRAINING FIRST AND LAST LAYERS')
 
+        last_class = deeplab.classifier[4]
+        last_class_aux = deeplab.aux_classifier[4]
+        input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
         for p in last_class.parameters():
@@ -806,19 +793,15 @@ if __name__ == "__main__":
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 1:
-
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
         last_class = deeplab.classifier[4]
@@ -858,19 +841,15 @@ if __name__ == "__main__":
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 2:
-
         print('\t TRAINING ALL LAYERS')
 
         for p in deeplab.parameters():
@@ -901,19 +880,15 @@ if __name__ == "__main__":
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 3:
-
         print('\t TRAINING ALL LAYERS AGAIN')
 
         for p in deeplab.parameters():
@@ -941,20 +916,16 @@ if __name__ == "__main__":
                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
-    np.random.seed(seed=(args.random_seed + 5))
     if complete_thru == 4:
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True).to(device)
-        deeplab.classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, len(args.weights), kernel_size=args.output_kernel, stride=args.output_stride, dilation=args.output_dilation).to(device)
-        deeplab.backbone.conv1 = torch.nn.Conv2d(
-            len(args.bands), 64, kernel_size=args.input_kernel, stride=args.input_stride, dilation=args.input_dilation, padding=(3, 3), bias=False).to(device)
+        deeplab = make_model(
+            device, len(args.bands),
+            input_stride=args.input_stride,
+            class_count=len(args.weights)
+        )
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
 
