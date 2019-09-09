@@ -736,6 +736,7 @@ if __name__ == "__main__":
         print('STARTING WATCHDOG')
         t = threading.Thread(target=wathdog_thread,
                              args=(args.watchdog_seconds,))
+        t.daemon = True
         t.start()
 
     # ---------------------------------
