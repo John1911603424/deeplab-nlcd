@@ -607,6 +607,7 @@ if __name__ == "__main__":
     parser = training_cli_parser()
     args = training_cli_parser().parse_args()
     hashed_args = copy.copy(args)
+    hashed_args.script = 'deeplab_train.py'
     del hashed_args.backend
     del hashed_args.disable_eval
     del hashed_args.max_eval_windows
