@@ -141,18 +141,6 @@ def get_window(arguments):
     # Labels
     if band == 0:
         a = np.array(retry_read(LABEL_DS, 1, window=window), dtype=np.long)
-    # NDWI
-    # https://en.wikipedia.org/wiki/Normalized_difference_water_index
-    elif band == -1:
-        green = np.float32(retry_read(RASTER_DS, 2, window=window))
-        swir = np.float32(retry_read(RASTER_DS, 5, window=window))
-        a = (green - swir)/(green + swir)
-    # NDVI
-    # https://www.usgs.gov/land-resources/nli/landsat/landsat-normalized-difference-vegetation-index?qt-science_support_page_related_con=0#qt-science_support_page_related_con
-    elif band == -2:
-        red = np.float32(retry_read(RASTER_DS, 3, window=window))
-        nir = np.float32(retry_read(RASTER_DS, 4, window=window))
-        a = (nir - red)/(nir + red)
     else:
         a = np.float32(retry_read(RASTER_DS, band, window=window))
         a = (a - MEANS[band-1]) / STDS[band-1]
@@ -181,12 +169,19 @@ def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd,
 
     data = []
     labels = []
-    with Pool(min(32, len(bands_plus))) as p:
-        for d, i in p.map(get_window, plan):
+    if disable_pmap:
+        for d, i in map(get_window, plan):
             if i == 0:
                 labels.append(d)
             else:
                 data.append(d)
+    else:
+        with Pool(min(32, len(bands_plus))) as p:
+            for d, i in p.map(get_window, plan):
+                if i == 0:
+                    labels.append(d)
+                else:
+                    data.append(d)
 
     RASTER_DS = None
     LABEL_DS = None
@@ -227,12 +222,11 @@ def evaluate(raster_ds, label_ds,
              bands, label_count, window_size, device,
              label_nd, img_nd, label_map,
              bucket_name, s3_prefix, arg_hash,
-             max_eval_windows):
+             max_eval_windows, batch_size):
 
     deeplab.eval()
 
     with torch.no_grad():
-        batch_size = 64
         tps = [0.0 for x in range(label_count)]
         fps = [0.0 for x in range(label_count)]
         fns = [0.0 for x in range(label_count)]
@@ -354,12 +348,19 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     # Do all of the reads
     data = []
     labels = []
-    with Pool(min(32, len(bands_plus))) as p:
-        for d, i in p.map(get_window, plan):
+    if disable_pmap:
+        for d, i in map(get_window, plan):
             if i == 0:
                 labels.append(d)
             else:
                 data.append(d)
+    else:
+        with Pool(min(32, len(bands_plus))) as p:
+            for d, i in p.map(get_window, plan):
+                if i == 0:
+                    labels.append(d)
+                else:
+                    data.append(d)
 
     RASTER_DS = None
     LABEL_DS = None
@@ -557,6 +558,8 @@ def training_cli_parser():
     parser.add_argument('--disable-eval',
                         help='Disable evaluation after training',
                         action='store_true')
+    parser.add_argument('--disable-pmap',
+                        action='store_true')
     parser.add_argument('--max-eval-windows',
                         help='The maximum number of windows that will be used for evaluation',
                         default=sys.maxsize,
@@ -581,7 +584,7 @@ def watchdog_thread(seconds):
             os._exit(-1)
 
 
-def make_model(device, band_count, input_stride=1, class_count=2):
+def make_model(band_count, input_stride=1, class_count=2):
     deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
         pretrained=True)
     last_class = deeplab.classifier[4] = torch.nn.Conv2d(
@@ -590,7 +593,7 @@ def make_model(device, band_count, input_stride=1, class_count=2):
         256, class_count, kernel_size=7, stride=1, dilation=1)
     input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
         band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
-    return deeplab.to(device)
+    return deeplab
 
 
 if __name__ == '__main__':
@@ -598,9 +601,10 @@ if __name__ == '__main__':
     parser = training_cli_parser()
     args = training_cli_parser().parse_args()
     hashed_args = copy.copy(args)
-    hashed_args.script = 'deeplab_train.py'
+    hashed_args.script = sys.argv[0]
     del hashed_args.backend
     del hashed_args.disable_eval
+    del hashed_args.disable_pmap
     del hashed_args.max_eval_windows
     del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
@@ -608,6 +612,8 @@ if __name__ == '__main__':
     print('hash: {}'.format(arg_hash))
 
     np.random.seed(seed=args.random_seed)
+
+    disable_pmap = args.disable_pmap
 
     # ---------------------------------
     print('DOWNLOADING DATA')
@@ -736,20 +742,20 @@ if __name__ == '__main__':
 
     if complete_thru == -1:
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
 
     np.random.seed(seed=(args.random_seed + 1))
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
@@ -794,10 +800,10 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
@@ -842,10 +848,10 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
@@ -881,10 +887,10 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
@@ -922,10 +928,10 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            device, len(args.bands),
+            len(args.bands),
             input_stride=args.input_stride,
             class_count=len(args.weights)
-        )
+        ).to(device)
         deeplab.load_state_dict(torch.load('deeplab.pth'))
         del s3
 
@@ -960,6 +966,6 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(raster_ds, mask_ds, args.bands, len(args.weights), 224,
                      device, args.label_nd, args.img_nd, args.label_map, args.s3_bucket,
-                     args.s3_prefix, arg_hash, args.max_eval_windows)
+                     args.s3_prefix, arg_hash, args.max_eval_windows, args.batch_size)
 
     exit(0)
