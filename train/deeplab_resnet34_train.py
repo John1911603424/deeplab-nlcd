@@ -249,7 +249,10 @@ def evaluate(raster_ds, label_ds,
             batch, labels = get_evaluation_batch(
                 raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, label_map, device)
             labels = labels.data.cpu().numpy()
-            out = deeplab(batch)['out'].data.cpu().numpy()
+            out = deeplab(batch)
+            if isinstance(out, dict):
+                out = out['out']
+            out = out.data.cpu().numpy()
             out = np.apply_along_axis(np.argmax, 1, out)
 
             if label_nd is not None:
@@ -422,9 +425,12 @@ def train(model, opt, obj,
                 bands, label_mapping, label_nd, img_nd)
             opt.zero_grad()
             pred = model(batch_tensor[0])
-            loss = 1.0 * \
-                obj(pred.get('out'), batch_tensor[1]) + \
-                0.4*obj(pred.get('aux'), batch_tensor[1])
+            if isinstance(pred, dict):
+                loss = 1.0 * \
+                    obj(pred.get('out'), batch_tensor[1]) + \
+                    0.4*obj(pred.get('aux'), batch_tensor[1])
+            else:
+                loss = 1.0 * obj(pred, batch_tensor[1])
             loss.backward()
             opt.step()
             avg_loss = avg_loss + loss.item()
@@ -534,7 +540,7 @@ def training_cli_parser():
                         default=33,
                         type=int)
     parser.add_argument('--batch-size',
-                        default=16,
+                        default=6,
                         type=int)
     parser.add_argument('--backend',
                         help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
@@ -581,15 +587,40 @@ def watchdog_thread(seconds):
             os._exit(-1)
 
 
+class DeepLabResnet34(torch.nn.Module):
+    def __init__(self, band_count, input_stride, class_count):
+        super(DeepLabResnet34, self).__init__()
+        resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
+        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+            resnet34, return_layers={'layer4': 'out'})
+        inplanes = 512
+        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+            inplanes, class_count)
+        self.backbone.conv1 = torch.nn.Conv2d(
+            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+
+        if input_stride == 1:
+            self.factor = 4  # Half of what I wanted
+        else:
+            self.factor = 8  # Half of what I wanted
+
+    def forward(self, x):
+        [w, h] = x.shape[-2:]
+
+        features = self.backbone(torch.nn.functional.interpolate(
+            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
+
+        x = features['out']
+        x = self.classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result = x
+
+        return result
+
+
 def make_model(band_count, input_stride=1, class_count=2):
-    deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-        pretrained=True)
-    last_class = deeplab.classifier[4] = torch.nn.Conv2d(
-        256, class_count, kernel_size=7, stride=1, dilation=1)
-    last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
-        256, class_count, kernel_size=7, stride=1, dilation=1)
-    input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
-        band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
+    deeplab = DeepLabResnet34(band_count, input_stride, class_count)
     return deeplab
 
 
@@ -752,13 +783,10 @@ if __name__ == '__main__':
         print('\t TRAINING FIRST AND LAST LAYERS')
 
         last_class = deeplab.classifier[4]
-        last_class_aux = deeplab.aux_classifier[4]
         input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
         for p in last_class.parameters():
-            p.requires_grad = True
-        for p in last_class_aux.parameters():
             p.requires_grad = True
         for p in input_filters.parameters():
             p.requires_grad = True
@@ -800,13 +828,10 @@ if __name__ == '__main__':
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
         last_class = deeplab.classifier[4]
-        last_class_aux = deeplab.aux_classifier[4]
         input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
         for p in last_class.parameters():
-            p.requires_grad = True
-        for p in last_class_aux.parameters():
             p.requires_grad = True
         for p in input_filters.parameters():
             p.requires_grad = True
