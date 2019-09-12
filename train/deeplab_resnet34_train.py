@@ -592,9 +592,12 @@ class DeepLabResnet34(torch.nn.Module):
         super(DeepLabResnet34, self).__init__()
         resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
         self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-            resnet34, return_layers={'layer4': 'out'})
+            resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
         inplanes = 512
         self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+            inplanes, class_count)
+        inplanes = 256
+        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
             inplanes, class_count)
         self.backbone.conv1 = torch.nn.Conv2d(
             band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
@@ -610,11 +613,19 @@ class DeepLabResnet34(torch.nn.Module):
         features = self.backbone(torch.nn.functional.interpolate(
             x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
+        result = {}
+
         x = features['out']
         x = self.classifier(x)
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
-        result = x
+        result['out'] = x
+
+        x = features['aux']
+        x = self.aux_classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result['aux'] = x
 
         return result
 
@@ -665,8 +676,8 @@ if __name__ == '__main__':
     with rio.open('/tmp/mul.tif') as raster_ds:
         def sample():
             return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
-                                        224, raster_ds.indexes,
-                                        args.img_nd)
+                                     224, raster_ds.indexes,
+                                     args.img_nd)
         ws = [sample() for i in range(0, 133)]
     for i in range(0, len(raster_ds.indexes)):
         a = np.concatenate([w[:, i] for w in ws])
@@ -783,10 +794,13 @@ if __name__ == '__main__':
         print('\t TRAINING FIRST AND LAST LAYERS')
 
         last_class = deeplab.classifier[4]
+        last_class_aux = deeplab.aux_classifier[4]
         input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
         for p in last_class.parameters():
+            p.requires_grad = True
+        for p in last_class_aux.parameters():
             p.requires_grad = True
         for p in input_filters.parameters():
             p.requires_grad = True
@@ -828,10 +842,13 @@ if __name__ == '__main__':
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
         last_class = deeplab.classifier[4]
+        last_class_aux = deeplab.aux_classifier[4]
         input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
         for p in last_class.parameters():
+            p.requires_grad = True
+        for p in last_class_aux.parameters():
             p.requires_grad = True
         for p in input_filters.parameters():
             p.requires_grad = True
