@@ -205,7 +205,7 @@ def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd,
         nodata = ((image_nds + label_nds) > 0)
         label[nodata == True] = label_nd
         for i in range(len(raster)):
-            raster[i][nan == True] = 0.0
+            raster[i][nodata == True] = 0.0
 
         raster_batch.append(np.stack(raster, axis=0))
         label_batch.append(label)
