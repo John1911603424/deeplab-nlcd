@@ -573,6 +573,11 @@ def training_cli_parser():
                         help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
                         default=0,
                         type=int)
+    parser.add_argument('--whole-image-statistics',
+                        action='store_true')
+    parser.add_argument('--max-sample-windows',
+                        default=133,
+                        type=int)
     return parser
 
 
@@ -637,19 +642,28 @@ if __name__ == '__main__':
     # ---------------------------------
     print('PRE-COMPUTING')
 
-    with rio.open('/tmp/mul.tif') as raster_ds:
-        def sample():
-            return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
-                                     224, raster_ds.indexes,
-                                     args.img_nd)
-        ws = [sample() for i in range(0, 133)]
-    for i in range(0, len(raster_ds.indexes)):
-        a = np.concatenate([w[:, i] for w in ws])
-        MEANS.append(a.mean())
-        STDS.append(a.std())
-    del a
-    del sample
-    del ws
+    if args.whole_image_statistics:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            for i in range(0, len(raster_ds.indexes)):
+                a = raster_ds.read(i+1).flatten()
+                a = np.extract(a != args.img_nd, a)
+                MEANS.append(a.mean())
+                STDS.append(a.std())
+            del a
+    else:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            def sample():
+                return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
+                                         224, raster_ds.indexes,
+                                         args.img_nd)
+            ws = [sample() for i in range(0, args.max_sample_windows)]
+        for i in range(0, len(raster_ds.indexes)):
+            a = np.concatenate([w[:, i] for w in ws])
+            MEANS.append(a.mean())
+            STDS.append(a.std())
+        del a
+        del sample
+        del ws
 
     print('Means:               {}'.format(MEANS))
     print('Standard Deviations: {}'.format(STDS))
