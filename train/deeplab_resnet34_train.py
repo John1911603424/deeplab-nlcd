@@ -188,6 +188,9 @@ def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd,
 
     raster_batch = []
     label_batch = []
+    if image_nd is not None:
+        image_nd = (image_nd - MEANS[0])/STDS[0]
+
     for raster, label in zip(chunks(data, len(bands)), labels):
 
         label = numpy_replace(label, label_mappings)
@@ -371,6 +374,9 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
     # NODATA processing
     raster_batch = []
     label_batch = []
+    if image_nd is not None:
+        image_nd = (image_nd - MEANS[0])/STDS[0]
+
     for raster, label in zip(chunks(data, len(bands)), labels):
 
         # NODATA from labels
@@ -391,7 +397,7 @@ def get_random_training_batch(raster_ds, label_ds, width, height, window_size, b
         nodata = ((image_nds + label_nds) > 0)
         label[nodata == True] = label_nd
         for i in range(len(raster)):
-            raster[i][nan == True] = 0.0
+            raster[i][nodata == True] = 0.0
 
         raster_batch.append(np.stack(raster, axis=0))
         label_batch.append(label)
@@ -502,7 +508,7 @@ def training_cli_parser():
                         type=float)
     parser.add_argument('--epochs4',
                         help='',
-                        default=os.environ.get('TRAINING_EPOCHS_4', 5),
+                        default=os.environ.get('TRAINING_EPOCHS_4', 15),
                         type=int)
     parser.add_argument('--learning-rate4',
                         # https://arxiv.org/abs/1206.5533
@@ -540,7 +546,7 @@ def training_cli_parser():
                         default=33,
                         type=int)
     parser.add_argument('--batch-size',
-                        default=6,
+                        default=16,
                         type=int)
     parser.add_argument('--backend',
                         help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
@@ -553,7 +559,7 @@ def training_cli_parser():
                         required=True,
                         help='prefix to apply when saving models and diagnostic images to s3')
     parser.add_argument('--window-size',
-                        default=224,
+                        default=32,
                         type=int)
     parser.add_argument('--max-epoch-size',
                         default=sys.maxsize,
@@ -603,9 +609,9 @@ class DeepLabResnet34(torch.nn.Module):
             band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
         if input_stride == 1:
-            self.factor = 4  # Half of what I wanted
+            self.factor = 16
         else:
-            self.factor = 8  # Half of what I wanted
+            self.factor = 32
 
     def forward(self, x):
         [w, h] = x.shape[-2:]
@@ -995,7 +1001,7 @@ if __name__ == '__main__':
     if not args.disable_eval:
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), 224,
+            evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
                      device, args.label_nd, args.img_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows, args.batch_size)
 
