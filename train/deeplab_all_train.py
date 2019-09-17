@@ -30,748 +30,729 @@ MUTEX = threading.Lock()
 WATCHDOG_TIMER = time.time()
 
 
-def retry_read(rio_ds, band, window=None, retries=3):
-    # retry failed reads (they appear to be transient)
-    for i in range(retries):
-        try:
-            return rio_ds.read(band, window=window)
-        except rio.errors.RasterioIOError:
-            print('Read error for band {} at window {} on try {} of {}'.format(
-                band, window, i+1, retries))
-            continue
+# S3
+if True:
+    def parse_s3_url(url):
+        # Break s3uris into bucket and prefix
+        parsed = urlparse(url, allow_fragments=False)
+        return (parsed.netloc, parsed.path.lstrip('/'))
 
+    def get_matching_s3_keys(bucket, prefix='', suffix=''):
+        """
+        Generate the keys in an S3 bucket.
 
-def parse_s3_url(url):
-    # Break s3uris into bucket and prefix
-    parsed = urlparse(url, allow_fragments=False)
-    return (parsed.netloc, parsed.path.lstrip('/'))
+        :param bucket: Name of the S3 bucket.
+        :param prefix: Only fetch keys that start with this prefix (optional).
+        :param suffix: Only fetch keys that end with this suffix (optional).
+        """
+        s3 = boto3.client('s3')
+        kwargs = {'Bucket': bucket}
 
+        # https://alexwlchan.net/2017/07/listing-s3-keys/
 
-def chunks(l, n):
-    """
-    Break list in chunks of equal size
+        # If the prefix is a single string (not a tuple of strings), we can
+        # do the filtering directly in the S3 API.
+        if isinstance(prefix, str):
+            kwargs['Prefix'] = prefix
 
-    https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
-    """
-    for i in range(0, len(l), n):
-        yield l[i:i+n]
+        while True:
 
+            # The S3 API response is a large blob of metadata.
+            # 'Contents' contains information about the listed objects.
+            resp = s3.list_objects_v2(**kwargs)
+            for obj in resp['Contents']:
+                key = obj['Key']
+                if key.startswith(prefix) and key.endswith(suffix):
+                    yield key
 
-def hash_string(string):
-    """
-    Return a SHA-256 hash of the given string
+            # The S3 API is paginated, returning up to 1000 keys at a time.
+            # Pass the continuation token into the next response, until we
+            # reach the final page (when this field is missing).
+            try:
+                kwargs['ContinuationToken'] = resp['NextContinuationToken']
+            except KeyError:
+                break
 
-    Useful for generating an ID based on a set of parameters
-    https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
-    """
-    return hashlib.sha256(string.encode('utf-8')).hexdigest()
+# Misc.
+if True:
+    def retry_read(rio_ds, band, window=None, retries=3):
+        # retry failed reads (they appear to be transient)
+        for i in range(retries):
+            try:
+                return rio_ds.read(band, window=window)
+            except rio.errors.RasterioIOError:
+                print('Read error for band {} at window {} on try {} of {}'.format(
+                    band, window, i+1, retries))
+                continue
 
+    def chunks(l, n):
+        """
+        Break list in chunks of equal size
 
-def numpy_replace(np_arr, replacement_dict):
-    """
-    Quickly replace contents of a np_arr with mappings provided by
-    replacement_dict used primarily to map mask labels to the
-    (assuming N training labels) 0 to N-1 categories expected.
-    """
-    b = np.copy(np_arr)
-    for k, v in replacement_dict.items():
-        b[np_arr == k] = v
-    return b
+        https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
+        """
+        for i in range(0, len(l), n):
+            yield l[i:i+n]
 
+    def numpy_replace(np_arr, replacement_dict):
+        """
+        Quickly replace contents of a np_arr with mappings provided by
+        replacement_dict used primarily to map mask labels to the
+        (assuming N training labels) 0 to N-1 categories expected.
+        """
+        b = np.copy(np_arr)
+        for k, v in replacement_dict.items():
+            b[np_arr == k] = v
+        return b
 
-def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
-    x = np.random.randint(0, width/window_size - 1)
-    y = np.random.randint(0, height/window_size - 1)
-    window = rio.windows.Window(
-        x * window_size, y * window_size,
-        window_size, window_size)
+    def get_window(arguments):
+        window, band = arguments
 
-    data = []
-    for band in bands:
-        a = retry_read(raster_ds, band, window=window)
-        if img_nd is not None:
-            a = np.extract(a != img_nd, a)
-        a = a[~np.isnan(a)]
-        data.append(a)
-    data = np.stack(data, axis=1)
+        # Labels
+        if band == 0:
+            a = np.array(retry_read(LABEL_DS, 1, window=window), dtype=np.long)
+        else:
+            a = np.float32(retry_read(RASTER_DS, band, window=window))
+            a = (a - MEANS[band-1]) / STDS[band-1]
 
-    return data
+        return a, band
 
+    def watchdog_thread(seconds):
+        while True:
+            time.sleep(max(seconds//2, 1))
+            with MUTEX:
+                gap = time.time() - WATCHDOG_TIMER
+            if gap > seconds:
+                print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
+                    gap, seconds), file=sys.stderr)
+                os._exit(-1)
 
-def get_matching_s3_keys(bucket, prefix='', suffix=''):
-    """
-    Generate the keys in an S3 bucket.
-
-    :param bucket: Name of the S3 bucket.
-    :param prefix: Only fetch keys that start with this prefix (optional).
-    :param suffix: Only fetch keys that end with this suffix (optional).
-    """
-    s3 = boto3.client('s3')
-    kwargs = {'Bucket': bucket}
-
-    # https://alexwlchan.net/2017/07/listing-s3-keys/
-
-    # If the prefix is a single string (not a tuple of strings), we can
-    # do the filtering directly in the S3 API.
-    if isinstance(prefix, str):
-        kwargs['Prefix'] = prefix
-
-    while True:
-
-        # The S3 API response is a large blob of metadata.
-        # 'Contents' contains information about the listed objects.
-        resp = s3.list_objects_v2(**kwargs)
-        for obj in resp['Contents']:
-            key = obj['Key']
-            if key.startswith(prefix) and key.endswith(suffix):
-                yield key
-
-        # The S3 API is paginated, returning up to 1000 keys at a time.
-        # Pass the continuation token into the next response, until we
-        # reach the final page (when this field is missing).
-        try:
-            kwargs['ContinuationToken'] = resp['NextContinuationToken']
-        except KeyError:
-            break
-
-
-def get_window(arguments):
-    window, band = arguments
-
-    # Labels
-    if band == 0:
-        a = np.array(retry_read(LABEL_DS, 1, window=window), dtype=np.long)
-    else:
-        a = np.float32(retry_read(RASTER_DS, band, window=window))
-        a = (a - MEANS[band-1]) / STDS[band-1]
-
-    return a, band
-
-
-def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, image_nd, label_mappings, device):
-
-    global RASTER_DS
-    global LABEL_DS
-
-    RASTER_DS = raster_ds
-    LABEL_DS = label_ds
-
-    bands_plus = bands + [0]
-    plan = []
-    for xy in xys:
-        x, y = xy
+# Sampling
+if True:
+    def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
+        x = np.random.randint(0, width/window_size - 1)
+        y = np.random.randint(0, height/window_size - 1)
         window = rio.windows.Window(
             x * window_size, y * window_size,
             window_size, window_size)
-        for band in bands_plus:
-            args = (window, band)
-            plan.append(args)
 
-    data = []
-    labels = []
-    if disable_pmap:
-        for d, i in map(get_window, plan):
-            if i == 0:
-                labels.append(d)
-            else:
-                data.append(d)
-    else:
-        with Pool(min(32, len(bands_plus))) as p:
-            for d, i in p.map(get_window, plan):
+        data = []
+        for band in bands:
+            a = retry_read(raster_ds, band, window=window)
+            if img_nd is not None:
+                a = np.extract(a != img_nd, a)
+            a = a[~np.isnan(a)]
+            data.append(a)
+        data = np.stack(data, axis=1)
+
+        return data
+
+# Evaluation
+if True:
+    def get_evaluation_batch(raster_ds, label_ds, bands, xys, window_size, label_nd, image_nd, label_mappings, device):
+
+        global RASTER_DS
+        global LABEL_DS
+
+        RASTER_DS = raster_ds
+        LABEL_DS = label_ds
+
+        bands_plus = bands + [0]
+        plan = []
+        for xy in xys:
+            x, y = xy
+            window = rio.windows.Window(
+                x * window_size, y * window_size,
+                window_size, window_size)
+            for band in bands_plus:
+                args = (window, band)
+                plan.append(args)
+
+        data = []
+        labels = []
+        if disable_pmap:
+            for d, i in map(get_window, plan):
                 if i == 0:
                     labels.append(d)
                 else:
                     data.append(d)
-
-    RASTER_DS = None
-    LABEL_DS = None
-
-    raster_batch = []
-    label_batch = []
-    if image_nd is not None:
-        image_nd = (image_nd - MEANS[0])/STDS[0]
-
-    for raster, label in zip(chunks(data, len(bands)), labels):
-
-        label = numpy_replace(label, label_mappings)
-        if label_nd is not None:
-            label_nds = (label == label_nd)
         else:
-            label_nds = np.zeros(labels.shape)
+            with Pool(min(32, len(bands_plus))) as p:
+                for d, i in p.map(get_window, plan):
+                    if i == 0:
+                        labels.append(d)
+                    else:
+                        data.append(d)
 
-        nan = np.isnan(raster[0])
+        RASTER_DS = None
+        LABEL_DS = None
+
+        raster_batch = []
+        label_batch = []
         if image_nd is not None:
-            image_nds = (raster[0] == image_nd) + nan
-        else:
-            image_nds = nan
+            image_nd = (image_nd - MEANS[0])/STDS[0]
 
-        nodata = ((image_nds + label_nds) > 0)
-        label[nodata == True] = label_nd
-        for i in range(len(raster)):
-            raster[i][nodata == True] = 0.0
+        for raster, label in zip(chunks(data, len(bands)), labels):
 
-        raster_batch.append(np.stack(raster, axis=0))
-        label_batch.append(label)
-
-    raster_batch = np.stack(raster_batch, axis=0)
-    raster_batch = torch.from_numpy(raster_batch).to(device)
-    label_batch = np.stack(label_batch, axis=0)
-    label_batch = torch.from_numpy(label_batch).to(device)
-
-    return (raster_batch, label_batch)
-
-
-def evaluate(raster_ds, label_ds,
-             bands, label_count, window_size, device,
-             label_nd, img_nd, label_map,
-             bucket_name, s3_prefix, arg_hash,
-             max_eval_windows, batch_size):
-
-    deeplab.eval()
-
-    with torch.no_grad():
-        tps = [0.0 for x in range(label_count)]
-        fps = [0.0 for x in range(label_count)]
-        fns = [0.0 for x in range(label_count)]
-        tns = [0.0 for x in range(label_count)]
-        preds = []
-        ground_truth = []
-
-        width = raster_ds.width
-        height = raster_ds.height
-
-        xys = []
-        for x in range(0, width//window_size):
-            for y in range(0, height//window_size):
-                if ((x + y) % 7 == 0):
-                    xy = (x, y)
-                    xys.append(xy)
-        xys = xys[0:max_eval_windows]
-
-        for xy in chunks(xys, batch_size):
-            batch, labels = get_evaluation_batch(
-                raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, label_map, device)
-            labels = labels.data.cpu().numpy()
-            out = deeplab(batch)
-            if isinstance(out, dict):
-                out = out['out']
-            out = out.data.cpu().numpy()
-            out = np.apply_along_axis(np.argmax, 1, out)
-
+            label = numpy_replace(label, label_mappings)
             if label_nd is not None:
-                dont_care = labels == label_nd
+                label_nds = (label == label_nd)
             else:
-                dont_care = np.zeros(labels.shape)
+                label_nds = np.zeros(labels.shape)
 
-            out = out + label_count*dont_care
+            nan = np.isnan(raster[0])
+            if image_nd is not None:
+                image_nds = (raster[0] == image_nd) + nan
+            else:
+                image_nds = nan
 
-            for i in range(label_count):
-                tps[i] = tps[i] + ((out == i)*(labels == i)).sum()
-                fps[i] = fps[i] + ((out == i)*(labels != i)).sum()
-                fns[i] = fns[i] + ((out != i)*(labels == i)).sum()
-                tns[i] = tns[i] + ((out != i)*(labels != i)).sum()
+            nodata = ((image_nds + label_nds) > 0)
+            label[nodata == True] = label_nd
+            for i in range(len(raster)):
+                raster[i][nodata == True] = 0.0
 
-            preds.append(out.flatten())
-            ground_truth.append(labels.flatten())
+            raster_batch.append(np.stack(raster, axis=0))
+            label_batch.append(label)
+
+        raster_batch = np.stack(raster_batch, axis=0)
+        raster_batch = torch.from_numpy(raster_batch).to(device)
+        label_batch = np.stack(label_batch, axis=0)
+        label_batch = torch.from_numpy(label_batch).to(device)
+
+        return (raster_batch, label_batch)
+
+    def evaluate(raster_ds, label_ds,
+                 bands, label_count, window_size, device,
+                 label_nd, img_nd, label_map,
+                 bucket_name, s3_prefix, arg_hash,
+                 max_eval_windows, batch_size):
+
+        deeplab.eval()
+
+        with torch.no_grad():
+            tps = [0.0 for x in range(label_count)]
+            fps = [0.0 for x in range(label_count)]
+            fns = [0.0 for x in range(label_count)]
+            tns = [0.0 for x in range(label_count)]
+            preds = []
+            ground_truth = []
+
+            width = raster_ds.width
+            height = raster_ds.height
+
+            xys = []
+            for x in range(0, width//window_size):
+                for y in range(0, height//window_size):
+                    if ((x + y) % 7 == 0):
+                        xy = (x, y)
+                        xys.append(xy)
+            xys = xys[0:max_eval_windows]
+
+            for xy in chunks(xys, batch_size):
+                batch, labels = get_evaluation_batch(
+                    raster_ds, label_ds, bands, xy, window_size, label_nd, img_nd, label_map, device)
+                labels = labels.data.cpu().numpy()
+                out = deeplab(batch)
+                if isinstance(out, dict):
+                    out = out['out']
+                out = out.data.cpu().numpy()
+                out = np.apply_along_axis(np.argmax, 1, out)
+
+                if label_nd is not None:
+                    dont_care = labels == label_nd
+                else:
+                    dont_care = np.zeros(labels.shape)
+
+                out = out + label_count*dont_care
+
+                for i in range(label_count):
+                    tps[i] = tps[i] + ((out == i)*(labels == i)).sum()
+                    fps[i] = fps[i] + ((out == i)*(labels != i)).sum()
+                    fns[i] = fns[i] + ((out != i)*(labels == i)).sum()
+                    tns[i] = tns[i] + ((out != i)*(labels != i)).sum()
+
+                preds.append(out.flatten())
+                ground_truth.append(labels.flatten())
+
+                with MUTEX:
+                    global WATCHDOG_TIMER
+                    WATCHDOG_TIMER = time.time()
+
+        print('True Positives  {}'.format(tps))
+        print('False Positives {}'.format(fps))
+        print('False Negatives {}'.format(fns))
+        print('True Negatives  {}'.format(tns))
+
+        recalls = []
+        precisions = []
+        for i in range(label_count):
+            recall = tps[i] / (tps[i] + fns[i])
+            recalls.append(recall)
+            precision = tps[i] / (tps[i] + fps[i])
+            precisions.append(precision)
+
+        print('Recalls    {}'.format(recalls))
+        print('Precisions {}'.format(precisions))
+
+        f1s = []
+        for i in range(label_count):
+            f1 = 2 * (precisions[i] * recalls[i]) / \
+                (precisions[i] + recalls[i])
+            f1s.append(f1)
+        print('f1 {}'.format(f1s))
+
+        with open('/tmp/evaluations.txt', 'w') as evaluations:
+            evaluations.write('True positives: {}\n'.format(tps))
+            evaluations.write('False positives: {}\n'.format(fps))
+            evaluations.write('False negatives: {}\n'.format(fns))
+            evaluations.write('True negatives: {}\n'.format(tns))
+            evaluations.write('Recalls: {}\n'.format(recalls))
+            evaluations.write('Precisions: {}\n'.format(precisions))
+            evaluations.write('f1 scores: {}\n'.format(f1s))
+            evaluations.write('Means:               {}\n'.format(MEANS))
+            evaluations.write('Standard Deviations: {}\n'.format(STDS))
+
+        preds = np.concatenate(preds).flatten()
+        ground_truth = np.concatenate(ground_truth).flatten()
+        preds = np.extract(ground_truth < 2, preds)
+        ground_truth = np.extract(ground_truth < 2, ground_truth)
+        np.save('/tmp/predictions.npy', preds, False)
+        np.save('/tmp/ground_truth.npy', ground_truth, False)
+        s3 = boto3.client('s3')
+        s3.upload_file('/tmp/evaluations.txt', bucket_name,
+                       '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
+        s3.upload_file('/tmp/predictions.npy', bucket_name,
+                       '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
+        s3.upload_file('/tmp/ground_truth.npy', bucket_name,
+                       '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
+        del s3
+
+# Training
+if True:
+    def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, image_nd):
+
+        global RASTER_DS
+        global LABEL_DS
+
+        RASTER_DS = raster_ds
+        LABEL_DS = label_ds
+
+        # Create a list of window, band pairs to read
+        bands_plus = bands + [0]
+        plan = []
+        for batch_index in range(batch_size):
+            x = 0
+            y = 0
+            while ((x + y) % 7) == 0:
+                x = np.random.randint(0, width/window_size - 1)
+                y = np.random.randint(0, height/window_size - 1)
+            window = rio.windows.Window(
+                x * window_size, y * window_size,
+                window_size, window_size)
+            for band in bands_plus:
+                args = (window, band)
+                plan.append(args)
+
+        # Do all of the reads
+        data = []
+        labels = []
+        if disable_pmap:
+            for d, i in map(get_window, plan):
+                if i == 0:
+                    labels.append(d)
+                else:
+                    data.append(d)
+        else:
+            with Pool(min(32, len(bands_plus))) as p:
+                for d, i in p.map(get_window, plan):
+                    if i == 0:
+                        labels.append(d)
+                    else:
+                        data.append(d)
+
+        RASTER_DS = None
+        LABEL_DS = None
+
+        # NODATA processing
+        raster_batch = []
+        label_batch = []
+        if image_nd is not None:
+            image_nd = (image_nd - MEANS[0])/STDS[0]
+
+        for raster, label in zip(chunks(data, len(bands)), labels):
+
+            # NODATA from labels
+            label = numpy_replace(label, label_mappings)
+            if label_nd is not None:
+                label_nds = (label == label_nd)
+            else:
+                label_nds = np.zeros(labels.shape)
+
+            # NODATA from rasters
+            nan = np.isnan(raster[0])
+            if image_nd is not None:
+                image_nds = (raster[0] == image_nd) + nan
+            else:
+                image_nds = nan
+
+            # Set label NODATA, remove NaNs from rasters
+            nodata = ((image_nds + label_nds) > 0)
+            label[nodata == True] = label_nd
+            for i in range(len(raster)):
+                raster[i][nodata == True] = 0.0
+
+            raster_batch.append(np.stack(raster, axis=0))
+            label_batch.append(label)
+
+        raster_batch = np.stack(raster_batch, axis=0)
+        raster_batch = torch.from_numpy(raster_batch).to(device)
+        label_batch = np.stack(label_batch, axis=0)
+        label_batch = torch.from_numpy(label_batch).to(device)
+
+        return (raster_batch, label_batch)
+
+    def train(model, opt, obj,
+              steps_per_epoch, epochs, batch_size,
+              raster_ds, label_ds,
+              width, height, window_size, device,
+              bands, label_mapping, label_nd, img_nd,
+              bucket_name, s3_prefix, arg_hash,
+              no_checkpoints=True, starting_epoch=0):
+
+        model.train()
+
+        current_time = time.time()
+
+        for i in range(starting_epoch, epochs):
+            avg_loss = 0.0
+
+            for j in range(steps_per_epoch):
+                batch_tensor = get_random_training_batch(
+                    raster_ds, label_ds, width, height, window_size, batch_size, device,
+                    bands, label_mapping, label_nd, img_nd)
+                opt.zero_grad()
+                pred = model(batch_tensor[0])
+                if isinstance(pred, dict):
+                    loss = 1.0 * \
+                        obj(pred.get('out'), batch_tensor[1]) + \
+                        0.4*obj(pred.get('aux'), batch_tensor[1])
+                else:
+                    loss = 1.0 * obj(pred, batch_tensor[1])
+                loss.backward()
+                opt.step()
+                avg_loss = avg_loss + loss.item()
+
+            avg_loss = avg_loss / steps_per_epoch
+
+            last_time = current_time
+            current_time = time.time()
+            print('\t\t epoch={} time={} avg_loss={}'.format(
+                i, current_time - last_time, avg_loss))
 
             with MUTEX:
                 global WATCHDOG_TIMER
                 WATCHDOG_TIMER = time.time()
 
-    print('True Positives  {}'.format(tps))
-    print('False Positives {}'.format(fps))
-    print('False Negatives {}'.format(fns))
-    print('True Negatives  {}'.format(tns))
+            if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
+                torch.save(model.state_dict(), 'deeplab.pth')
+                s3 = boto3.client('s3')
+                s3.upload_file('deeplab.pth', bucket_name,
+                               '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
+                del s3
 
-    recalls = []
-    precisions = []
-    for i in range(label_count):
-        recall = tps[i] / (tps[i] + fns[i])
-        recalls.append(recall)
-        precision = tps[i] / (tps[i] + fps[i])
-        precisions.append(precision)
+# Arguments
+if True:
+    def hash_string(string):
+        """
+        Return a SHA-256 hash of the given string
 
-    print('Recalls    {}'.format(recalls))
-    print('Precisions {}'.format(precisions))
+        Useful for generating an ID based on a set of parameters
+        https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
+        """
+        return hashlib.sha256(string.encode('utf-8')).hexdigest()
 
-    f1s = []
-    for i in range(label_count):
-        f1 = 2 * (precisions[i] * recalls[i]) / (precisions[i] + recalls[i])
-        f1s.append(f1)
-    print('f1 {}'.format(f1s))
+    class StoreDictKeyPair(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            my_dict = {}
+            for kv in values.split(','):
+                k, v = kv.split(':')
+                my_dict[int(k)] = int(v)
+            setattr(namespace, self.dest, my_dict)
 
-    with open('/tmp/evaluations.txt', 'w') as evaluations:
-        evaluations.write('True positives: {}\n'.format(tps))
-        evaluations.write('False positives: {}\n'.format(fps))
-        evaluations.write('False negatives: {}\n'.format(fns))
-        evaluations.write('True negatives: {}\n'.format(tns))
-        evaluations.write('Recalls: {}\n'.format(recalls))
-        evaluations.write('Precisions: {}\n'.format(precisions))
-        evaluations.write('f1 scores: {}\n'.format(f1s))
-        evaluations.write('Means:               {}\n'.format(MEANS))
-        evaluations.write('Standard Deviations: {}\n'.format(STDS))
+    def training_cli_parser():
+        """
+        https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
+        """
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--bands',
+                            help='list of bands to train (1 indexed)',
+                            nargs='+',
+                            default=os.environ.get(
+                                'TRAINING_BANDS', [1, 2, 3]),
+                            type=int)
+        parser.add_argument('--epochs1',
+                            help='',
+                            default=os.environ.get('TRAINING_EPOCHS_1', 5),
+                            type=int)
+        parser.add_argument('--learning-rate1',
+                            # https://arxiv.org/abs/1206.5533
+                            help='float (probably between 10^-6 and 1) to tune SGD',
+                            default=os.environ.get('LEARNING_RATE_1', 0.01),
+                            type=float)
+        parser.add_argument('--epochs2',
+                            help='',
+                            default=os.environ.get('TRAINING_EPOCHS_2', 5),
+                            type=int)
+        parser.add_argument('--learning-rate2',
+                            # https://arxiv.org/abs/1206.5533
+                            help='float (probably between 10^-6 and 1) to tune SGD',
+                            default=os.environ.get('LEARNING_RATE_2', 0.001),
+                            type=float)
+        parser.add_argument('--epochs3',
+                            help='',
+                            default=os.environ.get('TRAINING_EPOCHS_3', 5),
+                            type=int)
+        parser.add_argument('--learning-rate3',
+                            # https://arxiv.org/abs/1206.5533
+                            help='float (probably between 10^-6 and 1) to tune SGD',
+                            default=os.environ.get('LEARNING_RATE_3', 0.01),
+                            type=float)
+        parser.add_argument('--epochs4',
+                            help='',
+                            default=os.environ.get('TRAINING_EPOCHS_4', 15),
+                            type=int)
+        parser.add_argument('--learning-rate4',
+                            # https://arxiv.org/abs/1206.5533
+                            help='float (probably between 10^-6 and 1) to tune SGD',
+                            default=os.environ.get('LEARNING_RATE_4', 0.001),
+                            type=float)
+        parser.add_argument('--training-img',
+                            required=True,
+                            help="the input you're training to produce labels for")
+        parser.add_argument('--label-img',
+                            required=True,
+                            help='labels to train')
+        parser.add_argument('--label-map',
+                            help='comma separated list of mappings to apply to training labels',
+                            action=StoreDictKeyPair,
+                            default=os.environ.get('LABEL_MAPPING', None))
+        parser.add_argument('--label-nd',
+                            help='label to ignore',
+                            default=os.environ.get('TRAINING_LABEL_ND', None),
+                            type=int)
+        parser.add_argument('--img-nd',
+                            help='image value to ignore - must be on the first band',
+                            default=os.environ.get('TRAINING_IMAGE_ND', None),
+                            type=float)
+        parser.add_argument('--weights',
+                            help='label to ignore',
+                            nargs='+',
+                            required=True,
+                            type=float)
+        parser.add_argument('--input-stride',
+                            help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
+                            default=os.environ.get('INPUT_STRIDE', 2),
+                            type=int)
+        parser.add_argument('--random-seed',
+                            default=33,
+                            type=int)
+        parser.add_argument('--batch-size',
+                            default=16,
+                            type=int)
+        parser.add_argument('--backend',
+                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
+                            choices=['cpu', 'cuda'],
+                            default='cuda')
+        parser.add_argument('--s3-bucket',
+                            required=True,
+                            help='prefix to apply when saving models and diagnostic images to s3')
+        parser.add_argument('--s3-prefix',
+                            required=True,
+                            help='prefix to apply when saving models and diagnostic images to s3')
+        parser.add_argument('--window-size',
+                            default=32,
+                            type=int)
+        parser.add_argument('--max-epoch-size',
+                            default=sys.maxsize,
+                            type=int)
+        parser.add_argument('--disable-eval',
+                            help='Disable evaluation after training',
+                            action='store_true')
+        parser.add_argument('--disable-pmap',
+                            action='store_true')
+        parser.add_argument('--max-eval-windows',
+                            help='The maximum number of windows that will be used for evaluation',
+                            default=sys.maxsize,
+                            type=int)
+        parser.add_argument('--start-from',
+                            help='The saved model to start the fourth phase from')
+        parser.add_argument('--watchdog-seconds',
+                            help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
+                            default=0,
+                            type=int)
+        parser.add_argument('--whole-image-statistics',
+                            action='store_true')
+        parser.add_argument('--max-sample-windows',
+                            default=133,
+                            type=int)
+        parser.add_argument('--architecture',
+                            help='The desired model architecture',
+                            choices=['resnet18', 'resnet34',
+                                     'resnet101', 'stock'],
+                            default='resnet18')
+        return parser
 
-    preds = np.concatenate(preds).flatten()
-    ground_truth = np.concatenate(ground_truth).flatten()
-    preds = np.extract(ground_truth < 2, preds)
-    ground_truth = np.extract(ground_truth < 2, ground_truth)
-    np.save('/tmp/predictions.npy', preds, False)
-    np.save('/tmp/ground_truth.npy', ground_truth, False)
-    s3 = boto3.client('s3')
-    s3.upload_file('/tmp/evaluations.txt', bucket_name,
-                   '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
-    s3.upload_file('/tmp/predictions.npy', bucket_name,
-                   '{}/{}/predictions.npy'.format(s3_prefix, arg_hash))
-    s3.upload_file('/tmp/ground_truth.npy', bucket_name,
-                   '{}/{}/ground_truth.npy'.format(s3_prefix, arg_hash))
-    del s3
+# Architectures
+if True:
+    class DeepLabResnet18(torch.nn.Module):
+        def __init__(self, band_count, input_stride, class_count):
+            super(DeepLabResnet18, self).__init__()
+            resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
+            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+                resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
+            inplanes = 512
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                inplanes, class_count)
+            inplanes = 256
+            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
+                inplanes, class_count)
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
-
-def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, image_nd):
-
-    global RASTER_DS
-    global LABEL_DS
-
-    RASTER_DS = raster_ds
-    LABEL_DS = label_ds
-
-    # Create a list of window, band pairs to read
-    bands_plus = bands + [0]
-    plan = []
-    for batch_index in range(batch_size):
-        x = 0
-        y = 0
-        while ((x + y) % 7) == 0:
-            x = np.random.randint(0, width/window_size - 1)
-            y = np.random.randint(0, height/window_size - 1)
-        window = rio.windows.Window(
-            x * window_size, y * window_size,
-            window_size, window_size)
-        for band in bands_plus:
-            args = (window, band)
-            plan.append(args)
-
-    # Do all of the reads
-    data = []
-    labels = []
-    if disable_pmap:
-        for d, i in map(get_window, plan):
-            if i == 0:
-                labels.append(d)
+            if input_stride == 1:
+                self.factor = 16
             else:
-                data.append(d)
-    else:
-        with Pool(min(32, len(bands_plus))) as p:
-            for d, i in p.map(get_window, plan):
-                if i == 0:
-                    labels.append(d)
-                else:
-                    data.append(d)
+                self.factor = 32
 
-    RASTER_DS = None
-    LABEL_DS = None
+        def forward(self, x):
+            [w, h] = x.shape[-2:]
 
-    # NODATA processing
-    raster_batch = []
-    label_batch = []
-    if image_nd is not None:
-        image_nd = (image_nd - MEANS[0])/STDS[0]
+            features = self.backbone(torch.nn.functional.interpolate(
+                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-    for raster, label in zip(chunks(data, len(bands)), labels):
+            result = {}
 
-        # NODATA from labels
-        label = numpy_replace(label, label_mappings)
-        if label_nd is not None:
-            label_nds = (label == label_nd)
-        else:
-            label_nds = np.zeros(labels.shape)
+            x = features['out']
+            x = self.classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['out'] = x
 
-        # NODATA from rasters
-        nan = np.isnan(raster[0])
-        if image_nd is not None:
-            image_nds = (raster[0] == image_nd) + nan
-        else:
-            image_nds = nan
+            x = features['aux']
+            x = self.aux_classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['aux'] = x
 
-        # Set label NODATA, remove NaNs from rasters
-        nodata = ((image_nds + label_nds) > 0)
-        label[nodata == True] = label_nd
-        for i in range(len(raster)):
-            raster[i][nodata == True] = 0.0
+            return result
 
-        raster_batch.append(np.stack(raster, axis=0))
-        label_batch.append(label)
+    def make_model_resnet18(band_count, input_stride=1, class_count=2):
+        deeplab = DeepLabResnet18(band_count, input_stride, class_count)
+        return deeplab
 
-    raster_batch = np.stack(raster_batch, axis=0)
-    raster_batch = torch.from_numpy(raster_batch).to(device)
-    label_batch = np.stack(label_batch, axis=0)
-    label_batch = torch.from_numpy(label_batch).to(device)
+    class DeepLabResnet34(torch.nn.Module):
+        def __init__(self, band_count, input_stride, class_count):
+            super(DeepLabResnet34, self).__init__()
+            resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
+            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+                resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
+            inplanes = 512
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                inplanes, class_count)
+            inplanes = 256
+            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
+                inplanes, class_count)
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
-    return (raster_batch, label_batch)
-
-
-def train(model, opt, obj,
-          steps_per_epoch, epochs, batch_size,
-          raster_ds, label_ds,
-          width, height, window_size, device,
-          bands, label_mapping, label_nd, img_nd,
-          bucket_name, s3_prefix, arg_hash,
-          no_checkpoints=True, starting_epoch=0):
-
-    model.train()
-
-    current_time = time.time()
-
-    for i in range(starting_epoch, epochs):
-        avg_loss = 0.0
-
-        for j in range(steps_per_epoch):
-            batch_tensor = get_random_training_batch(
-                raster_ds, label_ds, width, height, window_size, batch_size, device,
-                bands, label_mapping, label_nd, img_nd)
-            opt.zero_grad()
-            pred = model(batch_tensor[0])
-            if isinstance(pred, dict):
-                loss = 1.0 * \
-                    obj(pred.get('out'), batch_tensor[1]) + \
-                    0.4*obj(pred.get('aux'), batch_tensor[1])
+            if input_stride == 1:
+                self.factor = 16
             else:
-                loss = 1.0 * obj(pred, batch_tensor[1])
-            loss.backward()
-            opt.step()
-            avg_loss = avg_loss + loss.item()
+                self.factor = 32
 
-        avg_loss = avg_loss / steps_per_epoch
+        def forward(self, x):
+            [w, h] = x.shape[-2:]
 
-        last_time = current_time
-        current_time = time.time()
-        print('\t\t epoch={} time={} avg_loss={}'.format(
-            i, current_time - last_time, avg_loss))
+            features = self.backbone(torch.nn.functional.interpolate(
+                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-        with MUTEX:
-            global WATCHDOG_TIMER
-            WATCHDOG_TIMER = time.time()
+            result = {}
 
-        if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
-            torch.save(model.state_dict(), 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', bucket_name,
-                           '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
-            del s3
+            x = features['out']
+            x = self.classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['out'] = x
 
+            x = features['aux']
+            x = self.aux_classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['aux'] = x
 
-class StoreDictKeyPair(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
-        my_dict = {}
-        for kv in values.split(','):
-            k, v = kv.split(':')
-            my_dict[int(k)] = int(v)
-        setattr(namespace, self.dest, my_dict)
+            return result
 
+    def make_model_resnet34(band_count, input_stride=1, class_count=2):
+        deeplab = DeepLabResnet34(band_count, input_stride, class_count)
+        return deeplab
 
-def training_cli_parser():
-    """
-    https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
-    """
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--bands',
-                        help='list of bands to train (1 indexed)',
-                        nargs='+',
-                        default=os.environ.get('TRAINING_BANDS', [1, 2, 3]),
-                        type=int)
-    parser.add_argument('--epochs1',
-                        help='',
-                        default=os.environ.get('TRAINING_EPOCHS_1', 5),
-                        type=int)
-    parser.add_argument('--learning-rate1',
-                        # https://arxiv.org/abs/1206.5533
-                        help='float (probably between 10^-6 and 1) to tune SGD',
-                        default=os.environ.get('LEARNING_RATE_1', 0.01),
-                        type=float)
-    parser.add_argument('--epochs2',
-                        help='',
-                        default=os.environ.get('TRAINING_EPOCHS_2', 5),
-                        type=int)
-    parser.add_argument('--learning-rate2',
-                        # https://arxiv.org/abs/1206.5533
-                        help='float (probably between 10^-6 and 1) to tune SGD',
-                        default=os.environ.get('LEARNING_RATE_2', 0.001),
-                        type=float)
-    parser.add_argument('--epochs3',
-                        help='',
-                        default=os.environ.get('TRAINING_EPOCHS_3', 5),
-                        type=int)
-    parser.add_argument('--learning-rate3',
-                        # https://arxiv.org/abs/1206.5533
-                        help='float (probably between 10^-6 and 1) to tune SGD',
-                        default=os.environ.get('LEARNING_RATE_3', 0.01),
-                        type=float)
-    parser.add_argument('--epochs4',
-                        help='',
-                        default=os.environ.get('TRAINING_EPOCHS_4', 15),
-                        type=int)
-    parser.add_argument('--learning-rate4',
-                        # https://arxiv.org/abs/1206.5533
-                        help='float (probably between 10^-6 and 1) to tune SGD',
-                        default=os.environ.get('LEARNING_RATE_4', 0.001),
-                        type=float)
-    parser.add_argument('--training-img',
-                        required=True,
-                        help="the input you're training to produce labels for")
-    parser.add_argument('--label-img',
-                        required=True,
-                        help='labels to train')
-    parser.add_argument('--label-map',
-                        help='comma separated list of mappings to apply to training labels',
-                        action=StoreDictKeyPair,
-                        default=os.environ.get('LABEL_MAPPING', None))
-    parser.add_argument('--label-nd',
-                        help='label to ignore',
-                        default=os.environ.get('TRAINING_LABEL_ND', None),
-                        type=int)
-    parser.add_argument('--img-nd',
-                        help='image value to ignore - must be on the first band',
-                        default=os.environ.get('TRAINING_IMAGE_ND', None),
-                        type=float)
-    parser.add_argument('--weights',
-                        help='label to ignore',
-                        nargs='+',
-                        required=True,
-                        type=float)
-    parser.add_argument('--input-stride',
-                        help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                        default=os.environ.get('INPUT_STRIDE', 2),
-                        type=int)
-    parser.add_argument('--random-seed',
-                        default=33,
-                        type=int)
-    parser.add_argument('--batch-size',
-                        default=16,
-                        type=int)
-    parser.add_argument('--backend',
-                        help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
-                        choices=['cpu', 'cuda'],
-                        default='cuda')
-    parser.add_argument('--s3-bucket',
-                        required=True,
-                        help='prefix to apply when saving models and diagnostic images to s3')
-    parser.add_argument('--s3-prefix',
-                        required=True,
-                        help='prefix to apply when saving models and diagnostic images to s3')
-    parser.add_argument('--window-size',
-                        default=32,
-                        type=int)
-    parser.add_argument('--max-epoch-size',
-                        default=sys.maxsize,
-                        type=int)
-    parser.add_argument('--disable-eval',
-                        help='Disable evaluation after training',
-                        action='store_true')
-    parser.add_argument('--disable-pmap',
-                        action='store_true')
-    parser.add_argument('--max-eval-windows',
-                        help='The maximum number of windows that will be used for evaluation',
-                        default=sys.maxsize,
-                        type=int)
-    parser.add_argument('--start-from',
-                        help='The saved model to start the fourth phase from')
-    parser.add_argument('--watchdog-seconds',
-                        help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
-                        default=0,
-                        type=int)
-    parser.add_argument('--whole-image-statistics',
-                        action='store_true')
-    parser.add_argument('--max-sample-windows',
-                        default=133,
-                        type=int)
-    parser.add_argument('--architecture',
-                        help='The desired model architecture',
-                        choices=['resnet18', 'resnet34', 'resnet101', 'stock'],
-                        default='resnet18')
-    return parser
+    class DeepLabResnet101(torch.nn.Module):
+        def __init__(self, band_count, input_stride, class_count):
+            super(DeepLabResnet101, self).__init__()
+            resnet18 = torchvision.models.resnet.resnet101(
+                pretrained=True, replace_stride_with_dilation=[False, True, True])
+            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+                resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
+            inplanes = 2048
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                inplanes, class_count)
+            inplanes = 1024
+            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
+                inplanes, class_count)
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
+            if input_stride == 1:
+                self.factor = 4
+            else:
+                self.factor = 8
 
-def watchdog_thread(seconds):
-    while True:
-        time.sleep(max(seconds//2, 1))
-        with MUTEX:
-            gap = time.time() - WATCHDOG_TIMER
-        if gap > seconds:
-            print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
-                gap, seconds), file=sys.stderr)
-            os._exit(-1)
+        def forward(self, x):
+            [w, h] = x.shape[-2:]
 
+            features = self.backbone(torch.nn.functional.interpolate(
+                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-# ------------------------------------------------------------------------
+            result = {}
 
+            x = features['out']
+            x = self.classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['out'] = x
 
-class DeepLabResnet18(torch.nn.Module):
-    def __init__(self, band_count, input_stride, class_count):
-        super(DeepLabResnet18, self).__init__()
-        resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
-        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-            resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
-        inplanes = 512
-        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-            inplanes, class_count)
-        inplanes = 256
-        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-            inplanes, class_count)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+            x = features['aux']
+            x = self.aux_classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+            result['aux'] = x
 
-        if input_stride == 1:
-            self.factor = 16
-        else:
-            self.factor = 32
+            return result
 
-    def forward(self, x):
-        [w, h] = x.shape[-2:]
+    def make_model_resnet101(band_count, input_stride=1, class_count=2):
+        deeplab = DeepLabResnet101(band_count, input_stride, class_count)
+        return deeplab
 
-        features = self.backbone(torch.nn.functional.interpolate(
-            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-        result = {}
-
-        x = features['out']
-        x = self.classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['out'] = x
-
-        x = features['aux']
-        x = self.aux_classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['aux'] = x
-
-        return result
-
-
-def make_model_resnet18(band_count, input_stride=1, class_count=2):
-    deeplab = DeepLabResnet18(band_count, input_stride, class_count)
-    return deeplab
-
-
-# ------------------------------------------------------------------------
-
-
-class DeepLabResnet34(torch.nn.Module):
-    def __init__(self, band_count, input_stride, class_count):
-        super(DeepLabResnet34, self).__init__()
-        resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
-        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-            resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
-        inplanes = 512
-        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-            inplanes, class_count)
-        inplanes = 256
-        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-            inplanes, class_count)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-        if input_stride == 1:
-            self.factor = 16
-        else:
-            self.factor = 32
-
-    def forward(self, x):
-        [w, h] = x.shape[-2:]
-
-        features = self.backbone(torch.nn.functional.interpolate(
-            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-        result = {}
-
-        x = features['out']
-        x = self.classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['out'] = x
-
-        x = features['aux']
-        x = self.aux_classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['aux'] = x
-
-        return result
-
-
-def make_model_resnet34(band_count, input_stride=1, class_count=2):
-    deeplab = DeepLabResnet34(band_count, input_stride, class_count)
-    return deeplab
-
-
-# ------------------------------------------------------------------------
-
-
-class DeepLabResnet101(torch.nn.Module):
-    def __init__(self, band_count, input_stride, class_count):
-        super(DeepLabResnet101, self).__init__()
-        resnet18 = torchvision.models.resnet.resnet101(
-            pretrained=True, replace_stride_with_dilation=[False, True, True])
-        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-            resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
-        inplanes = 2048
-        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-            inplanes, class_count)
-        inplanes = 1024
-        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-            inplanes, class_count)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-        if input_stride == 1:
-            self.factor = 4
-        else:
-            self.factor = 8
-
-    def forward(self, x):
-        [w, h] = x.shape[-2:]
-
-        features = self.backbone(torch.nn.functional.interpolate(
-            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-        result = {}
-
-        x = features['out']
-        x = self.classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['out'] = x
-
-        x = features['aux']
-        x = self.aux_classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['aux'] = x
-
-        return result
-
-
-def make_model_resnet101(band_count, input_stride=1, class_count=2):
-    deeplab = DeepLabResnet101(band_count, input_stride, class_count)
-    return deeplab
-
-
-# ------------------------------------------------------------------------
-
-
-def make_model_stock(band_count, input_stride=1, class_count=2):
-    deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-        pretrained=True)
-    last_class = deeplab.classifier[4] = torch.nn.Conv2d(
-        256, class_count, kernel_size=7, stride=1, dilation=1)
-    last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
-        256, class_count, kernel_size=7, stride=1, dilation=1)
-    input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
-        band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
-    return deeplab
-
-
-# ------------------------------------------------------------------------
+    def make_model_stock(band_count, input_stride=1, class_count=2):
+        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+            pretrained=True)
+        last_class = deeplab.classifier[4] = torch.nn.Conv2d(
+            256, class_count, kernel_size=7, stride=1, dilation=1)
+        last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
+            256, class_count, kernel_size=7, stride=1, dilation=1)
+        input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
+            band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
+        return deeplab
 
 
 if __name__ == '__main__':
