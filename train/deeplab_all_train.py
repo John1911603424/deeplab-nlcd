@@ -484,122 +484,57 @@ if True:
         https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--bands',
-                            help='list of bands to train (1 indexed)',
-                            nargs='+',
-                            default=os.environ.get(
-                                'TRAINING_BANDS', [1, 2, 3]),
-                            type=int)
-        parser.add_argument('--epochs1',
-                            help='',
-                            default=os.environ.get('TRAINING_EPOCHS_1', 5),
-                            type=int)
-        parser.add_argument('--learning-rate1',
-                            # https://arxiv.org/abs/1206.5533
-                            help='float (probably between 10^-6 and 1) to tune SGD',
-                            default=os.environ.get('LEARNING_RATE_1', 0.01),
-                            type=float)
-        parser.add_argument('--epochs2',
-                            help='',
-                            default=os.environ.get('TRAINING_EPOCHS_2', 5),
-                            type=int)
-        parser.add_argument('--learning-rate2',
-                            # https://arxiv.org/abs/1206.5533
-                            help='float (probably between 10^-6 and 1) to tune SGD',
-                            default=os.environ.get('LEARNING_RATE_2', 0.001),
-                            type=float)
-        parser.add_argument('--epochs3',
-                            help='',
-                            default=os.environ.get('TRAINING_EPOCHS_3', 5),
-                            type=int)
-        parser.add_argument('--learning-rate3',
-                            # https://arxiv.org/abs/1206.5533
-                            help='float (probably between 10^-6 and 1) to tune SGD',
-                            default=os.environ.get('LEARNING_RATE_3', 0.01),
-                            type=float)
-        parser.add_argument('--epochs4',
-                            help='',
-                            default=os.environ.get('TRAINING_EPOCHS_4', 15),
-                            type=int)
-        parser.add_argument('--learning-rate4',
-                            # https://arxiv.org/abs/1206.5533
-                            help='float (probably between 10^-6 and 1) to tune SGD',
-                            default=os.environ.get('LEARNING_RATE_4', 0.001),
-                            type=float)
-        parser.add_argument('--training-img',
-                            required=True,
-                            help="the input you're training to produce labels for")
-        parser.add_argument('--label-img',
-                            required=True,
+        parser.add_argument('--architecture', required=True, help='The desired model architecture',
+                            choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
+        parser.add_argument('--backend', help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
+                            choices=['cpu', 'cuda'], default='cuda')
+        parser.add_argument('--bands', required=True,
+                            help='list of bands to train on (1 indexed)', nargs='+', type=int)
+        parser.add_argument('--batch-size', default=16, type=int)
+        parser.add_argument(
+            '--disable-eval', help='Disable evaluation after training', action='store_true')
+        parser.add_argument('--disable-pmap', action='store_true')
+        parser.add_argument('--epochs1', default=5, type=int)
+        parser.add_argument('--epochs2', default=5, type=int)
+        parser.add_argument('--epochs3', default=5, type=int)
+        parser.add_argument('--epochs4', default=15, type=int)
+        parser.add_argument(
+            '--img-nd', help='image value to ignore - must be on the first band', default=None, type=float)
+        parser.add_argument(
+            '--input-stride', help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md', default=2, type=int)
+        parser.add_argument('--label-img', required=True,
                             help='labels to train')
-        parser.add_argument('--label-map',
-                            help='comma separated list of mappings to apply to training labels',
-                            action=StoreDictKeyPair,
-                            default=os.environ.get('LABEL_MAPPING', None))
-        parser.add_argument('--label-nd',
-                            help='label to ignore',
-                            default=os.environ.get('TRAINING_LABEL_ND', None),
-                            type=int)
-        parser.add_argument('--img-nd',
-                            help='image value to ignore - must be on the first band',
-                            default=os.environ.get('TRAINING_IMAGE_ND', None),
-                            type=float)
-        parser.add_argument('--weights',
-                            help='label to ignore',
-                            nargs='+',
-                            required=True,
-                            type=float)
-        parser.add_argument('--input-stride',
-                            help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md',
-                            default=os.environ.get('INPUT_STRIDE', 2),
-                            type=int)
-        parser.add_argument('--random-seed',
-                            default=33,
-                            type=int)
-        parser.add_argument('--batch-size',
-                            default=16,
-                            type=int)
-        parser.add_argument('--backend',
-                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
-                            choices=['cpu', 'cuda'],
-                            default='cuda')
-        parser.add_argument('--s3-bucket',
-                            required=True,
-                            help='prefix to apply when saving models and diagnostic images to s3')
-        parser.add_argument('--s3-prefix',
-                            required=True,
-                            help='prefix to apply when saving models and diagnostic images to s3')
-        parser.add_argument('--window-size',
-                            default=32,
-                            type=int)
-        parser.add_argument('--max-epoch-size',
-                            default=sys.maxsize,
-                            type=int)
-        parser.add_argument('--disable-eval',
-                            help='Disable evaluation after training',
-                            action='store_true')
-        parser.add_argument('--disable-pmap',
-                            action='store_true')
-        parser.add_argument('--max-eval-windows',
-                            help='The maximum number of windows that will be used for evaluation',
-                            default=sys.maxsize,
-                            type=int)
-        parser.add_argument('--start-from',
-                            help='The saved model to start the fourth phase from')
-        parser.add_argument('--watchdog-seconds',
-                            help='The number of seconds that can pass without activity before the program is terminated (0 to disable)',
-                            default=0,
-                            type=int)
-        parser.add_argument('--whole-image-statistics',
-                            action='store_true')
-        parser.add_argument('--max-sample-windows',
-                            default=133,
-                            type=int)
-        parser.add_argument('--architecture',
-                            help='The desired model architecture',
-                            choices=['resnet18', 'resnet34',
-                                     'resnet101', 'stock'],
-                            default='resnet18')
+        parser.add_argument('--label-map', help='comma separated list of mappings to apply to training labels',
+                            action=StoreDictKeyPair, default=None)
+        parser.add_argument(
+            '--label-nd', help='label to ignore', default=None, type=int)
+        parser.add_argument(
+            '--learning-rate1', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.01, type=float)
+        parser.add_argument(
+            '--learning-rate2', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
+        parser.add_argument(
+            '--learning-rate3', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.01, type=float)
+        parser.add_argument(
+            '--learning-rate4', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
+        parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
+        parser.add_argument(
+            '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
+        parser.add_argument('--max-sample-windows', default=0, type=int)
+        parser.add_argument('--random-seed', default=33, type=int)
+        parser.add_argument('--s3-bucket', required=True,
+                            help='prefix to apply when saving models to s3')
+        parser.add_argument('--s3-prefix', required=True,
+                            help='prefix to apply when saving models to s3')
+        parser.add_argument(
+            '--start-from', help='The saved model to start the fourth phase from')
+        parser.add_argument('--training-img', required=True,
+                            help="the input you're training to produce labels for")
+        parser.add_argument(
+            '--watchdog-seconds', help='The number of seconds that can pass without activity before the program is terminated (0 to disable)', default=0, type=int)
+        parser.add_argument('--weights', help='label to ignore',
+                            nargs='+', required=True, type=float)
+        parser.add_argument('--whole-image-statistics', action='store_true')
+        parser.add_argument('--window-size', default=32, type=int)
         return parser
 
 # Architectures
@@ -904,10 +839,10 @@ if __name__ == '__main__':
 
     if args.architecture == 'resnet18':
         make_model = make_model_resnet18
-    elif args.architecture == 'resnet18':
+    elif args.architecture == 'resnet34':
         make_model = make_model_resnet34
     elif args.architecture == 'resnet101':
-        make_model = make_model_resnet34
+        make_model = make_model_resnet101
     elif args.architecture == 'stock':
         make_model = make_model_stock
         if args.window_size < 224:
