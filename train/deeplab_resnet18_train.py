@@ -584,6 +584,10 @@ def training_cli_parser():
     parser.add_argument('--max-sample-windows',
                         default=133,
                         type=int)
+    parser.add_argument('--architecture',
+                        help='The desired model architecture',
+                        choices=['resnet18', 'resnet34', 'resnet101', 'stock'],
+                        default='resnet18')
     return parser
 
 
@@ -596,6 +600,9 @@ def watchdog_thread(seconds):
             print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
                 gap, seconds), file=sys.stderr)
             os._exit(-1)
+
+
+# ------------------------------------------------------------------------
 
 
 class DeepLabResnet18(torch.nn.Module):
@@ -641,9 +648,130 @@ class DeepLabResnet18(torch.nn.Module):
         return result
 
 
-def make_model(band_count, input_stride=1, class_count=2):
+def make_model_resnet18(band_count, input_stride=1, class_count=2):
     deeplab = DeepLabResnet18(band_count, input_stride, class_count)
     return deeplab
+
+
+# ------------------------------------------------------------------------
+
+
+class DeepLabResnet34(torch.nn.Module):
+    def __init__(self, band_count, input_stride, class_count):
+        super(DeepLabResnet34, self).__init__()
+        resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
+        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+            resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
+        inplanes = 512
+        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+            inplanes, class_count)
+        inplanes = 256
+        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
+            inplanes, class_count)
+        self.backbone.conv1 = torch.nn.Conv2d(
+            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+
+        if input_stride == 1:
+            self.factor = 16
+        else:
+            self.factor = 32
+
+    def forward(self, x):
+        [w, h] = x.shape[-2:]
+
+        features = self.backbone(torch.nn.functional.interpolate(
+            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
+
+        result = {}
+
+        x = features['out']
+        x = self.classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result['out'] = x
+
+        x = features['aux']
+        x = self.aux_classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result['aux'] = x
+
+        return result
+
+
+def make_model_resnet34(band_count, input_stride=1, class_count=2):
+    deeplab = DeepLabResnet34(band_count, input_stride, class_count)
+    return deeplab
+
+
+# ------------------------------------------------------------------------
+
+
+class DeepLabResnet101(torch.nn.Module):
+    def __init__(self, band_count, input_stride, class_count):
+        super(DeepLabResnet101, self).__init__()
+        resnet18 = torchvision.models.resnet.resnet101(
+            pretrained=True, replace_stride_with_dilation=[False, True, True])
+        self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+            resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
+        inplanes = 2048
+        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+            inplanes, class_count)
+        inplanes = 1024
+        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
+            inplanes, class_count)
+        self.backbone.conv1 = torch.nn.Conv2d(
+            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+
+        if input_stride == 1:
+            self.factor = 4
+        else:
+            self.factor = 8
+
+    def forward(self, x):
+        [w, h] = x.shape[-2:]
+
+        features = self.backbone(torch.nn.functional.interpolate(
+            x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
+
+        result = {}
+
+        x = features['out']
+        x = self.classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result['out'] = x
+
+        x = features['aux']
+        x = self.aux_classifier(x)
+        x = torch.nn.functional.interpolate(
+            x, size=[w, h], mode='bilinear', align_corners=False)
+        result['aux'] = x
+
+        return result
+
+
+def make_model_resnet101(band_count, input_stride=1, class_count=2):
+    deeplab = DeepLabResnet101(band_count, input_stride, class_count)
+    return deeplab
+
+
+# ------------------------------------------------------------------------
+
+
+def make_model_stock(band_count, input_stride=1, class_count=2):
+    deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
+        pretrained=True)
+    last_class = deeplab.classifier[4] = torch.nn.Conv2d(
+        256, class_count, kernel_size=7, stride=1, dilation=1)
+    last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
+        256, class_count, kernel_size=7, stride=1, dilation=1)
+    input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
+        band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
+    return deeplab
+
+
+# ------------------------------------------------------------------------
 
 
 if __name__ == '__main__':
@@ -792,6 +920,20 @@ if __name__ == '__main__':
     if batch_size < 2:
         batch_size = 2
         print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
+
+    if args.architecture == 'resnet18':
+        make_model = make_model_resnet18
+    elif args.architecture == 'resnet18':
+        make_model = make_model_resnet34
+    elif args.architecture == 'resnet101':
+        make_model = make_model_resnet34
+    elif args.architecture == 'stock':
+        make_model = make_model_stock
+        if args.window_size < 224:
+            print('\t WARNING: WINDOWS SIZE {} IS PROBABLY TOO SMALL'.format(
+                ars.window_size))
+    else:
+        raise Exception
 
     steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
                                                    (args.window_size * args.window_size * 7.0 * batch_size)))
