@@ -684,7 +684,29 @@ if __name__ == '__main__':
     # ---------------------------------
     print('PRE-COMPUTING')
 
-    if args.whole_image_statistics:
+    if args.max_sample_windows == -1:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            for i in raster_ds.indexes:
+                MEANS.append(0)
+                STDS.append(1)
+    elif args.max_sample_windows == 0:
+        with rio.open('/tmp/mul.tif') as raster_ds:
+            for dtype in raster_ds.dtypes:
+                if dtype == 'uint8':
+                    MEANS.append(0)
+                    STDS.append(2**8 - 1)
+                elif dtype == 'uint16':
+                    MEANS.append(0)
+                    STDS.append(2**16 - 1)
+                elif dtype == 'float32':
+                    MEANS.append(0)
+                    STDS.append(1)
+                elif dtype == 'float64':
+                    MEANS.append(0)
+                    STDS.append(1)
+                else:
+                    raise Exception
+    elif args.whole_image_statistics:
         with rio.open('/tmp/mul.tif') as raster_ds:
             for i in range(0, len(raster_ds.indexes)):
                 a = raster_ds.read(i+1).flatten()
