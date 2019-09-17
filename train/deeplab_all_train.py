@@ -24,9 +24,9 @@ if os.environ.get('CURL_CA_BUNDLE') is None:
 
 MEANS = []
 STDS = []
-RASTER_DS = None
-LABEL_DS = None
-MUTEX = threading.Lock()
+TRAINING_MUTEX = threading.Lock()
+TRAINING_BATCHES = []
+WATCHDOG_MUTEX = threading.Lock()
 WATCHDOG_TIMER = time.time()
 
 
@@ -106,13 +106,13 @@ if True:
         return b
 
     def get_window(arguments):
-        window, band = arguments
+        window, band, raster_ds, label_ds = arguments
 
         # Labels
         if band == 0:
-            a = np.array(retry_read(LABEL_DS, 1, window=window), dtype=np.long)
+            a = np.array(retry_read(label_ds, 1, window=window), dtype=np.long)
         else:
-            a = np.float32(retry_read(RASTER_DS, band, window=window))
+            a = np.float32(retry_read(raster_ds, band, window=window))
             a = (a - MEANS[band-1]) / STDS[band-1]
 
         return a, band
@@ -120,7 +120,7 @@ if True:
     def watchdog_thread(seconds):
         while True:
             time.sleep(max(seconds//2, 1))
-            with MUTEX:
+            with WATCHDOG_MUTEX:
                 gap = time.time() - WATCHDOG_TIMER
             if gap > seconds:
                 print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
@@ -274,7 +274,7 @@ if True:
                 preds.append(out.flatten())
                 ground_truth.append(labels.flatten())
 
-                with MUTEX:
+                with WATCHDOG_MUTEX:
                     global WATCHDOG_TIMER
                     WATCHDOG_TIMER = time.time()
 
@@ -329,49 +329,15 @@ if True:
 
 # Training
 if True:
-    def get_random_training_batch(raster_ds, label_ds, width, height, window_size, batch_size, device, bands, label_mappings, label_nd, image_nd):
-
-        global RASTER_DS
-        global LABEL_DS
-
-        RASTER_DS = raster_ds
-        LABEL_DS = label_ds
-
-        # Create a list of window, band pairs to read
-        bands_plus = bands + [0]
-        plan = []
-        for batch_index in range(batch_size):
-            x = 0
-            y = 0
-            while ((x + y) % 7) == 0:
-                x = np.random.randint(0, width/window_size - 1)
-                y = np.random.randint(0, height/window_size - 1)
-            window = rio.windows.Window(
-                x * window_size, y * window_size,
-                window_size, window_size)
-            for band in bands_plus:
-                args = (window, band)
-                plan.append(args)
-
-        # Do all of the reads
+    def read_plan(raster_ds, mask_ds, band_count, plan, label_mappings, label_nd, image_nd):
+        # Read the plan
         data = []
         labels = []
-        if disable_pmap:
-            for d, i in map(get_window, plan):
-                if i == 0:
-                    labels.append(d)
-                else:
-                    data.append(d)
-        else:
-            with Pool(min(32, len(bands_plus))) as p:
-                for d, i in p.map(get_window, plan):
-                    if i == 0:
-                        labels.append(d)
-                    else:
-                        data.append(d)
-
-        RASTER_DS = None
-        LABEL_DS = None
+        for d, i in map(get_window, plan):
+            if i == 0:
+                labels.append(d)
+            else:
+                data.append(d)
 
         # NODATA processing
         raster_batch = []
@@ -379,7 +345,7 @@ if True:
         if image_nd is not None:
             image_nd = (image_nd - MEANS[0])/STDS[0]
 
-        for raster, label in zip(chunks(data, len(bands)), labels):
+        for raster, label in zip(chunks(data, band_count), labels):
 
             # NODATA from labels
             label = numpy_replace(label, label_mappings)
@@ -405,11 +371,39 @@ if True:
             label_batch.append(label)
 
         raster_batch = np.stack(raster_batch, axis=0)
-        raster_batch = torch.from_numpy(raster_batch).to(device)
+        raster_batch = torch.from_numpy(raster_batch)
         label_batch = np.stack(label_batch, axis=0)
-        label_batch = torch.from_numpy(label_batch).to(device)
+        label_batch = torch.from_numpy(label_batch)
 
         return (raster_batch, label_batch)
+
+    def training_batch_thread(raster_filename, mask_filename,
+                              window_size, batch_size, bands, epoch_size,
+                              label_mappings, label_nd, image_nd):
+        global TRAINING_BATCHES
+        while True:
+            time.sleep(1)
+            with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
+                with TRAINING_MUTEX:
+                    if len(TRAINING_BATCHES) < epoch_size:
+                        bands_plus = bands + [0]
+                        plan = []
+                        for batch_index in range(batch_size):
+                            x = 0
+                            y = 0
+                            while ((x + y) % 7) == 0:
+                                x = np.random.randint(0, width/window_size - 1)
+                                y = np.random.randint(
+                                    0, height/window_size - 1)
+                            window = rio.windows.Window(
+                                x * window_size, y * window_size,
+                                window_size, window_size)
+                            for band in bands_plus:
+                                args = (window, band, raster_ds, mask_ds)
+                                plan.append(args)
+                        batch = read_plan(raster_ds, mask_ds, len(bands), plan,
+                                          label_mappings, label_nd, image_nd)
+                        TRAINING_BATCHES = [batch] + TRAINING_BATCHES
 
     def train(model, opt, obj,
               steps_per_epoch, epochs, batch_size,
@@ -419,25 +413,29 @@ if True:
               bucket_name, s3_prefix, arg_hash,
               no_checkpoints=True, starting_epoch=0):
 
-        model.train()
-
         current_time = time.time()
 
+        model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
 
             for j in range(steps_per_epoch):
-                batch_tensor = get_random_training_batch(
-                    raster_ds, label_ds, width, height, window_size, batch_size, device,
-                    bands, label_mapping, label_nd, img_nd)
+                keep_waiting = True
+                while keep_waiting:
+                    with TRAINING_MUTEX:
+                        if len(TRAINING_BATCHES) > 0:
+                            batch = TRAINING_BATCHES.pop()
+                            keep_waiting = False
+                        else:
+                            time.sleep(1)
                 opt.zero_grad()
-                pred = model(batch_tensor[0])
+                pred = model(batch[0].to(device))
                 if isinstance(pred, dict):
                     loss = 1.0 * \
-                        obj(pred.get('out'), batch_tensor[1]) + \
-                        0.4*obj(pred.get('aux'), batch_tensor[1])
+                        obj(pred.get('out'), batch[1].to(device)) + \
+                        0.4*obj(pred.get('aux'), batch[1].to(device))
                 else:
-                    loss = 1.0 * obj(pred, batch_tensor[1])
+                    loss = 1.0 * obj(pred, batch[1].to(device))
                 loss.backward()
                 opt.step()
                 avg_loss = avg_loss + loss.item()
@@ -449,7 +447,7 @@ if True:
             print('\t\t epoch={} time={} avg_loss={}'.format(
                 i, current_time - last_time, avg_loss))
 
-            with MUTEX:
+            with WATCHDOG_MUTEX:
                 global WATCHDOG_TIMER
                 WATCHDOG_TIMER = time.time()
 
@@ -493,13 +491,12 @@ if True:
         parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument(
             '--disable-eval', help='Disable evaluation after training', action='store_true')
-        parser.add_argument('--disable-pmap', action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)
         parser.add_argument('--epochs2', default=5, type=int)
         parser.add_argument('--epochs3', default=5, type=int)
         parser.add_argument('--epochs4', default=15, type=int)
         parser.add_argument(
-            '--img-nd', help='image value to ignore - must be on the first band', default=None, type=float)
+            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument(
             '--input-stride', help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md', default=2, type=int)
         parser.add_argument('--label-img', required=True,
@@ -698,7 +695,6 @@ if __name__ == '__main__':
     hashed_args.script = sys.argv[0]
     del hashed_args.backend
     del hashed_args.disable_eval
-    del hashed_args.disable_pmap
     del hashed_args.max_eval_windows
     del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
@@ -707,7 +703,6 @@ if __name__ == '__main__':
 
     np.random.seed(seed=args.random_seed)
 
-    disable_pmap = args.disable_pmap
 
     # ---------------------------------
     print('DOWNLOADING DATA')
@@ -754,7 +749,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds:
             for i in range(0, len(raster_ds.indexes)):
                 a = raster_ds.read(i+1).flatten()
-                a = np.extract(a != args.img_nd, a)
+                a = np.extract(a != args.image_nd, a)
                 MEANS.append(a.mean())
                 STDS.append(a.std())
             del a
@@ -763,7 +758,7 @@ if __name__ == '__main__':
             def sample():
                 return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
                                          224, raster_ds.indexes,
-                                         args.img_nd)
+                                         args.image_nd)
             ws = [sample() for i in range(0, args.max_sample_windows)]
         for i in range(0, len(raster_ds.indexes)):
             a = np.concatenate([w[:, i] for w in ws])
@@ -777,9 +772,8 @@ if __name__ == '__main__':
     print('Standard Deviations: {}'.format(STDS))
 
     # ---------------------------------
-    print('RECORDING RUN')
+    print('RECORDING RUN IN BUCKET')
 
-    # recording parameters in bucket
     with open('/tmp/args.txt', 'w') as f:
         f.write(str(args) + '\n')
         f.write(str(sys.argv) + '\n')
@@ -847,7 +841,7 @@ if __name__ == '__main__':
         make_model = make_model_stock
         if args.window_size < 224:
             print('\t WARNING: WINDOWS SIZE {} IS PROBABLY TOO SMALL'.format(
-                ars.window_size))
+                args.window_size))
     else:
         raise Exception
 
@@ -867,6 +861,16 @@ if __name__ == '__main__':
                              args=(args.watchdog_seconds,))
         t.daemon = True
         t.start()
+    else:
+        print('NOT STARTING WATCHDOG')
+
+    # ---------------------------------
+    print('STARTING TRAINING READ-AHEAD THREAD')
+    t = threading.Thread(target=training_batch_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
+            args.window_size, batch_size, args.bands, steps_per_epoch,
+            args.label_map, args.label_nd, args.image_nd))
+    t.daemon = True
+    t.start()
 
     # ---------------------------------
     print('COMPUTING')
@@ -916,7 +920,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs1, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -964,7 +968,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs2, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -1003,7 +1007,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs3, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -1042,7 +1046,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False)
 
         print('\t UPLOADING')
@@ -1080,7 +1084,7 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, steps_per_epoch, args.epochs4, batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.img_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
 
         print('\t UPLOADING')
@@ -1096,7 +1100,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                     device, args.label_nd, args.img_nd, args.label_map, args.s3_bucket,
+                     device, args.label_nd, args.image_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows, args.batch_size)
 
     exit(0)
