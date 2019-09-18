@@ -8,13 +8,13 @@ import re
 import sys
 import threading
 import time
-from multiprocessing import Pool
+from typing import *
 from urllib.parse import urlparse
 
-import numpy as np
+import boto3
 from PIL import Image
 
-import boto3
+import numpy as np
 import rasterio as rio
 import torch
 import torchvision
@@ -22,30 +22,42 @@ import torchvision
 if os.environ.get('CURL_CA_BUNDLE') is None:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
-MEANS = []
-STDS = []
-WATCHDOG_MUTEX = threading.Lock()
-WATCHDOG_TIMER = time.time()
-TRAINING_MUTEX = threading.Lock()
-TRAINING_BATCHES = []
-EVALUATION_MUTEX = threading.Lock()
-EVALUATION_BATCHES = []
+MEANS: List[float] = []
+STDS: List[float] = []
+WATCHDOG_MUTEX: threading.Lock = threading.Lock()
+WATCHDOG_TIME: float = time.time()
+TRAINING_MUTEX: threading.Lock = threading.Lock()
+TRAINING_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
+EVALUATION_MUTEX: threading.Lock = threading.Lock()
+EVALUATION_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
 
 
 # S3
 if True:
-    def parse_s3_url(url):
-        # Break s3uris into bucket and prefix
+    def parse_s3_url(url: str) -> Tuple[str, str]:
+        """Given an S3 URI, return the bucket and prefix
+
+        Arguments:
+            url {str} -- The S3 URI to parse
+
+        Returns:
+            Tuple[str, str] -- The bucket and prefix as a tuple
+        """
         parsed = urlparse(url, allow_fragments=False)
         return (parsed.netloc, parsed.path.lstrip('/'))
 
-    def get_matching_s3_keys(bucket, prefix='', suffix=''):
-        """
-        Generate the keys in an S3 bucket.
+    def get_matching_s3_keys(bucket: str, prefix: str = '', suffix: str = '') -> Generator[str, None, None]:
+        """Generate all of the keys in a bucket with the given prefix and suffix
 
-        :param bucket: Name of the S3 bucket.
-        :param prefix: Only fetch keys that start with this prefix (optional).
-        :param suffix: Only fetch keys that end with this suffix (optional).
+        Arguments:
+            bucket {str} -- The S3 bucket
+
+        Keyword Arguments:
+            prefix {str} -- The prefix to filter by (default: {''})
+            suffix {str} -- The suffix to filter by (default: {''})
+
+        Returns:
+            Generator[str, None, None] -- The list of keys
         """
         s3 = boto3.client('s3')
         kwargs = {'Bucket': bucket}
@@ -77,41 +89,68 @@ if True:
 
 # Misc.
 if True:
-    def retry_read(rio_ds, band, window=None, retries=3):
+    def retry_read(ds, band: int, window=None, retries: int = 3):
+        """Make some number of attempts to read the requested data
+
+        Arguments:
+            ds {rasterio dataset} -- The raster dataset to read from
+            band {int} -- The band to read from
+
+        Keyword Arguments:
+            window {rasterio window} -- The window to read from or None for the whole image (default: {None})
+            retries {int} -- The maximum number of attempts (default: {3})
+
+        Returns:
+            np.ndarray -- The requested data
+        """
         # retry failed reads (they appear to be transient)
         for i in range(retries):
             try:
-                return rio_ds.read(band, window=window)
+                return ds.read(band, window=window)
             except rio.errors.RasterioIOError:
                 print('Read error for band {} at window {} on try {} of {}'.format(
                     band, window, i+1, retries))
                 continue
 
-    def chunks(l, n):
-        """
-        Break list in chunks of equal size
+    def chunks(l: List[Any], n: int) -> Generator[List[Any], None, None]:
+        """Break a list of items into equal-sized chunks
 
-        https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
+        Arguments:
+            l {List[Any]} -- The list of items to break-up
+            n {int} -- The desired size of each chunk
+
+        Returns:
+            Generator[List[Any], None, None] -- A generator of lists
         """
+        # https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
         for i in range(0, len(l), n):
             yield l[i:i+n]
 
-    def numpy_replace(np_arr, replacement_dict):
-        """
-        Quickly replace contents of a np_arr with mappings provided by
-        replacement_dict used primarily to map mask labels to the
-        (assuming N training labels) 0 to N-1 categories expected.
+    def numpy_replace(np_arr: np.ndarray, replacement_dict: Dict[int, int]) -> np.ndarray:
+        """Replace the contents of np_arr according to the mapping given in replacement_dict
+
+        Arguments:
+            np_arr {np.ndarray} -- The numpy array to alter
+            replacement_dict {Dict[int, int]} -- The replacement mapping
+
+        Returns:
+            np.ndarray -- The array with replacement performed
         """
         b = np.copy(np_arr)
         for k, v in replacement_dict.items():
             b[np_arr == k] = v
         return b
 
-    def watchdog_thread(seconds):
+    def watchdog_thread(seconds: int):
+        """Code for the watchdog thread
+
+        Arguments:
+            seconds {int} -- The number of seconds of inactivity to allow before terminating
+        """
         while True:
             time.sleep(max(seconds//2, 1))
             with WATCHDOG_MUTEX:
-                gap = time.time() - WATCHDOG_TIMER
+                gap = time.time() - WATCHDOG_TIME
             if gap > seconds:
                 print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
                     gap, seconds), file=sys.stderr)
@@ -119,30 +158,47 @@ if True:
 
 # Sampling
 if True:
-    def get_random_sample(raster_ds, width, height, window_size, bands, img_nd):
-        x = np.random.randint(0, width/window_size - 1)
-        y = np.random.randint(0, height/window_size - 1)
+    def get_random_sample(ds: rio.io.DatasetReader, window_size: int, image_nd: Union[None, Union[float, int]]) -> np.ndarray:
+        """Get a random sample from the given raster dataset
+
+        Arguments:
+            ds {rio.io.DatasetReader} -- The dataset from which to sample
+            window_size {int} -- The size of the sample window
+            image_nd {Union[None, Union[float, int]]} -- The image nodata
+
+        Returns:
+            np.ndarray -- A stack of samples from image bands
+        """
+        x = np.random.randint(0, ds.width//window_size - 1)
+        y = np.random.randint(0, ds.height//window_size - 1)
         window = rio.windows.Window(
             x * window_size, y * window_size,
             window_size, window_size)
 
         data = []
-        for band in bands:
-            a = retry_read(raster_ds, band, window=window)
-            if img_nd is not None:
-                a = np.extract(a != img_nd, a)
+        for band in ds.indexes:
+            a = retry_read(ds, band, window=window)
+            if image_nd is not None:
+                a = np.extract(a != image_nd, a)
             a = a[~np.isnan(a)]
             data.append(a)
         data = np.stack(data, axis=1)
 
         return data
 
-# Training and Evaluation
+# Training
 if True:
-    def get_window(arguments):
+    def get_window(arguments: Tuple) -> Tuple[np.ndarray, int]:
+        """Get a window as specified by the `arguments` tuple
+
+        Arguments:
+            arguments {Tuple} -- A tuple of window, band, raster dataset, and label dataset
+
+        Returns:
+            Tuple[np.ndarray, int] -- The requested window and its band as a tuple
+        """
         window, band, raster_ds, label_ds = arguments
 
-        # Labels
         if band == 0:
             a = np.array(retry_read(label_ds, 1, window=window), dtype=np.long)
         else:
@@ -151,7 +207,22 @@ if True:
 
         return a, band
 
-    def read_plan(raster_ds, mask_ds, band_count, plan, label_mappings, label_nd, image_nd):
+    def execute_plan(raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, band_count: int, plan: List, label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Read the data specified in the given plan
+
+        Arguments:
+            raster_ds {rio.io.DatasetReader} -- The raster dataset to read from
+            label_ds {rio.io.DatasetReader} -- The label dataset to read from
+            band_count {int} -- The number of bands involved, not counting the labels (used for chunking)
+            plan {List} -- The execution plan
+            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
+            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            image_nd {Union[None, Union[int, float]]} -- The image nodata
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
+        """
+
         # Read the plan
         data = []
         labels = []
@@ -199,9 +270,137 @@ if True:
 
         return (raster_batch, label_batch)
 
-    def evaluation_batch_thread(raster_filename, mask_filename, max_eval_windows,
-                                window_size, batch_size, bands,
-                                label_mappings, label_nd, image_nd):
+    def training_readahead_thread(raster_filename: str, label_filename: str, window_size: int, batch_size: int, bands: List[int], epoch_size: int, label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]):
+        """Code for the training read-ahead thread
+
+        Arguments:
+            raster_filename {str} -- The name of raster to read from 
+            label_filename {str} -- The name of the label raster to read from
+            window_size {int} -- The window size
+            batch_size {int} -- The batch size
+            bands {List[int]} -- The list of bands to read from
+            epoch_size {int} -- The epoch size
+            label_mappings {Dict[int, int]} -- The mapping between native and internal classes
+            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            image_nd {Union[None, Union[int, float]]} -- The image nodata
+        """
+        global TRAINING_BATCHES
+        global TRAINING_MUTEX
+
+        with rio.open(raster_filename) as raster_ds, rio.open(label_filename) as mask_ds:
+            while True:
+                time.sleep(0.01)
+                with TRAINING_MUTEX:
+                    if len(TRAINING_BATCHES) < epoch_size:
+                        bands_plus = bands + [0]
+                        plan = []
+                        for batch_index in range(batch_size):
+                            x = 0
+                            y = 0
+                            while ((x + y) % 7) == 0:
+                                x = np.random.randint(0, width/window_size - 1)
+                                y = np.random.randint(
+                                    0, height/window_size - 1)
+                            window = rio.windows.Window(
+                                x * window_size, y * window_size,
+                                window_size, window_size)
+                            for band in bands_plus:
+                                args = (window, band, raster_ds, mask_ds)
+                                plan.append(args)
+                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
+                                             label_mappings, label_nd, image_nd)
+                        TRAINING_BATCHES = [batch] + TRAINING_BATCHES
+
+    def train(model: torch.nn.Module, opt: torch.optim.SGD, obj: torch.nn.CrossEntropyLoss, batches_per_epoch: int, epochs: int, batch_size: int, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, width: int, height: int, window_size: int, device: torch.device, bands: List[int], label_mapping: Dict[int, int], label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], bucket_name: str, s3_prefix: str, arg_hash: str, no_checkpoints: bool = True, starting_epoch: int = 0):
+        """Train the model according the supplied data and (implicit and explicit) hyperparameters
+
+        Arguments:
+            model {torch.nn.Module} -- The model to train
+            opt {torch.optim.SGD} -- The optimizer to use
+            obj {torch.nn.CrossEntropyLoss} -- The objective function to use
+            batches_per_epoch {int} -- The number of batches per "epoch"
+            epochs {int} -- The number of "epochs"
+            batch_size {int} -- The batch size
+            raster_ds {rio.io.DatasetReader} -- The imagery dataset
+            label_ds {rio.io.DatasetReader} -- The label dataset
+            width {int} -- The width of the dataset
+            height {int} -- The height of the
+            window_size {int} -- The window size
+            device {torch.device} -- The device to use
+            bands {List[int]} -- The imagery bands to use
+            label_mapping {Dict[int, int]} -- The mapping between native and internal classes
+            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            img_nd {Union[None, Union[int, float]]} -- The imagery nodata
+            bucket_name {str} -- The bucket name
+            s3_prefix {str} -- The bucket prefix
+            arg_hash {str} -- The arguments hash
+
+        Keyword Arguments:
+            no_checkpoints {bool} -- Whether to not write checkpoint files (default: {True})
+            starting_epoch {int} -- The starting epoch (default: {0})
+        """
+        current_time = time.time()
+
+        model.train()
+        for i in range(starting_epoch, epochs):
+            avg_loss = 0.0
+
+            for j in range(batches_per_epoch):
+
+                while True:
+                    with TRAINING_MUTEX:
+                        if len(TRAINING_BATCHES) > 0:
+                            batch = TRAINING_BATCHES.pop()
+                            break
+                        else:
+                            time.sleep(1)
+
+                opt.zero_grad()
+                pred = model(batch[0].to(device))
+                if isinstance(pred, dict):
+                    loss = 1.0 * \
+                        obj(pred.get('out'), batch[1].to(device)) + \
+                        0.4*obj(pred.get('aux'), batch[1].to(device))
+                else:
+                    loss = 1.0 * obj(pred, batch[1].to(device))
+                loss.backward()
+                opt.step()
+                avg_loss = avg_loss + loss.item()
+
+            avg_loss = avg_loss / batches_per_epoch
+
+            last_time = current_time
+            current_time = time.time()
+            print('\t\t epoch={} time={} avg_loss={}'.format(
+                i, current_time - last_time, avg_loss))
+
+            with WATCHDOG_MUTEX:
+                global WATCHDOG_TIME
+                WATCHDOG_TIME = time.time()
+
+            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and bucket_name and s3_prefix)) and not no_checkpoints:
+                torch.save(model.state_dict(), 'deeplab.pth')
+                s3 = boto3.client('s3')
+                s3.upload_file('deeplab.pth', bucket_name,
+                               '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
+                del s3
+
+# Evaluation
+if True:
+    def evaluation_readahead_thread(raster_filename: str, mask_filename: str, max_eval_windows: int, window_size: int, batch_size: int, bands: List[int], label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]):
+        """The code for the evaluation data read-ahead thread
+
+        Arguments:
+            raster_filename {str} -- The name of the imagery file
+            mask_filename {str} -- The name of the label file
+            max_eval_windows {int} -- The maximum number of evaluation windows
+            window_size {int} -- The window size
+            batch_size {int} -- The batch size
+            bands {List[int]} -- The imagery bands to use
+            label_mappings {Dict[int, int]} -- The mapping between native and internal classes
+            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            image_nd {Union[None, Union[int, float]]} -- The image nodata
+        """
         global EVALUATION_BATCHES
         global EVALUATION_MUTEX
 
@@ -227,18 +426,32 @@ if True:
                         for band in bands_plus:
                             args = (window, band, raster_ds, mask_ds)
                             plan.append(args)
-                        batch = read_plan(raster_ds, mask_ds, len(bands), plan,
-                                          label_mappings, label_nd, image_nd)
+                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
+                                             label_mappings, label_nd, image_nd)
                         EVALUATION_BATCHES = [batch] + EVALUATION_BATCHES
             with EVALUATION_MUTEX:
                 EVALUATION_BATCHES = [(None, None)] + EVALUATION_BATCHES
 
-    def evaluate(model, raster_ds, label_ds,
-                 bands, label_count, window_size, device,
-                 label_nd, img_nd, label_map,
-                 bucket_name, s3_prefix, arg_hash,
-                 max_eval_windows, batch_size):
+    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: str, batch_size: str):
+        """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
+        Arguments:
+            model {torch.nn.Module} -- The model to evaluate
+            raster_ds {rio.io.DatasetReader} -- The imagery dataset
+            label_ds {rio.io.DatasetReader} -- The label dataset
+            bands {List[int]} -- The imagery bands to use
+            label_count {int} -- The number of classes
+            window_size {int} -- The window size
+            device {torch.device} -- The device to use for evaluation
+            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            img_nd {Union[None, Union[int, float]]} -- The imagery nodata
+            label_map {Dict[int, int]} -- The mapping between native and internal classes
+            bucket_name {str} -- The bucket name
+            s3_prefix {str} -- The S3 prefix
+            arg_hash {str} -- The hashed arguments
+            max_eval_windows {str} -- The maximum number of evaluation windows to consider
+            batch_size {str} -- The batch size
+        """
         model.eval()
         with torch.no_grad():
             tps = [0.0 for x in range(label_count)]
@@ -246,7 +459,7 @@ if True:
             fns = [0.0 for x in range(label_count)]
             tns = [0.0 for x in range(label_count)]
 
-            for j in range(max_eval_windows):
+            for i in range(max_eval_windows):
 
                 while True:
                     with TRAINING_MUTEX:
@@ -265,22 +478,25 @@ if True:
                 out = out.data.cpu().numpy()
                 out = np.apply_along_axis(np.argmax, 1, out)
 
+                labels = batch[1].cpu().numpy()
+                del batch
+
                 # Make sure output reflects don't care values
                 if label_nd is not None:
-                    dont_care = (batch[1] == label_nd)
+                    dont_care = (labels == label_nd)
                 else:
-                    dont_care = np.zeros(batch[1].shape)
+                    dont_care = np.zeros(labels.shape)
                 out = out + label_count*dont_care
 
-                for i in range(label_count):
-                    tps[i] = tps[i] + ((out == i)*(batch[1] == i)).sum()
-                    fps[i] = fps[i] + ((out == i)*(batch[1] != i)).sum()
-                    fns[i] = fns[i] + ((out != i)*(batch[1] == i)).sum()
-                    tns[i] = tns[i] + ((out != i)*(batch[1] != i)).sum()
+                for j in range(label_count):
+                    tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
+                    fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
+                    fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
+                    tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
 
                 with WATCHDOG_MUTEX:
-                    global WATCHDOG_TIMER
-                    WATCHDOG_TIMER = time.time()
+                    global WATCHDOG_TIME
+                    WATCHDOG_TIME = time.time()
 
         print('True Positives  {}'.format(tps))
         print('False Positives {}'.format(fps))
@@ -289,19 +505,19 @@ if True:
 
         recalls = []
         precisions = []
-        for i in range(label_count):
-            recall = tps[i] / (tps[i] + fns[i])
+        for j in range(label_count):
+            recall = tps[j] / (tps[j] + fns[j])
             recalls.append(recall)
-            precision = tps[i] / (tps[i] + fps[i])
+            precision = tps[j] / (tps[j] + fps[j])
             precisions.append(precision)
 
         print('Recalls    {}'.format(recalls))
         print('Precisions {}'.format(precisions))
 
         f1s = []
-        for i in range(label_count):
-            f1 = 2 * (precisions[i] * recalls[i]) / \
-                (precisions[i] + recalls[i])
+        for j in range(label_count):
+            f1 = 2 * (precisions[j] * recalls[j]) / \
+                (precisions[j] + recalls[j])
             f1s.append(f1)
         print('f1 {}'.format(f1s))
 
@@ -321,97 +537,18 @@ if True:
                        '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
         del s3
 
-    def training_batch_thread(raster_filename, mask_filename,
-                              window_size, batch_size, bands, epoch_size,
-                              label_mappings, label_nd, image_nd):
-        global TRAINING_BATCHES
-        global TRAINING_MUTEX
-
-        with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
-            while True:
-                time.sleep(0.01)
-                with TRAINING_MUTEX:
-                    if len(TRAINING_BATCHES) < epoch_size:
-                        bands_plus = bands + [0]
-                        plan = []
-                        for batch_index in range(batch_size):
-                            x = 0
-                            y = 0
-                            while ((x + y) % 7) == 0:
-                                x = np.random.randint(0, width/window_size - 1)
-                                y = np.random.randint(
-                                    0, height/window_size - 1)
-                            window = rio.windows.Window(
-                                x * window_size, y * window_size,
-                                window_size, window_size)
-                            for band in bands_plus:
-                                args = (window, band, raster_ds, mask_ds)
-                                plan.append(args)
-                        batch = read_plan(raster_ds, mask_ds, len(bands), plan,
-                                          label_mappings, label_nd, image_nd)
-                        TRAINING_BATCHES = [batch] + TRAINING_BATCHES
-
-    def train(model, opt, obj,
-              steps_per_epoch, epochs, batch_size,
-              raster_ds, label_ds,
-              width, height, window_size, device,
-              bands, label_mapping, label_nd, img_nd,
-              bucket_name, s3_prefix, arg_hash,
-              no_checkpoints=True, starting_epoch=0):
-
-        current_time = time.time()
-
-        model.train()
-        for i in range(starting_epoch, epochs):
-            avg_loss = 0.0
-
-            for j in range(steps_per_epoch):
-                keep_waiting = True
-                while keep_waiting:
-                    with TRAINING_MUTEX:
-                        if len(TRAINING_BATCHES) > 0:
-                            batch = TRAINING_BATCHES.pop()
-                            keep_waiting = False
-                        else:
-                            time.sleep(1)
-                opt.zero_grad()
-                pred = model(batch[0].to(device))
-                if isinstance(pred, dict):
-                    loss = 1.0 * \
-                        obj(pred.get('out'), batch[1].to(device)) + \
-                        0.4*obj(pred.get('aux'), batch[1].to(device))
-                else:
-                    loss = 1.0 * obj(pred, batch[1].to(device))
-                loss.backward()
-                opt.step()
-                avg_loss = avg_loss + loss.item()
-
-            avg_loss = avg_loss / steps_per_epoch
-
-            last_time = current_time
-            current_time = time.time()
-            print('\t\t epoch={} time={} avg_loss={}'.format(
-                i, current_time - last_time, avg_loss))
-
-            with WATCHDOG_MUTEX:
-                global WATCHDOG_TIMER
-                WATCHDOG_TIMER = time.time()
-
-            if (i > 0) and (i % 5 == 0) and bucket_name and s3_prefix and not no_checkpoints:
-                torch.save(model.state_dict(), 'deeplab.pth')
-                s3 = boto3.client('s3')
-                s3.upload_file('deeplab.pth', bucket_name,
-                               '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
-                del s3
-
 # Arguments
 if True:
-    def hash_string(string):
-        """
-        Return a SHA-256 hash of the given string
+    def hash_string(string: str) -> str:
+        """Return a SHA-256 hash of the given string
 
-        Useful for generating an ID based on a set of parameters
-        https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
+        See: https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
+
+        Arguments:
+            string {str} -- The string to hash
+
+        Returns:
+            str -- The hashed string
         """
         return hashlib.sha256(string.encode('utf-8')).hexdigest()
 
@@ -423,9 +560,13 @@ if True:
                 my_dict[int(k)] = int(v)
             setattr(namespace, self.dest, my_dict)
 
-    def training_cli_parser():
-        """
-        https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
+    def training_cli_parser() -> argparse.ArgumentParser:
+        """Generate a parser for command line arguments
+
+        See: https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
+
+        Returns:
+            argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
         parser.add_argument('--architecture', required=True, help='The desired model architecture',
@@ -701,9 +842,7 @@ if __name__ == '__main__':
     else:
         with rio.open('/tmp/mul.tif') as raster_ds:
             def sample():
-                return get_random_sample(raster_ds, raster_ds.width, raster_ds.height,
-                                         224, raster_ds.indexes,
-                                         args.image_nd)
+                return get_random_sample(raster_ds, 224, args.image_nd)
             ws = [sample() for i in range(0, args.max_sample_windows)]
         for i in range(0, len(raster_ds.indexes)):
             a = np.concatenate([w[:, i] for w in ws])
@@ -789,10 +928,10 @@ if __name__ == '__main__':
     else:
         raise Exception
 
-    steps_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
-                                                   (args.window_size * args.window_size * 7.0 * args.batch_size)))
+    batches_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+                                                     (args.window_size * args.window_size * 7.0 * args.batch_size)))
 
-    print('\t STEPS PER EPOCH={}'.format(steps_per_epoch))
+    print('\t STEPS PER EPOCH={}'.format(batches_per_epoch))
     obj = torch.nn.CrossEntropyLoss(
         ignore_index=args.label_nd,
         weight=torch.FloatTensor(args.weights).to(device)
@@ -810,19 +949,19 @@ if __name__ == '__main__':
 
     # ---------------------------------
     print('STARTING TRAINING READ-AHEAD THREAD')
-    t = threading.Thread(target=training_batch_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                             args.window_size, args.batch_size, args.bands,
-                                                             steps_per_epoch,
-                                                             args.label_map, args.label_nd, args.image_nd))
+    t = threading.Thread(target=training_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
+                                                                 args.window_size, args.batch_size, args.bands,
+                                                                 batches_per_epoch,
+                                                                 args.label_map, args.label_nd, args.image_nd))
     t.daemon = True
     t.start()
 
     # ---------------------------------
     print('STARTING EVALUATION READ-AHEAD THREAD')
-    t = threading.Thread(target=evaluation_batch_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                               args.max_eval_windows,
-                                                               args.window_size, args.batch_size, args.bands,
-                                                               args.label_map, args.label_nd, args.image_nd))
+    t = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
+                                                                   args.max_eval_windows,
+                                                                   args.window_size, args.batch_size, args.bands,
+                                                                   args.label_map, args.label_nd, args.image_nd))
     t.daemon = True
     t.start()
 
@@ -872,7 +1011,7 @@ if __name__ == '__main__':
         opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs1, args.batch_size,
+            train(deeplab, opt, obj, batches_per_epoch, args.epochs1, args.batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
@@ -920,7 +1059,7 @@ if __name__ == '__main__':
         opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs2, args.batch_size,
+            train(deeplab, opt, obj, batches_per_epoch, args.epochs2, args.batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
@@ -959,7 +1098,7 @@ if __name__ == '__main__':
         opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs3, args.batch_size,
+            train(deeplab, opt, obj, batches_per_epoch, args.epochs3, args.batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
@@ -998,7 +1137,7 @@ if __name__ == '__main__':
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs4, args.batch_size,
+            train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False)
@@ -1036,18 +1175,10 @@ if __name__ == '__main__':
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, steps_per_epoch, args.epochs4, args.batch_size,
+            train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
                   raster_ds, mask_ds, width, height, args.window_size, device,
                   args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
-
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
-        del s3
 
     np.random.seed(seed=(args.random_seed + 6))
     if not args.disable_eval:
