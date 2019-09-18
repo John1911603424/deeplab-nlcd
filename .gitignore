@@ -1,4 +1,4 @@
-img/*
 *.pth
 *.pyc
 *.tif
+.mypy_cache/

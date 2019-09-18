@@ -11,13 +11,13 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
-import boto3
-from PIL import Image
+import boto3  # type: ignore
+from PIL import Image  # type: ignore
 
-import numpy as np
-import rasterio as rio
+import numpy as np  # type: ignore
+import rasterio as rio  # type: ignore
 import torch
-import torchvision
+import torchvision  # type: ignore
 
 if os.environ.get('CURL_CA_BUNDLE') is None:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
@@ -245,7 +245,7 @@ if True:
             if label_nd is not None:
                 label_nds = (label == label_nd)
             else:
-                label_nds = np.zeros(labels.shape)
+                label_nds = np.zeros(label.shape)
 
             # NODATA from rasters
             nan = np.isnan(raster[0])
@@ -263,12 +263,12 @@ if True:
             raster_batch.append(np.stack(raster, axis=0))
             label_batch.append(label)
 
-        raster_batch = np.stack(raster_batch, axis=0)
-        raster_batch = torch.from_numpy(raster_batch)
-        label_batch = np.stack(label_batch, axis=0)
-        label_batch = torch.from_numpy(label_batch)
+        raster_batch1 = np.stack(raster_batch, axis=0)
+        raster_batch2 = torch.from_numpy(raster_batch1)
+        label_batch1 = np.stack(label_batch, axis=0)
+        label_batch2 = torch.from_numpy(label_batch1)
 
-        return (raster_batch, label_batch)
+        return (raster_batch2, label_batch2)
 
     def training_readahead_thread(raster_filename: str, label_filename: str, window_size: int, batch_size: int, bands: List[int], epoch_size: int, label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]):
         """Code for the training read-ahead thread
@@ -357,12 +357,15 @@ if True:
 
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
+                label = batch[1].to(device)
                 if isinstance(pred, dict):
-                    loss = 1.0 * \
-                        obj(pred.get('out'), batch[1].to(device)) + \
-                        0.4*obj(pred.get('aux'), batch[1].to(device))
+                    pred_out: torch.Tensor = pred.get('out')  # type: ignore
+                    pred_aux: torch.Tensor = pred.get('aux')  # type: ignore
+                    out_loss = obj(pred_out, label)
+                    aux_loss = obj(pred_aux, label)
+                    loss = 1.0*out_loss + 0.4*aux_loss
                 else:
-                    loss = 1.0 * obj(pred, batch[1].to(device))
+                    loss = 1.0*obj(pred, label)
                 loss.backward()
                 opt.step()
                 avg_loss = avg_loss + loss.item()
@@ -432,7 +435,7 @@ if True:
             with EVALUATION_MUTEX:
                 EVALUATION_BATCHES = [(None, None)] + EVALUATION_BATCHES
 
-    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: str, batch_size: str):
+    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: int, batch_size: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
@@ -449,7 +452,7 @@ if True:
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The S3 prefix
             arg_hash {str} -- The hashed arguments
-            max_eval_windows {str} -- The maximum number of evaluation windows to consider
+            max_eval_windows {int} -- The maximum number of evaluation windows to consider
             batch_size {str} -- The batch size
         """
         model.eval()
