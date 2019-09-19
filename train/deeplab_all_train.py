@@ -49,6 +49,8 @@ if True:
     def get_matching_s3_keys(bucket: str, prefix: str = '', suffix: str = '') -> Generator[str, None, None]:
         """Generate all of the keys in a bucket with the given prefix and suffix
 
+        See https://alexwlchan.net/2017/07/listing-s3-keys/
+
         Arguments:
             bucket {str} -- The S3 bucket
 
@@ -61,8 +63,6 @@ if True:
         """
         s3 = boto3.client('s3')
         kwargs = {'Bucket': bucket}
-
-        # https://alexwlchan.net/2017/07/listing-s3-keys/
 
         # If the prefix is a single string (not a tuple of strings), we can
         # do the filtering directly in the S3 API.
@@ -207,7 +207,7 @@ if True:
 
         return a, band
 
-    def execute_plan(raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, band_count: int, plan: List, label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def execute_plan(raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, band_count: int, plan: List, label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
@@ -216,12 +216,13 @@ if True:
             band_count {int} -- The number of bands involved, not counting the labels (used for chunking)
             plan {List} -- The execution plan
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
         """
+        assert(label_nd is not None)
 
         # Read the plan
         data = []
@@ -242,10 +243,7 @@ if True:
 
             # NODATA from labels
             label = numpy_replace(label, label_mappings)
-            if label_nd is not None:
-                label_nds = (label == label_nd)
-            else:
-                label_nds = np.zeros(label.shape)
+            label_nds = (label == label_nd)
 
             # NODATA from rasters
             nan = np.isnan(raster[0])
@@ -270,7 +268,7 @@ if True:
 
         return (raster_batch2, label_batch2)
 
-    def training_readahead_thread(raster_filename: str, label_filename: str, window_size: int, batch_size: int, bands: List[int], epoch_size: int, label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]):
+    def training_readahead_thread(raster_filename: str, label_filename: str, window_size: int, batch_size: int, bands: List[int], epoch_size: int, label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]):
         """Code for the training read-ahead thread
 
         Arguments:
@@ -281,7 +279,7 @@ if True:
             bands {List[int]} -- The list of bands to read from
             epoch_size {int} -- The epoch size
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes
-            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
         """
         global TRAINING_BATCHES
@@ -311,7 +309,7 @@ if True:
                                              label_mappings, label_nd, image_nd)
                         TRAINING_BATCHES = [batch] + TRAINING_BATCHES
 
-    def train(model: torch.nn.Module, opt: torch.optim.SGD, obj: torch.nn.CrossEntropyLoss, batches_per_epoch: int, epochs: int, batch_size: int, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, width: int, height: int, window_size: int, device: torch.device, bands: List[int], label_mapping: Dict[int, int], label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], bucket_name: str, s3_prefix: str, arg_hash: str, no_checkpoints: bool = True, starting_epoch: int = 0):
+    def train(model: torch.nn.Module, opt: torch.optim.SGD, obj: torch.nn.CrossEntropyLoss, batches_per_epoch: int, epochs: int, batch_size: int, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, width: int, height: int, window_size: int, device: torch.device, bands: List[int], label_mapping: Dict[int, int], label_nd: Union[int, float], img_nd: Union[None, Union[int, float]], bucket_name: str, s3_prefix: str, arg_hash: str, no_checkpoints: bool = True, starting_epoch: int = 0):
         """Train the model according the supplied data and (implicit and explicit) hyperparameters
 
         Arguments:
@@ -329,7 +327,7 @@ if True:
             device {torch.device} -- The device to use
             bands {List[int]} -- The imagery bands to use
             label_mapping {Dict[int, int]} -- The mapping between native and internal classes
-            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            label_nd {Union[int, float]} -- The label nodata
             img_nd {Union[None, Union[int, float]]} -- The imagery nodata
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The bucket prefix
@@ -390,7 +388,7 @@ if True:
 
 # Evaluation
 if True:
-    def evaluation_readahead_thread(raster_filename: str, mask_filename: str, max_eval_windows: int, window_size: int, batch_size: int, bands: List[int], label_mappings: Dict[int, int], label_nd: Union[None, Union[int, float]], image_nd: Union[None, Union[int, float]]):
+    def evaluation_readahead_thread(raster_filename: str, mask_filename: str, max_eval_windows: int, window_size: int, batch_size: int, bands: List[int], label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]):
         """The code for the evaluation data read-ahead thread
 
         Arguments:
@@ -401,7 +399,7 @@ if True:
             batch_size {int} -- The batch size
             bands {List[int]} -- The imagery bands to use
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes
-            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
         """
         global EVALUATION_BATCHES
@@ -435,7 +433,7 @@ if True:
             with EVALUATION_MUTEX:
                 EVALUATION_BATCHES = [(None, None)] + EVALUATION_BATCHES
 
-    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[None, Union[int, float]], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: int, batch_size: str):
+    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[int, float], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: int, batch_size: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
@@ -446,7 +444,7 @@ if True:
             label_count {int} -- The number of classes
             window_size {int} -- The window size
             device {torch.device} -- The device to use for evaluation
-            label_nd {Union[None, Union[int, float]]} -- The label nodata
+            label_nd {Union[int, float]} -- The label nodata
             img_nd {Union[None, Union[int, float]]} -- The imagery nodata
             label_map {Dict[int, int]} -- The mapping between native and internal classes
             bucket_name {str} -- The bucket name
