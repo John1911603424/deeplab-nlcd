@@ -126,17 +126,19 @@ if True:
         for i in range(0, len(l), n):
             yield l[i:i+n]
 
-    def numpy_replace(np_arr: np.ndarray, replacement_dict: Dict[int, int]) -> np.ndarray:
+    def numpy_replace(np_arr: np.ndarray, replacement_dict: Dict[int, int], label_nd: Union[int, float]) -> np.ndarray:
         """Replace the contents of np_arr according to the mapping given in replacement_dict
 
         Arguments:
             np_arr {np.ndarray} -- The numpy array to alter
             replacement_dict {Dict[int, int]} -- The replacement mapping
+            label_nd {Union[int, float]} -- The label nodata
 
         Returns:
             np.ndarray -- The array with replacement performed
         """
         b = np.copy(np_arr)
+        b[~np.isin(np_arr, list(replacement_dict.keys()))] = label_nd
         for k, v in replacement_dict.items():
             b[np_arr == k] = v
         return b
@@ -242,7 +244,7 @@ if True:
         for raster, label in zip(chunks(data, band_count), labels):
 
             # NODATA from labels
-            label = numpy_replace(label, label_mappings)
+            label = numpy_replace(label, label_mappings, label_nd)
             label_nds = (label == label_nd)
 
             # NODATA from rasters
