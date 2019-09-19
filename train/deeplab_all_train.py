@@ -12,7 +12,6 @@ from typing import *
 from urllib.parse import urlparse
 
 import boto3  # type: ignore
-from PIL import Image  # type: ignore
 
 import numpy as np  # type: ignore
 import rasterio as rio  # type: ignore
@@ -46,7 +45,9 @@ if True:
         parsed = urlparse(url, allow_fragments=False)
         return (parsed.netloc, parsed.path.lstrip('/'))
 
-    def get_matching_s3_keys(bucket: str, prefix: str = '', suffix: str = '') -> Generator[str, None, None]:
+    def get_matching_s3_keys(bucket: str,
+                             prefix: str = '',
+                             suffix: str = '') -> Generator[str, None, None]:
         """Generate all of the keys in a bucket with the given prefix and suffix
 
         See https://alexwlchan.net/2017/07/listing-s3-keys/
@@ -89,11 +90,13 @@ if True:
 
 # Misc.
 if True:
-    def retry_read(ds, band: int, window=None, retries: int = 3):
+    def retry_read(ds: rio.io.DatasetReader,
+                   band: int, window=None,
+                   retries: int = 3):
         """Make some number of attempts to read the requested data
 
         Arguments:
-            ds {rasterio dataset} -- The raster dataset to read from
+            ds {rio.io.DatasetReader} -- The raster dataset to read from
             band {int} -- The band to read from
 
         Keyword Arguments:
@@ -112,8 +115,11 @@ if True:
                     band, window, i+1, retries))
                 continue
 
-    def chunks(l: List[Any], n: int) -> Generator[List[Any], None, None]:
+    def chunks(l: List[Any],
+               n: int) -> Generator[List[Any], None, None]:
         """Break a list of items into equal-sized chunks
+
+        See https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
 
         Arguments:
             l {List[Any]} -- The list of items to break-up
@@ -122,11 +128,12 @@ if True:
         Returns:
             Generator[List[Any], None, None] -- A generator of lists
         """
-        # https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
         for i in range(0, len(l), n):
             yield l[i:i+n]
 
-    def numpy_replace(np_arr: np.ndarray, replacement_dict: Dict[int, int], label_nd: Union[int, float]) -> np.ndarray:
+    def numpy_replace(np_arr: np.ndarray,
+                      replacement_dict: Dict[int, int],
+                      label_nd: Union[int, float]) -> np.ndarray:
         """Replace the contents of np_arr according to the mapping given in replacement_dict
 
         Arguments:
@@ -160,7 +167,9 @@ if True:
 
 # Sampling
 if True:
-    def get_random_sample(ds: rio.io.DatasetReader, window_size: int, image_nd: Union[None, Union[float, int]]) -> np.ndarray:
+    def get_random_sample(ds: rio.io.DatasetReader,
+                          window_size: int,
+                          image_nd: Union[None, Union[float, int]]) -> np.ndarray:
         """Get a random sample from the given raster dataset
 
         Arguments:
@@ -209,7 +218,13 @@ if True:
 
         return a, band
 
-    def execute_plan(raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, band_count: int, plan: List, label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def execute_plan(raster_ds: rio.io.DatasetReader,
+                     label_ds: rio.io.DatasetReader,
+                     band_count: int,
+                     plan: List,
+                     label_mappings: Dict[int, int],
+                     label_nd: Union[int, float],
+                     image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
@@ -270,7 +285,15 @@ if True:
 
         return (raster_batch2, label_batch2)
 
-    def training_readahead_thread(raster_filename: str, label_filename: str, window_size: int, batch_size: int, bands: List[int], epoch_size: int, label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]):
+    def training_readahead_thread(raster_filename: str,
+                                  label_filename: str,
+                                  window_size: int,
+                                  batch_size: int,
+                                  bands: List[int],
+                                  epoch_size: int,
+                                  label_mappings: Dict[int, int],
+                                  label_nd: Union[int, float],
+                                  image_nd: Union[None, Union[int, float]]):
         """Code for the training read-ahead thread
 
         Arguments:
@@ -294,7 +317,7 @@ if True:
                     if len(TRAINING_BATCHES) < epoch_size:
                         bands_plus = bands + [0]
                         plan = []
-                        for batch_index in range(batch_size):
+                        for _ in range(batch_size):
                             x = 0
                             y = 0
                             while ((x + y) % 7) == 0:
@@ -311,7 +334,24 @@ if True:
                                              label_mappings, label_nd, image_nd)
                         TRAINING_BATCHES = [batch] + TRAINING_BATCHES
 
-    def train(model: torch.nn.Module, opt: torch.optim.SGD, obj: torch.nn.CrossEntropyLoss, batches_per_epoch: int, epochs: int, batch_size: int, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, width: int, height: int, window_size: int, device: torch.device, bands: List[int], label_mapping: Dict[int, int], label_nd: Union[int, float], img_nd: Union[None, Union[int, float]], bucket_name: str, s3_prefix: str, arg_hash: str, no_checkpoints: bool = True, starting_epoch: int = 0):
+    def train(model: torch.nn.Module,
+              opt: torch.optim.SGD,
+              obj: torch.nn.CrossEntropyLoss,
+              batches_per_epoch: int,
+              epochs: int,
+              batch_size: int,
+              raster_ds: rio.io.DatasetReader,
+              label_ds: rio.io.DatasetReader,
+              window_size: int,
+              device: torch.device,
+              bands: List[int],
+              label_nd: Union[int, float],
+              image_nd: Union[None, Union[int, float]],
+              bucket_name: str,
+              s3_prefix: str,
+              arg_hash: str,
+              no_checkpoints: bool = True,
+              starting_epoch: int = 0):
         """Train the model according the supplied data and (implicit and explicit) hyperparameters
 
         Arguments:
@@ -323,14 +363,11 @@ if True:
             batch_size {int} -- The batch size
             raster_ds {rio.io.DatasetReader} -- The imagery dataset
             label_ds {rio.io.DatasetReader} -- The label dataset
-            width {int} -- The width of the dataset
-            height {int} -- The height of the
             window_size {int} -- The window size
             device {torch.device} -- The device to use
             bands {List[int]} -- The imagery bands to use
-            label_mapping {Dict[int, int]} -- The mapping between native and internal classes
             label_nd {Union[int, float]} -- The label nodata
-            img_nd {Union[None, Union[int, float]]} -- The imagery nodata
+            image_nd {Union[None, Union[int, float]]} -- The imagery nodata
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The bucket prefix
             arg_hash {str} -- The arguments hash
@@ -390,7 +427,15 @@ if True:
 
 # Evaluation
 if True:
-    def evaluation_readahead_thread(raster_filename: str, mask_filename: str, max_eval_windows: int, window_size: int, batch_size: int, bands: List[int], label_mappings: Dict[int, int], label_nd: Union[int, float], image_nd: Union[None, Union[int, float]]):
+    def evaluation_readahead_thread(raster_filename: str,
+                                    mask_filename: str,
+                                    max_eval_windows: int,
+                                    window_size: int,
+                                    batch_size: int,
+                                    bands: List[int],
+                                    label_mappings: Dict[int, int],
+                                    label_nd: Union[int, float],
+                                    image_nd: Union[None, Union[int, float]]):
         """The code for the evaluation data read-ahead thread
 
         Arguments:
@@ -435,7 +480,20 @@ if True:
             with EVALUATION_MUTEX:
                 EVALUATION_BATCHES = [(None, None)] + EVALUATION_BATCHES
 
-    def evaluate(model: torch.nn.Module, raster_ds: rio.io.DatasetReader, label_ds: rio.io.DatasetReader, bands: List[int], label_count: int, window_size: int, device: torch.device, label_nd: Union[int, float], img_nd: Union[None, Union[int, float]], label_map: Dict[int, int], bucket_name: str, s3_prefix: str, arg_hash: str, max_eval_windows: int, batch_size: str):
+    def evaluate(model: torch.nn.Module,
+                 raster_ds: rio.io.DatasetReader,
+                 label_ds: rio.io.DatasetReader,
+                 bands: List[int],
+                 label_count: int,
+                 window_size: int,
+                 device: torch.device,
+                 label_nd: Union[int, float],
+                 label_map: Dict[int, int],
+                 bucket_name: str,
+                 s3_prefix: str,
+                 arg_hash: str,
+                 max_eval_windows: int,
+                 batch_size: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
@@ -447,7 +505,6 @@ if True:
             window_size {int} -- The window size
             device {torch.device} -- The device to use for evaluation
             label_nd {Union[int, float]} -- The label nodata
-            img_nd {Union[None, Union[int, float]]} -- The imagery nodata
             label_map {Dict[int, int]} -- The mapping between native and internal classes
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The S3 prefix
@@ -1015,8 +1072,8 @@ if __name__ == '__main__':
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, batches_per_epoch, args.epochs1, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, args.window_size, device,
+                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -1063,8 +1120,8 @@ if __name__ == '__main__':
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, batches_per_epoch, args.epochs2, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, args.window_size, device,
+                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -1102,8 +1159,8 @@ if __name__ == '__main__':
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, batches_per_epoch, args.epochs3, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+                  raster_ds, mask_ds, args.window_size, device,
+                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
@@ -1141,8 +1198,8 @@ if __name__ == '__main__':
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  raster_ds, mask_ds, args.window_size, device,
+                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False)
 
         print('\t UPLOADING')
@@ -1179,8 +1236,8 @@ if __name__ == '__main__':
 
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
-                  raster_ds, mask_ds, width, height, args.window_size, device,
-                  args.bands, args.label_map, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
+                  raster_ds, mask_ds, args.window_size, device,
+                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
 
     np.random.seed(seed=(args.random_seed + 6))
@@ -1188,7 +1245,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(deeplab, raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                     device, args.label_nd, args.image_nd, args.label_map, args.s3_bucket,
+                     device, args.label_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash, args.max_eval_windows, args.batch_size)
 
     exit(0)
