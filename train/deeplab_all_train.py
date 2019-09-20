@@ -27,8 +27,10 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 TRAINING_MUTEX: threading.Lock = threading.Lock()
 TRAINING_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
+TRAINING_CONTINUE: bool = True
 EVALUATION_MUTEX: threading.Lock = threading.Lock()
-EVALUATION_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
+EVALUATION_WINDOWS: List[Tuple[torch.Tensor, torch.Tensor]] = []
+EVALUATION_CONTINUE: bool = False
 
 
 # S3
@@ -157,7 +159,13 @@ if True:
             seconds {int} -- The number of seconds of inactivity to allow before terminating
         """
         while True:
-            time.sleep(max(seconds//2, 1))
+            time.sleep(60)
+            if TRAINING_CONTINUE:
+                with TRAINING_MUTEX:
+                    print('TRAINING_BATCHES={}'.format(len(TRAINING_BATCHES)))
+            if EVALUATION_CONTINUE:
+                with EVALUATION_MUTEX:
+                    print('EVALUATION_WINDOWS={}'.format(len(EVALUATION_WINDOWS)))
             with WATCHDOG_MUTEX:
                 gap = time.time() - WATCHDOG_TIME
             if gap > seconds:
@@ -309,12 +317,13 @@ if True:
         """
         global TRAINING_BATCHES
         global TRAINING_MUTEX
+        global TRAINING_CONTINUE
 
         with rio.open(raster_filename) as raster_ds, rio.open(label_filename) as mask_ds:
-            while True:
+            while TRAINING_CONTINUE:
                 time.sleep(0.01)
                 with TRAINING_MUTEX:
-                    if len(TRAINING_BATCHES) < epoch_size:
+                    if len(TRAINING_BATCHES) <= epoch_size:
                         bands_plus = bands + [0]
                         plan = []
                         for _ in range(batch_size):
@@ -381,9 +390,7 @@ if True:
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
-
             for j in range(batches_per_epoch):
-
                 while True:
                     with TRAINING_MUTEX:
                         if len(TRAINING_BATCHES) > 0:
@@ -391,7 +398,6 @@ if True:
                             break
                         else:
                             time.sleep(1)
-
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -431,7 +437,6 @@ if True:
                                     mask_filename: str,
                                     max_eval_windows: int,
                                     window_size: int,
-                                    batch_size: int,
                                     bands: List[int],
                                     label_mappings: Dict[int, int],
                                     label_nd: Union[int, float],
@@ -443,14 +448,14 @@ if True:
             mask_filename {str} -- The name of the label file
             max_eval_windows {int} -- The maximum number of evaluation windows
             window_size {int} -- The window size
-            batch_size {int} -- The batch size
             bands {List[int]} -- The imagery bands to use
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes
             label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
         """
-        global EVALUATION_BATCHES
+        global EVALUATION_WINDOWS
         global EVALUATION_MUTEX
+        global EVALUATION_CONTINUE
 
         with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
             xys = []
@@ -462,23 +467,29 @@ if True:
             xys = xys[0:max_eval_windows]
 
             for xy in xys:
-                x, y = xy
                 time.sleep(0.01)
+                x, y = xy
+                if not EVALUATION_CONTINUE:
+                    break
+                while EVALUATION_CONTINUE:
+                    with EVALUATION_MUTEX:
+                        if len(EVALUATION_WINDOWS) <= 1:
+                            break
                 with EVALUATION_MUTEX:
-                    if len(EVALUATION_BATCHES) < min(max_eval_windows, 100):
-                        bands_plus = bands + [0]
-                        plan = []
-                        window = rio.windows.Window(
-                            x * window_size, y * window_size,
-                            window_size, window_size)
-                        for band in bands_plus:
-                            args = (window, band, raster_ds, mask_ds)
-                            plan.append(args)
-                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
-                                             label_mappings, label_nd, image_nd)
-                        EVALUATION_BATCHES = [batch] + EVALUATION_BATCHES
+                    bands_plus = bands + [0]
+                    plan = []
+                    window = rio.windows.Window(
+                        x * window_size, y * window_size,
+                        window_size, window_size)
+                    for band in bands_plus:
+                        args = (window, band, raster_ds, mask_ds)
+                        plan.append(args)
+                    win = execute_plan(raster_ds, mask_ds, len(bands), plan,
+                                       label_mappings, label_nd, image_nd)
+                    EVALUATION_WINDOWS = [win] + EVALUATION_WINDOWS
+
             with EVALUATION_MUTEX:
-                EVALUATION_BATCHES = [(None, None)] + EVALUATION_BATCHES
+                EVALUATION_WINDOWS = [(None, None)] + EVALUATION_WINDOWS
 
     def evaluate(model: torch.nn.Module,
                  raster_ds: rio.io.DatasetReader,
@@ -492,8 +503,7 @@ if True:
                  bucket_name: str,
                  s3_prefix: str,
                  arg_hash: str,
-                 max_eval_windows: int,
-                 batch_size: str):
+                 max_eval_windows: int):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
@@ -510,7 +520,6 @@ if True:
             s3_prefix {str} -- The S3 prefix
             arg_hash {str} -- The hashed arguments
             max_eval_windows {int} -- The maximum number of evaluation windows to consider
-            batch_size {str} -- The batch size
         """
         model.eval()
         with torch.no_grad():
@@ -520,26 +529,24 @@ if True:
             tns = [0.0 for x in range(label_count)]
 
             for i in range(max_eval_windows):
-
                 while True:
-                    with TRAINING_MUTEX:
-                        if len(TRAINING_BATCHES) > 0:
-                            batch = TRAINING_BATCHES.pop()
+                    with EVALUATION_MUTEX:
+                        if len(EVALUATION_WINDOWS) > 0:
+                            window = EVALUATION_WINDOWS.pop()
                             break
-                        else:
-                            time.sleep(1)
+                    time.sleep(1)
 
-                if batch[0] is None or batch[1] is None:
+                if window[0] is None or window[1] is None:
                     break
 
-                out = model(batch[0].to(device))
+                out = model(window[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
                 out = out.data.cpu().numpy()
                 out = np.apply_along_axis(np.argmax, 1, out)
 
-                labels = batch[1].cpu().numpy()
-                del batch
+                labels = window[1].cpu().numpy()
+                del window
 
                 # Make sure output reflects don't care values
                 if label_nd is not None:
@@ -639,7 +646,7 @@ if True:
         parser.add_argument(
             '--disable-eval', help='Disable evaluation after training', action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)
-        parser.add_argument('--epochs2', default=5, type=int)
+        parser.add_argument('--epochs2', default=0, type=int)
         parser.add_argument('--epochs3', default=5, type=int)
         parser.add_argument('--epochs4', default=15, type=int)
         parser.add_argument(
@@ -653,11 +660,11 @@ if True:
         parser.add_argument(
             '--label-nd', help='label to ignore', default=None, type=int)
         parser.add_argument(
-            '--learning-rate1', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.01, type=float)
+            '--learning-rate1', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
         parser.add_argument(
             '--learning-rate2', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
         parser.add_argument(
-            '--learning-rate3', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.01, type=float)
+            '--learning-rate3', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
         parser.add_argument(
             '--learning-rate4', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
@@ -672,7 +679,7 @@ if True:
         parser.add_argument(
             '--start-from', help='The saved model to start the fourth phase from')
         parser.add_argument('--training-img', required=True,
-                            help="the input you're training to produce labels for")
+                            help='the input that you are training to produce labels for')
         parser.add_argument(
             '--watchdog-seconds', help='The number of seconds that can pass without activity before the program is terminated (0 to disable)', default=0, type=int)
         parser.add_argument('--weights', help='label to ignore',
@@ -1000,30 +1007,21 @@ if __name__ == '__main__':
     # ---------------------------------
     if args.watchdog_seconds > 0:
         print('STARTING WATCHDOG')
-        t = threading.Thread(target=watchdog_thread,
-                             args=(args.watchdog_seconds,))
-        t.daemon = True
-        t.start()
+        w_th = threading.Thread(target=watchdog_thread,
+                                args=(args.watchdog_seconds,))
+        w_th.daemon = True
+        w_th.start()
     else:
         print('NOT STARTING WATCHDOG')
 
     # ---------------------------------
     print('STARTING TRAINING READ-AHEAD THREAD')
-    t = threading.Thread(target=training_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                                 args.window_size, args.batch_size, args.bands,
-                                                                 batches_per_epoch,
-                                                                 args.label_map, args.label_nd, args.image_nd))
-    t.daemon = True
-    t.start()
-
-    # ---------------------------------
-    print('STARTING EVALUATION READ-AHEAD THREAD')
-    t = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                                   args.max_eval_windows,
-                                                                   args.window_size, args.batch_size, args.bands,
-                                                                   args.label_map, args.label_nd, args.image_nd))
-    t.daemon = True
-    t.start()
+    t_th = threading.Thread(target=training_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
+                                                                    args.window_size, args.batch_size, args.bands,
+                                                                    batches_per_epoch,
+                                                                    args.label_map, args.label_nd, args.image_nd))
+    t_th.daemon = True
+    t_th.start()
 
     # ---------------------------------
     print('COMPUTING')
@@ -1240,12 +1238,31 @@ if __name__ == '__main__':
                   args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
 
-    np.random.seed(seed=(args.random_seed + 6))
+    print('STOPPING TRAINING READ-AHEAD THREAD')
+    TRAINING_CONTINUE = False
+    t_th.join()
+    TRAINING_BATCHES = []
+
+    np.random.seed(seed=(args.random_seed))
     if not args.disable_eval:
+        print('STARTING EVALUATION READ-AHEAD THREAD')
+        EVALUATION_CONTINUE = True
+        e_th = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
+                                                                          args.max_eval_windows,
+                                                                          args.window_size, args.bands,
+                                                                          args.label_map, args.label_nd, args.image_nd))
+        e_th.daemon = True
+        e_th.start()
+
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(deeplab, raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
                      device, args.label_nd, args.label_map, args.s3_bucket,
-                     args.s3_prefix, arg_hash, args.max_eval_windows, args.batch_size)
+                     args.s3_prefix, arg_hash, args.max_eval_windows)
+
+        print('STARTING EVALUATION READ-AHEAD THREAD')
+        EVALUATION_CONTINUE = False
+        e_th.join()
+        EVALUATION_WINDOWS = []
 
     exit(0)
