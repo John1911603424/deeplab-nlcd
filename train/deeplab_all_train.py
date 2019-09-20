@@ -27,10 +27,10 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 TRAINING_MUTEX: threading.Lock = threading.Lock()
 TRAINING_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
-TRAINING_CONTINUE: bool = True
+TRAINING_ENABLE: bool = False
 EVALUATION_MUTEX: threading.Lock = threading.Lock()
 EVALUATION_WINDOWS: List[Tuple[torch.Tensor, torch.Tensor]] = []
-EVALUATION_CONTINUE: bool = False
+EVALUATION_ENABLE: bool = False
 
 
 # S3
@@ -160,10 +160,10 @@ if True:
         """
         while True:
             time.sleep(60)
-            if TRAINING_CONTINUE:
+            if TRAINING_ENABLE:
                 with TRAINING_MUTEX:
                     print('TRAINING_BATCHES={}'.format(len(TRAINING_BATCHES)))
-            if EVALUATION_CONTINUE:
+            if EVALUATION_ENABLE:
                 with EVALUATION_MUTEX:
                     print('EVALUATION_WINDOWS={}'.format(len(EVALUATION_WINDOWS)))
             with WATCHDOG_MUTEX:
@@ -317,10 +317,10 @@ if True:
         """
         global TRAINING_BATCHES
         global TRAINING_MUTEX
-        global TRAINING_CONTINUE
+        global TRAINING_ENABLE
 
         with rio.open(raster_filename) as raster_ds, rio.open(label_filename) as mask_ds:
-            while TRAINING_CONTINUE:
+            while TRAINING_ENABLE:
                 time.sleep(0.01)
                 with TRAINING_MUTEX:
                     if len(TRAINING_BATCHES) <= epoch_size:
@@ -455,7 +455,7 @@ if True:
         """
         global EVALUATION_WINDOWS
         global EVALUATION_MUTEX
-        global EVALUATION_CONTINUE
+        global EVALUATION_ENABLE
 
         with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
             xys = []
@@ -469,9 +469,9 @@ if True:
             for xy in xys:
                 time.sleep(0.01)
                 x, y = xy
-                if not EVALUATION_CONTINUE:
+                if not EVALUATION_ENABLE:
                     break
-                while EVALUATION_CONTINUE:
+                while EVALUATION_ENABLE:
                     with EVALUATION_MUTEX:
                         if len(EVALUATION_WINDOWS) <= 1:
                             break
@@ -1016,6 +1016,7 @@ if __name__ == '__main__':
 
     # ---------------------------------
     print('STARTING TRAINING READ-AHEAD THREAD')
+    TRAINING_ENABLE = True
     t_th = threading.Thread(target=training_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
                                                                     args.window_size, args.batch_size, args.bands,
                                                                     batches_per_epoch,
@@ -1239,14 +1240,14 @@ if __name__ == '__main__':
                   no_checkpoints=False, starting_epoch=current_epoch)
 
     print('STOPPING TRAINING READ-AHEAD THREAD')
-    TRAINING_CONTINUE = False
+    TRAINING_ENABLE = False
     t_th.join()
     TRAINING_BATCHES = []
 
     np.random.seed(seed=(args.random_seed))
     if not args.disable_eval:
         print('STARTING EVALUATION READ-AHEAD THREAD')
-        EVALUATION_CONTINUE = True
+        EVALUATION_ENABLE = True
         e_th = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
                                                                           args.max_eval_windows,
                                                                           args.window_size, args.bands,
@@ -1261,7 +1262,7 @@ if __name__ == '__main__':
                      args.s3_prefix, arg_hash, args.max_eval_windows)
 
         print('STARTING EVALUATION READ-AHEAD THREAD')
-        EVALUATION_CONTINUE = False
+        EVALUATION_ENABLE = False
         e_th.join()
         EVALUATION_WINDOWS = []
 
