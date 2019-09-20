@@ -31,6 +31,7 @@ TRAINING_ENABLE: bool = False
 EVALUATION_MUTEX: threading.Lock = threading.Lock()
 EVALUATION_WINDOWS: List[Tuple[torch.Tensor, torch.Tensor]] = []
 EVALUATION_ENABLE: bool = False
+EVALUATIONS_DONE = 0
 
 
 # S3
@@ -152,6 +153,8 @@ if True:
             b[np_arr == k] = v
         return b
 
+# Watchdog
+if True:
     def watchdog_thread(seconds: int):
         """Code for the watchdog thread
 
@@ -165,7 +168,8 @@ if True:
                     print('TRAINING_BATCHES={}'.format(len(TRAINING_BATCHES)))
             if EVALUATION_ENABLE:
                 with EVALUATION_MUTEX:
-                    print('EVALUATION_WINDOWS={}'.format(len(EVALUATION_WINDOWS)))
+                    print('EVALUATION_WINDOWS={} EVALUATIONS_DONE={}'.format(
+                        len(EVALUATION_WINDOWS), EVALUATIONS_DONE))
             with WATCHDOG_MUTEX:
                 gap = time.time() - WATCHDOG_TIME
             if gap > seconds:
@@ -521,6 +525,8 @@ if True:
             arg_hash {str} -- The hashed arguments
             max_eval_windows {int} -- The maximum number of evaluation windows to consider
         """
+        global EVALUATIONS_DONE
+
         model.eval()
         with torch.no_grad():
             tps = [0.0 for x in range(label_count)]
@@ -561,6 +567,7 @@ if True:
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
                     tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
 
+                EVALUATIONS_DONE += 1
                 with WATCHDOG_MUTEX:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
