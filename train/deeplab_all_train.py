@@ -29,7 +29,7 @@ TRAINING_MUTEX: threading.Lock = threading.Lock()
 TRAINING_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
 TRAINING_ENABLE: bool = False
 EVALUATION_MUTEX: threading.Lock = threading.Lock()
-EVALUATION_WINDOWS: List[Tuple[torch.Tensor, torch.Tensor]] = []
+EVALUATION_BATCHS: List[Tuple[torch.Tensor, torch.Tensor]] = []
 EVALUATION_ENABLE: bool = False
 EVALUATIONS_DONE = 0
 
@@ -167,9 +167,7 @@ if True:
                 with TRAINING_MUTEX:
                     print('TRAINING_BATCHES={}'.format(len(TRAINING_BATCHES)))
             if EVALUATION_ENABLE:
-                with EVALUATION_MUTEX:
-                    print('EVALUATION_WINDOWS={} EVALUATIONS_DONE={}'.format(
-                        len(EVALUATION_WINDOWS), EVALUATIONS_DONE))
+                print('EVALUATIONS_DONE={}'.format(EVALUATIONS_DONE))
             with WATCHDOG_MUTEX:
                 gap = time.time() - WATCHDOG_TIME
             if gap > seconds:
@@ -323,12 +321,15 @@ if True:
         global TRAINING_MUTEX
         global TRAINING_ENABLE
 
+        bands_plus = bands + [0]
+
         with rio.open(raster_filename) as raster_ds, rio.open(label_filename) as mask_ds:
             while TRAINING_ENABLE:
                 time.sleep(0.01)
+
                 with TRAINING_MUTEX:
                     if len(TRAINING_BATCHES) <= epoch_size:
-                        bands_plus = bands + [0]
+                        # Construct plan
                         plan = []
                         for _ in range(batch_size):
                             x = 0
@@ -343,6 +344,7 @@ if True:
                             for band in bands_plus:
                                 args = (window, band, raster_ds, mask_ds)
                                 plan.append(args)
+                        # Execute plan
                         batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
                                              label_mappings, label_nd, image_nd)
                         TRAINING_BATCHES = [batch] + TRAINING_BATCHES
@@ -440,6 +442,7 @@ if True:
     def evaluation_readahead_thread(raster_filename: str,
                                     mask_filename: str,
                                     max_eval_windows: int,
+                                    batch_size: int,
                                     window_size: int,
                                     bands: List[int],
                                     label_mappings: Dict[int, int],
@@ -451,15 +454,20 @@ if True:
             raster_filename {str} -- The name of the imagery file
             mask_filename {str} -- The name of the label file
             max_eval_windows {int} -- The maximum number of evaluation windows
+            batch_size {int} -- The size of an evaluation batch
             window_size {int} -- The window size
             bands {List[int]} -- The imagery bands to use
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes
             label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
         """
-        global EVALUATION_WINDOWS
+        global EVALUATION_BATCHS
         global EVALUATION_MUTEX
         global EVALUATION_ENABLE
+
+        max_eval_batches = max_eval_windows // batch_size
+        max_eval_windows = batch_size * max_eval_batches
+        bands_plus = bands + [0]
 
         with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
             xys = []
@@ -469,31 +477,34 @@ if True:
                         xy = (x, y)
                         xys.append(xy)
             xys = xys[0:max_eval_windows]
+            xys = list(chunks(xys, batch_size))
+            i = 0
 
-            for xy in xys:
+            while EVALUATION_ENABLE and i < len(xys):
+                chunk = xys[i]
                 time.sleep(0.01)
-                x, y = xy
-                if not EVALUATION_ENABLE:
-                    break
-                while EVALUATION_ENABLE:
-                    with EVALUATION_MUTEX:
-                        if len(EVALUATION_WINDOWS) <= 1:
-                            break
-                with EVALUATION_MUTEX:
-                    bands_plus = bands + [0]
-                    plan = []
-                    window = rio.windows.Window(
-                        x * window_size, y * window_size,
-                        window_size, window_size)
-                    for band in bands_plus:
-                        args = (window, band, raster_ds, mask_ds)
-                        plan.append(args)
-                    win = execute_plan(raster_ds, mask_ds, len(bands), plan,
-                                       label_mappings, label_nd, image_nd)
-                    EVALUATION_WINDOWS = [win] + EVALUATION_WINDOWS
 
+                with EVALUATION_MUTEX:
+                    if len(EVALUATION_BATCHS) <= max_eval_batches:
+                        # Construct plan
+                        plan = []
+                        for xy in chunk:
+                            x, y = xy
+                            window = rio.windows.Window(
+                                x * window_size, y * window_size,
+                                window_size, window_size)
+                            for band in bands_plus:
+                                args = (window, band, raster_ds, mask_ds)
+                                plan.append(args)
+                        # Execute plan
+                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
+                                             label_mappings, label_nd, image_nd)
+                        EVALUATION_BATCHS = [batch] + EVALUATION_BATCHS
+                        i += 1
+
+            # Mark end of data
             with EVALUATION_MUTEX:
-                EVALUATION_WINDOWS = [(None, None)] + EVALUATION_WINDOWS
+                EVALUATION_BATCHS = [(None, None)] + EVALUATION_BATCHS
 
     def evaluate(model: torch.nn.Module,
                  raster_ds: rio.io.DatasetReader,
@@ -506,8 +517,7 @@ if True:
                  label_map: Dict[int, int],
                  bucket_name: str,
                  s3_prefix: str,
-                 arg_hash: str,
-                 max_eval_windows: int):
+                 arg_hash: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
@@ -523,7 +533,6 @@ if True:
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The S3 prefix
             arg_hash {str} -- The hashed arguments
-            max_eval_windows {int} -- The maximum number of evaluation windows to consider
         """
         global EVALUATIONS_DONE
 
@@ -534,11 +543,11 @@ if True:
             fns = [0.0 for x in range(label_count)]
             tns = [0.0 for x in range(label_count)]
 
-            for i in range(max_eval_windows):
+            while True:
                 while True:
                     with EVALUATION_MUTEX:
-                        if len(EVALUATION_WINDOWS) > 0:
-                            window = EVALUATION_WINDOWS.pop()
+                        if len(EVALUATION_BATCHS) > 0:
+                            window = EVALUATION_BATCHS.pop()
                             break
                     time.sleep(1)
 
@@ -1256,7 +1265,7 @@ if __name__ == '__main__':
         print('STARTING EVALUATION READ-AHEAD THREAD')
         EVALUATION_ENABLE = True
         e_th = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                                          args.max_eval_windows,
+                                                                          args.max_eval_windows, args.batch_size,
                                                                           args.window_size, args.bands,
                                                                           args.label_map, args.label_nd, args.image_nd))
         e_th.daemon = True
@@ -1266,11 +1275,11 @@ if __name__ == '__main__':
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(deeplab, raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
                      device, args.label_nd, args.label_map, args.s3_bucket,
-                     args.s3_prefix, arg_hash, args.max_eval_windows)
+                     args.s3_prefix, arg_hash)
 
-        print('STARTING EVALUATION READ-AHEAD THREAD')
+        print('STOPPING EVALUATION READ-AHEAD THREAD')
         EVALUATION_ENABLE = False
         e_th.join()
-        EVALUATION_WINDOWS = []
+        EVALUATION_BATCHS = []
 
     exit(0)
