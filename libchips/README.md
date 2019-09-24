@@ -1,8 +1,10 @@
 ```python
-from ctypes import *
+import ctypes
 import numpy as np
 
-libchips = CDLL("./libchips.so")
-arr = np.zeros((3,3), dtype=np.float64)
-libchips.moop(arr.ctypes.data_as(POINTER(c_double)))
+libchips = ctypes.CDLL("./libchips.so")
+bands = np.array(range(1,9), dtype=np.int32)
+bands_ptr = bands.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+libchips.start(1, b"../../mul.tif", b"../../mask.tif", 2, 1, 1, 32, 8, bands_ptr)
+libchips.stop()
 ```
