@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import ctypes
 import hashlib
 import os
 import re
@@ -14,7 +15,6 @@ from urllib.parse import urlparse
 import boto3  # type: ignore
 
 import numpy as np  # type: ignore
-import rasterio as rio  # type: ignore
 import torch
 import torchvision  # type: ignore
 
@@ -25,13 +25,7 @@ MEANS: List[float] = []
 STDS: List[float] = []
 WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
-TRAINING_MUTEX: threading.Lock = threading.Lock()
-TRAINING_BATCHES: List[Tuple[torch.Tensor, torch.Tensor]] = []
-TRAINING_ENABLE: bool = False
-EVALUATION_MUTEX: threading.Lock = threading.Lock()
-EVALUATION_BATCHS: List[Tuple[torch.Tensor, torch.Tensor]] = []
-EVALUATION_ENABLE: bool = False
-EVALUATIONS_DONE = 0
+EVALUATIONS_BATCHES_DONE = 0
 
 
 # S3
@@ -91,49 +85,57 @@ if True:
             except KeyError:
                 break
 
-# Misc.
+# Watchdog
 if True:
-    def retry_read(ds: rio.io.DatasetReader,
-                   band: int, window=None,
-                   retries: int = 3):
-        """Make some number of attempts to read the requested data
+    def watchdog_thread(seconds: int):
+        """Code for the watchdog thread
 
         Arguments:
-            ds {rio.io.DatasetReader} -- The raster dataset to read from
-            band {int} -- The band to read from
-
-        Keyword Arguments:
-            window {rasterio window} -- The window to read from or None for the whole image (default: {None})
-            retries {int} -- The maximum number of attempts (default: {3})
-
-        Returns:
-            np.ndarray -- The requested data
+            seconds {int} -- The number of seconds of inactivity to allow before terminating
         """
-        # retry failed reads (they appear to be transient)
-        for i in range(retries):
-            try:
-                return ds.read(band, window=window)
-            except rio.errors.RasterioIOError:
-                print('Read error for band {} at window {} on try {} of {}'.format(
-                    band, window, i+1, retries))
-                continue
+        while True:
+            time.sleep(60)
+            print('EVALUATIONS_DONE={}'.format(EVALUATIONS_BATCHES_DONE))
+            with WATCHDOG_MUTEX:
+                gap = time.time() - WATCHDOG_TIME
+            if gap > seconds:
+                print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
+                    gap, seconds), file=sys.stderr)
+                os._exit(-1)
 
-    def chunks(l: List[Any],
-               n: int) -> Generator[List[Any], None, None]:
-        """Break a list of items into equal-sized chunks
-
-        See https://chrisalbon.com/python/data_wrangling/break_list_into_chunks_of_equal_size/
+# Sampling
+if True:
+    def get_random_sample(libchips: ctypes.CDLL,
+                          window_size: int,
+                          band_count: int,
+                          image_nd: Union[float, int]) -> np.ndarray:
+        """Get a random sample from the given raster dataset
 
         Arguments:
-            l {List[Any]} -- The list of items to break-up
-            n {int} -- The desired size of each chunk
+            libchips {ctypes.CDLL} -- Handle that can be used to read the dataset
+            window_size {int} -- The size of the sample window
+            band_count {int} -- The number of bands in the image
+            image_nd {Union[None, Union[float, int]]} -- The image nodata
 
         Returns:
-            Generator[List[Any], None, None] -- A generator of lists
+            np.ndarray -- A stack of samples from image bands
         """
-        for i in range(0, len(l), n):
-            yield l[i:i+n]
+        data = []
+        shape = (band_count, window_size, window_size)
+        a = np.zeros(shape, dtype=np.float32)
+        a_ptr = a.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        libchips.get_next(a_ptr, ctypes.c_void_p(0))
+        
+        for i in range(band_count):
+            band = np.extract(a[i] != image_nd, a[i])
+            band = np.extract(~np.isnan(band), band)
+            data.append(band.copy())
+        data = np.stack(data, axis=1)
 
+        return data
+
+# Training
+if True:
     def numpy_replace(np_arr: np.ndarray,
                       replacement_dict: Dict[int, int],
                       label_nd: Union[int, float]) -> np.ndarray:
@@ -153,95 +155,20 @@ if True:
             b[np_arr == k] = v
         return b
 
-# Watchdog
-if True:
-    def watchdog_thread(seconds: int):
-        """Code for the watchdog thread
-
-        Arguments:
-            seconds {int} -- The number of seconds of inactivity to allow before terminating
-        """
-        while True:
-            time.sleep(60)
-            if TRAINING_ENABLE:
-                with TRAINING_MUTEX:
-                    print('TRAINING_BATCHES={}'.format(len(TRAINING_BATCHES)))
-            if EVALUATION_ENABLE:
-                print('EVALUATIONS_DONE={}'.format(EVALUATIONS_DONE))
-            with WATCHDOG_MUTEX:
-                gap = time.time() - WATCHDOG_TIME
-            if gap > seconds:
-                print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
-                    gap, seconds), file=sys.stderr)
-                os._exit(-1)
-
-# Sampling
-if True:
-    def get_random_sample(ds: rio.io.DatasetReader,
-                          window_size: int,
-                          image_nd: Union[None, Union[float, int]]) -> np.ndarray:
-        """Get a random sample from the given raster dataset
-
-        Arguments:
-            ds {rio.io.DatasetReader} -- The dataset from which to sample
-            window_size {int} -- The size of the sample window
-            image_nd {Union[None, Union[float, int]]} -- The image nodata
-
-        Returns:
-            np.ndarray -- A stack of samples from image bands
-        """
-        x = np.random.randint(0, ds.width//window_size - 1)
-        y = np.random.randint(0, ds.height//window_size - 1)
-        window = rio.windows.Window(
-            x * window_size, y * window_size,
-            window_size, window_size)
-
-        data = []
-        for band in ds.indexes:
-            a = retry_read(ds, band, window=window)
-            if image_nd is not None:
-                a = np.extract(a != image_nd, a)
-            a = a[~np.isnan(a)]
-            data.append(a)
-        data = np.stack(data, axis=1)
-
-        return data
-
-# Training
-if True:
-    def get_window(arguments: Tuple) -> Tuple[np.ndarray, int]:
-        """Get a window as specified by the `arguments` tuple
-
-        Arguments:
-            arguments {Tuple} -- A tuple of window, band, raster dataset, and label dataset
-
-        Returns:
-            Tuple[np.ndarray, int] -- The requested window and its band as a tuple
-        """
-        window, band, raster_ds, label_ds = arguments
-
-        if band == 0:
-            a = np.array(retry_read(label_ds, 1, window=window), dtype=np.long)
-        else:
-            a = np.float32(retry_read(raster_ds, band, window=window))
-            a = (a - MEANS[band-1]) / STDS[band-1]
-
-        return a, band
-
-    def execute_plan(raster_ds: rio.io.DatasetReader,
-                     label_ds: rio.io.DatasetReader,
-                     band_count: int,
-                     plan: List,
-                     label_mappings: Dict[int, int],
-                     label_nd: Union[int, float],
-                     image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_batch(libchips: ctypes.CDLL,
+                  band_count: int,
+                  batch_size: int,
+                  window_size: int,
+                  label_mappings: Dict[int, int],
+                  label_nd: Union[int, float],
+                  image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
-            raster_ds {rio.io.DatasetReader} -- The raster dataset to read from
-            label_ds {rio.io.DatasetReader} -- The label dataset to read from
-            band_count {int} -- The number of bands involved, not counting the labels (used for chunking)
-            plan {List} -- The execution plan
+            libchips {ctypes.CDLL} -- A shared library handle used for reading data
+            band_count {int} -- The number of bands in the training set
+            window_size {int} -- The window size
+            batch_size {int} -- Batch size
             label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
             label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The image nodata
@@ -251,33 +178,36 @@ if True:
         """
         assert(label_nd is not None)
 
-        # Read the plan
+        shape = (band_count, window_size, window_size)
+        temp1 = np.zeros(shape, dtype=np.uint16)
+        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float32))
+        temp2 = np.zeros((window_size, window_size), dtype=np.long)
+        temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+
         data = []
         labels = []
-        for d, i in map(get_window, plan):
-            if i == 0:
-                labels.append(d)
-            else:
-                data.append(d)
+        for _ in range(batch_size):
+            libchips.get_next(temp1_ptr, temp2_ptr)
+            data.append(temp1.copy())
+            labels.append(temp2.copy())
 
-        # NODATA processing
-        raster_batch = []
-        label_batch = []
+        # Scale image NODATA value
         if image_nd is not None:
             image_nd = (image_nd - MEANS[0])/STDS[0]
 
-        for raster, label in zip(chunks(data, band_count), labels):
+        raster_batch = []
+        label_batch = []
+        for raster, label in zip(data, labels):
 
             # NODATA from labels
             label = numpy_replace(label, label_mappings, label_nd)
             label_nds = (label == label_nd)
 
             # NODATA from rasters
-            nan = np.isnan(raster[0])
+            nan = np.isnan(raster).sum(axis=0)
+            image_nds = nan.copy()
             if image_nd is not None:
-                image_nds = (raster[0] == image_nd) + nan
-            else:
-                image_nds = nan
+                image_nds += (raster == image_nd).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
@@ -285,81 +215,25 @@ if True:
             for i in range(len(raster)):
                 raster[i][nodata == True] = 0.0
 
-            raster_batch.append(np.stack(raster, axis=0))
+            raster_batch.append(raster)
             label_batch.append(label)
 
-        raster_batch1 = np.stack(raster_batch, axis=0)
-        raster_batch2 = torch.from_numpy(raster_batch1)
-        label_batch1 = np.stack(label_batch, axis=0)
-        label_batch2 = torch.from_numpy(label_batch1)
+        raster_batch1 = torch.from_numpy(np.stack(raster_batch, axis=0))
+        label_batch1 = torch.from_numpy(np.stack(label_batch, axis=0))
 
-        return (raster_batch2, label_batch2)
-
-    def training_readahead_thread(raster_filename: str,
-                                  label_filename: str,
-                                  window_size: int,
-                                  batch_size: int,
-                                  bands: List[int],
-                                  epoch_size: int,
-                                  label_mappings: Dict[int, int],
-                                  label_nd: Union[int, float],
-                                  image_nd: Union[None, Union[int, float]]):
-        """Code for the training read-ahead thread
-
-        Arguments:
-            raster_filename {str} -- The name of raster to read from 
-            label_filename {str} -- The name of the label raster to read from
-            window_size {int} -- The window size
-            batch_size {int} -- The batch size
-            bands {List[int]} -- The list of bands to read from
-            epoch_size {int} -- The epoch size
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
-        """
-        global TRAINING_BATCHES
-        global TRAINING_MUTEX
-        global TRAINING_ENABLE
-
-        bands_plus = bands + [0]
-
-        with rio.open(raster_filename) as raster_ds, rio.open(label_filename) as mask_ds:
-            while TRAINING_ENABLE:
-                time.sleep(0.01)
-
-                with TRAINING_MUTEX:
-                    if len(TRAINING_BATCHES) <= epoch_size:
-                        # Construct plan
-                        plan = []
-                        for _ in range(batch_size):
-                            x = 0
-                            y = 0
-                            while ((x + y) % 7) == 0:
-                                x = np.random.randint(0, width/window_size - 1)
-                                y = np.random.randint(
-                                    0, height/window_size - 1)
-                            window = rio.windows.Window(
-                                x * window_size, y * window_size,
-                                window_size, window_size)
-                            for band in bands_plus:
-                                args = (window, band, raster_ds, mask_ds)
-                                plan.append(args)
-                        # Execute plan
-                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
-                                             label_mappings, label_nd, image_nd)
-                        TRAINING_BATCHES = [batch] + TRAINING_BATCHES
+        return (raster_batch1, label_batch1)
 
     def train(model: torch.nn.Module,
               opt: torch.optim.SGD,
               obj: torch.nn.CrossEntropyLoss,
               batches_per_epoch: int,
               epochs: int,
+              libchips: ctypes.CDLL,
+              bands: List[int],
               batch_size: int,
-              raster_ds: rio.io.DatasetReader,
-              label_ds: rio.io.DatasetReader,
               window_size: int,
               device: torch.device,
-              bands: List[int],
+              label_mappings: Dict[int, int],
               label_nd: Union[int, float],
               image_nd: Union[None, Union[int, float]],
               bucket_name: str,
@@ -375,12 +249,12 @@ if True:
             obj {torch.nn.CrossEntropyLoss} -- The objective function to use
             batches_per_epoch {int} -- The number of batches per "epoch"
             epochs {int} -- The number of "epochs"
+            libchips {ctypes.CDLL} -- A shared library handle through which data can be read
+            bands {List[int]} -- The imagery bands to use
             batch_size {int} -- The batch size
-            raster_ds {rio.io.DatasetReader} -- The imagery dataset
-            label_ds {rio.io.DatasetReader} -- The label dataset
             window_size {int} -- The window size
             device {torch.device} -- The device to use
-            bands {List[int]} -- The imagery bands to use
+            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
             label_nd {Union[int, float]} -- The label nodata
             image_nd {Union[None, Union[int, float]]} -- The imagery nodata
             bucket_name {str} -- The bucket name
@@ -396,14 +270,10 @@ if True:
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
-            for j in range(batches_per_epoch):
-                while True:
-                    with TRAINING_MUTEX:
-                        if len(TRAINING_BATCHES) > 0:
-                            batch = TRAINING_BATCHES.pop()
-                            break
-                        else:
-                            time.sleep(1)
+            for _ in range(batches_per_epoch):
+                band_count = len(bands)
+                batch = get_batch(libchips, band_count, window_size,
+                                  batch_size, label_mappings, label_nd, image_nd)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -439,82 +309,17 @@ if True:
 
 # Evaluation
 if True:
-    def evaluation_readahead_thread(raster_filename: str,
-                                    mask_filename: str,
-                                    max_eval_windows: int,
-                                    batch_size: int,
-                                    window_size: int,
-                                    bands: List[int],
-                                    label_mappings: Dict[int, int],
-                                    label_nd: Union[int, float],
-                                    image_nd: Union[None, Union[int, float]]):
-        """The code for the evaluation data read-ahead thread
-
-        Arguments:
-            raster_filename {str} -- The name of the imagery file
-            mask_filename {str} -- The name of the label file
-            max_eval_windows {int} -- The maximum number of evaluation windows
-            batch_size {int} -- The size of an evaluation batch
-            window_size {int} -- The window size
-            bands {List[int]} -- The imagery bands to use
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
-        """
-        global EVALUATION_BATCHS
-        global EVALUATION_MUTEX
-        global EVALUATION_ENABLE
-
-        max_eval_batches = max_eval_windows // batch_size
-        max_eval_windows = batch_size * max_eval_batches
-        bands_plus = bands + [0]
-
-        with rio.open(raster_filename) as raster_ds, rio.open(mask_filename) as mask_ds:
-            xys = []
-            for x in range(0, raster_ds.width//window_size):
-                for y in range(0, raster_ds.height//window_size):
-                    if ((x + y) % 7 == 0):
-                        xy = (x, y)
-                        xys.append(xy)
-            xys = xys[0:max_eval_windows]
-            xys = list(chunks(xys, batch_size))
-            i = 0
-
-            while EVALUATION_ENABLE and i < len(xys):
-                chunk = xys[i]
-                time.sleep(0.01)
-
-                with EVALUATION_MUTEX:
-                    if len(EVALUATION_BATCHS) <= max_eval_batches:
-                        # Construct plan
-                        plan = []
-                        for xy in chunk:
-                            x, y = xy
-                            window = rio.windows.Window(
-                                x * window_size, y * window_size,
-                                window_size, window_size)
-                            for band in bands_plus:
-                                args = (window, band, raster_ds, mask_ds)
-                                plan.append(args)
-                        # Execute plan
-                        batch = execute_plan(raster_ds, mask_ds, len(bands), plan,
-                                             label_mappings, label_nd, image_nd)
-                        EVALUATION_BATCHS = [batch] + EVALUATION_BATCHS
-                        i += 1
-
-            # Mark end of data
-            with EVALUATION_MUTEX:
-                EVALUATION_BATCHS = [(None, None)] + EVALUATION_BATCHS
-
     def evaluate(model: torch.nn.Module,
-                 raster_ds: rio.io.DatasetReader,
-                 label_ds: rio.io.DatasetReader,
+                 evaluation_batches: int,
+                 libchips: ctypes.CDLL,
                  bands: List[int],
-                 label_count: int,
+                 batch_size: int,
                  window_size: int,
+                 label_count: int,
                  device: torch.device,
+                 label_mappings: Dict[int, int],
                  label_nd: Union[int, float],
-                 label_map: Dict[int, int],
+                 image_nd: Union[None, Union[int, float]],
                  bucket_name: str,
                  s3_prefix: str,
                  arg_hash: str):
@@ -522,20 +327,20 @@ if True:
 
         Arguments:
             model {torch.nn.Module} -- The model to evaluate
-            raster_ds {rio.io.DatasetReader} -- The imagery dataset
-            label_ds {rio.io.DatasetReader} -- The label dataset
+            evaluation_batches {int} -- The number of evaluation batches
+            libchips {ctypes.CDLL} -- A shared library handle through which data can be read
             bands {List[int]} -- The imagery bands to use
-            label_count {int} -- The number of classes
+            batch_size {int} -- The batch size
             window_size {int} -- The window size
+            label_count {int} -- The number of classes
             device {torch.device} -- The device to use for evaluation
+            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
             label_nd {Union[int, float]} -- The label nodata
-            label_map {Dict[int, int]} -- The mapping between native and internal classes
+            image_nd: Union[None, Union[int, float]],
             bucket_name {str} -- The bucket name
             s3_prefix {str} -- The S3 prefix
             arg_hash {str} -- The hashed arguments
         """
-        global EVALUATIONS_DONE
-
         model.eval()
         with torch.no_grad():
             tps = [0.0 for x in range(label_count)]
@@ -543,25 +348,18 @@ if True:
             fns = [0.0 for x in range(label_count)]
             tns = [0.0 for x in range(label_count)]
 
-            while True:
-                while True:
-                    with EVALUATION_MUTEX:
-                        if len(EVALUATION_BATCHS) > 0:
-                            window = EVALUATION_BATCHS.pop()
-                            break
-                    time.sleep(1)
-
-                if window[0] is None or window[1] is None:
-                    break
-
-                out = model(window[0].to(device))
+            for _ in range(evaluation_batches):
+                band_count = len(bands)
+                batch = get_batch(libchips, band_count, window_size,
+                                  label_mappings, label_nd, image_nd)
+                out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
                 out = out.data.cpu().numpy()
                 out = np.apply_along_axis(np.argmax, 1, out)
 
-                labels = window[1].cpu().numpy()
-                del window
+                labels = batch[1].cpu().numpy()
+                del batch
 
                 # Make sure output reflects don't care values
                 if label_nd is not None:
@@ -576,7 +374,8 @@ if True:
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
                     tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
 
-                EVALUATIONS_DONE += 1
+                global EVALUATIONS_BATCHES_DONE
+                EVALUATIONS_BATCHES_DONE += 1
                 with WATCHDOG_MUTEX:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
@@ -890,44 +689,31 @@ if __name__ == '__main__':
         del s3
 
     # ---------------------------------
+    print('STARTING GDAL THREAD')
+    libchips = ctypes.CDLL("./libchips/src/libchips.so")
+    libchips.start(
+        16,  # Number of threads
+        b"/tmp/mul.tif",  # Image data
+        b"/tmp/mask.tif",  # Label data
+        6,  # Make all rasters float32
+        5,  # Make all labels int32
+        1,  # Training mode
+        args.window_size,
+        len(args.bands),
+        np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+
+    # ---------------------------------
     print('PRE-COMPUTING')
 
     if args.max_sample_windows == -1:
-        with rio.open('/tmp/mul.tif') as raster_ds:
-            for i in raster_ds.indexes:
-                MEANS.append(0)
-                STDS.append(1)
-    elif args.max_sample_windows == 0:
-        with rio.open('/tmp/mul.tif') as raster_ds:
-            for dtype in raster_ds.dtypes:
-                if dtype == 'uint8':
-                    MEANS.append(0)
-                    STDS.append(2**8 - 1)
-                elif dtype == 'uint16':
-                    MEANS.append(0)
-                    STDS.append(2**16 - 1)
-                elif dtype == 'float32':
-                    MEANS.append(0)
-                    STDS.append(1)
-                elif dtype == 'float64':
-                    MEANS.append(0)
-                    STDS.append(1)
-                else:
-                    raise Exception
-    elif args.whole_image_statistics:
-        with rio.open('/tmp/mul.tif') as raster_ds:
-            for i in range(0, len(raster_ds.indexes)):
-                a = raster_ds.read(i+1).flatten()
-                a = np.extract(a != args.image_nd, a)
-                MEANS.append(a.mean())
-                STDS.append(a.std())
-            del a
+        for _ in range(len(args.bands)):
+            MEANS.append(0)
+            STDS.append(1)
     else:
-        with rio.open('/tmp/mul.tif') as raster_ds:
-            def sample():
-                return get_random_sample(raster_ds, 224, args.image_nd)
-            ws = [sample() for i in range(0, args.max_sample_windows)]
-        for i in range(0, len(raster_ds.indexes)):
+        def sample():
+            return get_random_sample(libchips, args.window_size, len(args.bands), args.image_nd)
+        ws = [sample() for i in range(0, args.max_sample_windows)]
+        for i in range(0, len(args.bands)):
             a = np.concatenate([w[:, i] for w in ws])
             MEANS.append(a.mean())
             STDS.append(a.std())
@@ -1029,16 +815,6 @@ if __name__ == '__main__':
         w_th.start()
     else:
         print('NOT STARTING WATCHDOG')
-
-    # ---------------------------------
-    print('STARTING TRAINING READ-AHEAD THREAD')
-    TRAINING_ENABLE = True
-    t_th = threading.Thread(target=training_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                                    args.window_size, args.batch_size, args.bands,
-                                                                    batches_per_epoch,
-                                                                    args.label_map, args.label_nd, args.image_nd))
-    t_th.daemon = True
-    t_th.start()
 
     # ---------------------------------
     print('COMPUTING')
@@ -1255,31 +1031,12 @@ if __name__ == '__main__':
                   args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
 
-    print('STOPPING TRAINING READ-AHEAD THREAD')
-    TRAINING_ENABLE = False
-    t_th.join()
-    TRAINING_BATCHES = []
-
     np.random.seed(seed=(args.random_seed))
     if not args.disable_eval:
-        print('STARTING EVALUATION READ-AHEAD THREAD')
-        EVALUATION_ENABLE = True
-        e_th = threading.Thread(target=evaluation_readahead_thread, args=('/tmp/mul.tif', '/tmp/mask.tif',
-                                                                          args.max_eval_windows, args.batch_size,
-                                                                          args.window_size, args.bands,
-                                                                          args.label_map, args.label_nd, args.image_nd))
-        e_th.daemon = True
-        e_th.start()
-
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
             evaluate(deeplab, raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
                      device, args.label_nd, args.label_map, args.s3_bucket,
                      args.s3_prefix, arg_hash)
-
-        print('STOPPING EVALUATION READ-AHEAD THREAD')
-        EVALUATION_ENABLE = False
-        e_th.join()
-        EVALUATION_BATCHS = []
 
     exit(0)
