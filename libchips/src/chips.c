@@ -10,12 +10,13 @@ int N = 0;
 GDALDataType raster_data_type = -1;
 GDALDataType label_data_type = -1;
 int operation_mode = 0;
-int chip_size = 0;
+int window_size = 0;
 int band_count = 0;
 int *bands = NULL;
 int width = 0;
 int height = 0;
 int registered = 0;
+uint64_t current = 0;
 
 // Thread-related variables
 pthread_t *threads = NULL;
@@ -25,81 +26,6 @@ GDALDatasetH *label_datasets = NULL;
 void **raster_arrays = NULL;
 void **label_arrays = NULL;
 int *ready = NULL;
-
-/**
- *
- */
-void *reader(void *_i)
-{
-    uint64_t i = (uint64_t)_i;
-    int x_offset = 0;
-    int y_offset = 0;
-    CPLErr err = 0;
-
-    while (operation_mode == 1 || operation_mode == 2)
-    {
-        // Get training or evaluation chip
-        if (operation_mode == 1) // Training chip
-        {
-            x_offset = y_offset = 0;
-            while (((x_offset + y_offset) % 7) == 0)
-            {
-                x_offset = rand() % (width / chip_size);
-                y_offset = rand() % (height / chip_size);
-            }
-        }
-        else if (operation_mode == 2) // Evaluation chip
-        {
-            // XXX should not be random
-            x_offset = 0;
-            y_offset = 1;
-            while (((x_offset + y_offset) % 7) != 0)
-            {
-                x_offset = rand() % (width / chip_size);
-                y_offset = rand() % (height / chip_size);
-            }
-        }
-        x_offset *= chip_size;
-        y_offset *= chip_size;
-
-        // Read data
-        pthread_mutex_lock(&mutexes[i]);
-        if (ready[i] != 0)
-        {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
-        }
-        err = GDALDatasetRasterIO(raster_datasets[i], 0,
-                                  x_offset, y_offset, chip_size, chip_size,
-                                  raster_arrays[i],
-                                  chip_size, chip_size,
-                                  raster_data_type, band_count, bands,
-                                  0, 0, 0);
-        if (err != CE_None)
-        {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
-        }
-        err = GDALDatasetRasterIO(label_datasets[i], 0,
-                                  x_offset, y_offset, chip_size, chip_size,
-                                  label_arrays[i],
-                                  chip_size, chip_size,
-                                  label_data_type, 1, NULL,
-                                  0, 0, 0);
-        if (err != CE_None)
-        {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
-        }
-        ready[i] = 1;
-        pthread_mutex_unlock(&mutexes[i]);
-    }
-
-    return NULL;
-}
 
 /**
  *
@@ -138,11 +64,117 @@ int word_size(GDALDataType dt)
 /**
  *
  */
+void get_next(void *raster_buffer, void *label_buffer)
+{
+    for (;; ++current)
+    {
+        int i = current % N;
+
+        if (!pthread_mutex_trylock(&mutexes[i]))
+        {
+            if (ready[i] != 1)
+            {
+                pthread_mutex_unlock(&mutexes[i]);
+                continue;
+            }
+            else
+            {
+                memcpy(raster_buffer, raster_arrays[i], word_size(raster_data_type) * band_count * window_size * window_size);
+                if (label_buffer != NULL)
+                {
+                    memcpy(label_buffer, label_arrays[i], word_size(label_data_type) * 1 * window_size * window_size);
+                }
+                ready[i] = 0;
+                pthread_mutex_unlock(&mutexes[i]);
+                break;
+            }
+        }
+    }
+}
+
+/**
+ *
+ */
+void *reader(void *_i)
+{
+    uint64_t i = (uint64_t)_i;
+    int x_offset = 0;
+    int y_offset = 0;
+    CPLErr err = 0;
+
+    while (operation_mode == 1 || operation_mode == 2)
+    {
+        // Get training or evaluation chip
+        if (operation_mode == 1) // Training chip
+        {
+            x_offset = y_offset = 0;
+            while (((x_offset + y_offset) % 7) == 0)
+            {
+                x_offset = rand() % (width / window_size);
+                y_offset = rand() % (height / window_size);
+            }
+        }
+        else if (operation_mode == 2) // Evaluation chip
+        {
+            // XXX should not be random
+            x_offset = 0;
+            y_offset = 1;
+            while (((x_offset + y_offset) % 7) != 0)
+            {
+                x_offset = rand() % (width / window_size);
+                y_offset = rand() % (height / window_size);
+            }
+        }
+        x_offset *= window_size;
+        y_offset *= window_size;
+
+        // Read data
+        pthread_mutex_lock(&mutexes[i]);
+        if (ready[i] != 0)
+        {
+            pthread_mutex_unlock(&mutexes[i]);
+            sleep(0);
+            continue;
+        }
+        err = GDALDatasetRasterIO(raster_datasets[i], 0,
+                                  x_offset, y_offset, window_size, window_size,
+                                  raster_arrays[i],
+                                  window_size, window_size,
+                                  raster_data_type, band_count, bands,
+                                  0, 0, 0);
+        if (err != CE_None)
+        {
+            pthread_mutex_unlock(&mutexes[i]);
+            sleep(0);
+            continue;
+        }
+        err = GDALDatasetRasterIO(label_datasets[i], 0,
+                                  x_offset, y_offset, window_size, window_size,
+                                  label_arrays[i],
+                                  window_size, window_size,
+                                  label_data_type, 1, NULL,
+                                  0, 0, 0);
+        if (err != CE_None)
+        {
+            pthread_mutex_unlock(&mutexes[i]);
+            sleep(0);
+            continue;
+        }
+        ready[i] = 1;
+        pthread_mutex_unlock(&mutexes[i]);
+    }
+
+    return NULL;
+}
+
+/**
+ *
+ */
 void start(int _N,
            const char *raster_filename, const char *label_filename,
            GDALDataType _raster_data_type, GDALDataType _label_data_type,
            int _operation_mode,
-           int _chip_size,
+           int _window_size,
            int _band_count, int *_bands)
 {
     if (!registered)
@@ -151,12 +183,14 @@ void start(int _N,
         registered = 1;
     }
 
+    srand(time(NULL));
+
     // Set globals
     N = _N;
     raster_data_type = _raster_data_type;
     label_data_type = _label_data_type;
     operation_mode = _operation_mode;
-    chip_size = _chip_size;
+    window_size = _window_size;
     band_count = _band_count;
     bands = (int *)malloc(sizeof(int) * band_count);
     memcpy(bands, _bands, sizeof(int) * band_count);
@@ -180,8 +214,8 @@ void start(int _N,
             raster_datasets[i] = GDALOpen(raster_filename, GA_ReadOnly);
         label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
         pthread_mutex_init(&mutexes[i], NULL);
-        raster_arrays[i] = malloc(word_size(raster_data_type) * band_count * chip_size * chip_size);
-        label_arrays[i] = malloc(word_size(label_data_type) * 1 * chip_size * chip_size);
+        raster_arrays[i] = malloc(word_size(raster_data_type) * band_count * window_size * window_size);
+        label_arrays[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
         threads[i] = pthread_create(&threads[i], NULL, reader, (void *)i);
     }
 
