@@ -1,4 +1,8 @@
+*.o
 *.pth
 *.pyc
+*.so
 *.tif
 .mypy_cache/
+.vscode/
+
