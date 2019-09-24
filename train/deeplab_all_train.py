@@ -18,8 +18,8 @@ import numpy as np  # type: ignore
 import torch
 import torchvision  # type: ignore
 
-if os.environ.get('CURL_CA_BUNDLE') is None:
-    os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+# if os.environ.get('CURL_CA_BUNDLE') is None:
+#    os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
 MEANS: List[float] = []
 STDS: List[float] = []
@@ -125,9 +125,12 @@ if True:
         a = np.zeros(shape, dtype=np.float32)
         a_ptr = a.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
         libchips.get_next(a_ptr, ctypes.c_void_p(0))
-        
+
         for i in range(band_count):
-            band = np.extract(a[i] != image_nd, a[i])
+            if image_nd is not None:
+                band = np.extract(a[i] != image_nd, a[i])
+            else:
+                band = a[i].flatten()
             band = np.extract(~np.isnan(band), band)
             data.append(band.copy())
         data = np.stack(data, axis=1)
@@ -179,9 +182,9 @@ if True:
         assert(label_nd is not None)
 
         shape = (band_count, window_size, window_size)
-        temp1 = np.zeros(shape, dtype=np.uint16)
-        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float32))
-        temp2 = np.zeros((window_size, window_size), dtype=np.long)
+        temp1 = np.zeros(shape, dtype=np.float32)
+        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        temp2 = np.zeros((window_size, window_size), dtype=np.int32)
         temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
         data = []
@@ -200,12 +203,12 @@ if True:
         for raster, label in zip(data, labels):
 
             # NODATA from labels
+            label = np.array(label, dtype=np.long)
             label = numpy_replace(label, label_mappings, label_nd)
             label_nds = (label == label_nd)
 
             # NODATA from rasters
-            nan = np.isnan(raster).sum(axis=0)
-            image_nds = nan.copy()
+            image_nds = np.isnan(raster).sum(axis=0)
             if image_nd is not None:
                 image_nds += (raster == image_nd).sum(axis=0)
 
@@ -218,10 +221,10 @@ if True:
             raster_batch.append(raster)
             label_batch.append(label)
 
-        raster_batch1 = torch.from_numpy(np.stack(raster_batch, axis=0))
-        label_batch1 = torch.from_numpy(np.stack(label_batch, axis=0))
+        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
+        label_batch = torch.from_numpy(np.stack(label_batch, axis=0))
 
-        return (raster_batch1, label_batch1)
+        return (raster_batch, label_batch)
 
     def train(model: torch.nn.Module,
               opt: torch.optim.SGD,
@@ -272,8 +275,13 @@ if True:
             avg_loss = 0.0
             for _ in range(batches_per_epoch):
                 band_count = len(bands)
-                batch = get_batch(libchips, band_count, window_size,
-                                  batch_size, label_mappings, label_nd, image_nd)
+                batch = get_batch(libchips,
+                                  band_count,
+                                  batch_size,
+                                  window_size,
+                                  label_mappings,
+                                  label_nd,
+                                  image_nd)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -486,7 +494,6 @@ if True:
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
         parser.add_argument('--max-sample-windows', default=0, type=int)
-        parser.add_argument('--random-seed', default=33, type=int)
         parser.add_argument('--s3-bucket', required=True,
                             help='prefix to apply when saving models to s3')
         parser.add_argument('--s3-prefix', required=True,
@@ -499,7 +506,6 @@ if True:
             '--watchdog-seconds', help='The number of seconds that can pass without activity before the program is terminated (0 to disable)', default=0, type=int)
         parser.add_argument('--weights', help='label to ignore',
                             nargs='+', required=True, type=float)
-        parser.add_argument('--whole-image-statistics', action='store_true')
         parser.add_argument('--window-size', default=32, type=int)
         return parser
 
@@ -670,8 +676,6 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
-    np.random.seed(seed=args.random_seed)
-
     # ---------------------------------
     print('DOWNLOADING DATA')
 
@@ -689,10 +693,10 @@ if __name__ == '__main__':
         del s3
 
     # ---------------------------------
-    print('STARTING GDAL THREAD')
+    print('STARTING READ-AHREAD THREADS')
     libchips = ctypes.CDLL("./libchips/src/libchips.so")
     libchips.start(
-        16,  # Number of threads
+        8,  # Number of threads
         b"/tmp/mul.tif",  # Image data
         b"/tmp/mask.tif",  # Label data
         6,  # Make all rasters float32
@@ -766,18 +770,12 @@ if __name__ == '__main__':
 
     device = torch.device(args.backend)
 
-    with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-        width = raster_ds.width
-        height = raster_ds.height
-        if (height != mask_ds.height) or (width != mask_ds.width):
-            print('width', width, mask_ds.width)
-            print('height', height, mask_ds.height)
-            print('PROBLEM WITH DIMENSIONS')
-            sys.exit()
-
     if args.label_nd is None:
         args.label_nd = len(args.weights)
         print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
+
+    if args.image_nd is None:
+        print('\t WARNING: IMAGE NODATA NOT SET')
 
     if args.batch_size < 2:
         args.batch_size = 2
@@ -797,7 +795,7 @@ if __name__ == '__main__':
     else:
         raise Exception
 
-    batches_per_epoch = min(args.max_epoch_size, int((width * height * 6.0) /
+    batches_per_epoch = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
                                                      (args.window_size * args.window_size * 7.0 * args.batch_size)))
 
     print('\t STEPS PER EPOCH={}'.format(batches_per_epoch))
@@ -826,7 +824,6 @@ if __name__ == '__main__':
             class_count=len(args.weights)
         ).to(device)
 
-    np.random.seed(seed=(args.random_seed + 1))
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -861,20 +858,33 @@ if __name__ == '__main__':
                 p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
 
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, batches_per_epoch, args.epochs1, args.batch_size,
-                  raster_ds, mask_ds, args.window_size, device,
-                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+        train(deeplab,
+              opt,
+              obj,
+              batches_per_epoch,
+              args.epochs1,
+              libchips,
+              args.bands,
+              args.batch_size,
+              args.window_size,
+              device,
+              args.label_map,
+              args.label_nd,
+              args.image_nd,
+              args.s3_bucket,
+              args.s3_prefix, arg_hash)
 
         print('\t UPLOADING')
 
         torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if False:
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
-    np.random.seed(seed=(args.random_seed + 2))
+        exit(0)  # XXX
+
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -922,7 +932,6 @@ if __name__ == '__main__':
                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
-    np.random.seed(seed=(args.random_seed + 3))
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -961,7 +970,6 @@ if __name__ == '__main__':
                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
         del s3
 
-    np.random.seed(seed=(args.random_seed + 4))
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
@@ -1031,7 +1039,6 @@ if __name__ == '__main__':
                   args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
                   no_checkpoints=False, starting_epoch=current_epoch)
 
-    np.random.seed(seed=(args.random_seed))
     if not args.disable_eval:
         print('\t EVALUATING')
         with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:

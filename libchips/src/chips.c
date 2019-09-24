@@ -64,6 +64,22 @@ int word_size(GDALDataType dt)
 /**
  *
  */
+int get_width()
+{
+    return width;
+}
+
+/**
+ *
+ */
+int get_height()
+{
+    return height;
+}
+
+/**
+ *
+ */
 void get_next(void *raster_buffer, void *label_buffer)
 {
     for (;; ++current)
