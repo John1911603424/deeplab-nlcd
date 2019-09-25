@@ -95,7 +95,8 @@ if True:
         """
         while True:
             time.sleep(60)
-            print('EVALUATIONS_DONE={}'.format(EVALUATIONS_BATCHES_DONE))
+            if EVALUATIONS_BATCHES_DONE > 0:
+                print('EVALUATIONS_DONE={}'.format(EVALUATIONS_BATCHES_DONE))
             with WATCHDOG_MUTEX:
                 gap = time.time() - WATCHDOG_TIME
             if gap > seconds:
@@ -365,7 +366,6 @@ if True:
                     label_mappings,
                     label_nd,
                     image_nd)
-                import pdb ; pdb.set_trace()
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
@@ -496,6 +496,7 @@ if True:
             '--learning-rate3', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
         parser.add_argument(
             '--learning-rate4', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
+        parser.add_argument('--libchips', required=True)
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
@@ -685,7 +686,7 @@ if __name__ == '__main__':
     print('hash: {}'.format(arg_hash))
 
     # ---------------------------------
-    print('DOWNLOADING DATA')
+    print('DATA')
 
     if not os.path.exists('/tmp/mul.tif'):
         s3 = boto3.client('s3')
@@ -701,7 +702,16 @@ if __name__ == '__main__':
         del s3
 
     # ---------------------------------
-    libchips = ctypes.CDLL("./libchips/src/libchips.so")
+    print('NATIVE CODE')
+
+    if not os.path.exists('/usr/lib/libchips.so'):
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.libchips)
+        print('shared library bucket and prefix: {}, {}'.format(bucket, prefix))
+        s3.download_file(bucket, prefix, '/usr/lib/libchips.so')
+        del s3
+
+    libchips = ctypes.CDLL("/usr/lib/libchips.so")
     libchips.start(
         args.read_threads,  # Number of threads
         b"/tmp/mul.tif",  # Image data
@@ -736,7 +746,7 @@ if __name__ == '__main__':
     print('Standard Deviations: {}'.format(STDS))
 
     # ---------------------------------
-    print('RECORDING RUN IN BUCKET')
+    print('RECORDING RUN')
 
     with open('/tmp/args.txt', 'w') as f:
         f.write(str(args) + '\n')
@@ -822,7 +832,7 @@ if __name__ == '__main__':
         print('NOT STARTING WATCHDOG')
 
     # ---------------------------------
-    print('COMPUTING')
+    print('TRAINING')
 
     if complete_thru == -1:
         deeplab = make_model(
@@ -1028,7 +1038,7 @@ if __name__ == '__main__':
               opt,
               obj,
               batches_per_epoch,
-              args.epochs3,
+              args.epochs4,
               libchips,
               args.bands,
               args.batch_size,
