@@ -269,12 +269,11 @@ if True:
             starting_epoch {int} -- The starting epoch (default: {0})
         """
         current_time = time.time()
-
+        band_count = len(bands)
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(batches_per_epoch):
-                band_count = len(bands)
                 batch = get_batch(libchips,
                                   band_count,
                                   batch_size,
@@ -349,6 +348,7 @@ if True:
             s3_prefix {str} -- The S3 prefix
             arg_hash {str} -- The hashed arguments
         """
+        band_count = len(bands)
         model.eval()
         with torch.no_grad():
             tps = [0.0 for x in range(label_count)]
@@ -357,9 +357,15 @@ if True:
             tns = [0.0 for x in range(label_count)]
 
             for _ in range(evaluation_batches):
-                band_count = len(bands)
-                batch = get_batch(libchips, band_count, window_size,
-                                  label_mappings, label_nd, image_nd)
+                batch = get_batch(
+                    libchips,
+                    band_count,
+                    batch_size,
+                    window_size,
+                    label_mappings,
+                    label_nd,
+                    image_nd)
+                import pdb ; pdb.set_trace()
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
@@ -494,6 +500,7 @@ if True:
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
         parser.add_argument('--max-sample-windows', default=0, type=int)
+        parser.add_argument('--read-threads', default=8, type=int)
         parser.add_argument('--s3-bucket', required=True,
                             help='prefix to apply when saving models to s3')
         parser.add_argument('--s3-prefix', required=True,
@@ -671,6 +678,7 @@ if __name__ == '__main__':
     del hashed_args.backend
     del hashed_args.disable_eval
     del hashed_args.max_eval_windows
+    del hashed_args.read_threads
     del hashed_args.watchdog_seconds
     arg_hash = hash_string(str(hashed_args))
     print('provided args: {}'.format(hashed_args))
@@ -693,10 +701,9 @@ if __name__ == '__main__':
         del s3
 
     # ---------------------------------
-    print('STARTING READ-AHREAD THREADS')
     libchips = ctypes.CDLL("./libchips/src/libchips.so")
     libchips.start(
-        8,  # Number of threads
+        args.read_threads,  # Number of threads
         b"/tmp/mul.tif",  # Image data
         b"/tmp/mask.tif",  # Label data
         6,  # Make all rasters float32
@@ -761,7 +768,7 @@ if __name__ == '__main__':
                 checkpoint_epoch = int(m2.group(1))
                 if checkpoint_epoch > current_epoch:
                     complete_thru = 4
-                    current_epoch = checkpoint_epoch
+                    current_epoch = checkpoint_epoch+1
                     current_pth = pth
     elif args.start_from is not None:
         complete_thru = 4
@@ -872,18 +879,16 @@ if __name__ == '__main__':
               args.label_nd,
               args.image_nd,
               args.s3_bucket,
-              args.s3_prefix, arg_hash)
+              args.s3_prefix,
+              arg_hash)
 
         print('\t UPLOADING')
 
         torch.save(deeplab.state_dict(), 'deeplab.pth')
-        if False:
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
-            del s3
-
-        exit(0)  # XXX
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
+        del s3
 
     if complete_thru == 1:
         s3 = boto3.client('s3')
@@ -919,10 +924,22 @@ if __name__ == '__main__':
                 p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
 
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, batches_per_epoch, args.epochs2, args.batch_size,
-                  raster_ds, mask_ds, args.window_size, device,
-                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+        train(deeplab,
+              opt,
+              obj,
+              batches_per_epoch,
+              args.epochs2,
+              libchips,
+              args.bands,
+              args.batch_size,
+              args.window_size,
+              device,
+              args.label_map,
+              args.label_nd,
+              args.image_nd,
+              args.s3_bucket,
+              args.s3_prefix,
+              arg_hash)
 
         print('\t UPLOADING')
 
@@ -957,10 +974,22 @@ if __name__ == '__main__':
                 p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
 
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, batches_per_epoch, args.epochs3, args.batch_size,
-                  raster_ds, mask_ds, args.window_size, device,
-                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash)
+        train(deeplab,
+              opt,
+              obj,
+              batches_per_epoch,
+              args.epochs3,
+              libchips,
+              args.bands,
+              args.batch_size,
+              args.window_size,
+              device,
+              args.label_map,
+              args.label_nd,
+              args.image_nd,
+              args.s3_bucket,
+              args.s3_prefix,
+              arg_hash)
 
         print('\t UPLOADING')
 
@@ -995,11 +1024,23 @@ if __name__ == '__main__':
                 p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
-                  raster_ds, mask_ds, args.window_size, device,
-                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
-                  no_checkpoints=False)
+        train(deeplab,
+              opt,
+              obj,
+              batches_per_epoch,
+              args.epochs3,
+              libchips,
+              args.bands,
+              args.batch_size,
+              args.window_size,
+              device,
+              args.label_map,
+              args.label_nd,
+              args.image_nd,
+              args.s3_bucket,
+              args.s3_prefix,
+              arg_hash,
+              no_checkpoints=False)
 
         print('\t UPLOADING')
 
@@ -1033,17 +1074,53 @@ if __name__ == '__main__':
                 p.grad = None
         opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
 
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            train(deeplab, opt, obj, batches_per_epoch, args.epochs4, args.batch_size,
-                  raster_ds, mask_ds, args.window_size, device,
-                  args.bands, args.label_nd, args.image_nd, args.s3_bucket, args.s3_prefix, arg_hash,
-                  no_checkpoints=False, starting_epoch=current_epoch)
+        train(deeplab,
+              opt,
+              obj,
+              batches_per_epoch,
+              args.epochs4,
+              libchips,
+              args.bands,
+              args.batch_size,
+              args.window_size,
+              device,
+              args.label_map,
+              args.label_nd,
+              args.image_nd,
+              args.s3_bucket,
+              args.s3_prefix,
+              arg_hash,
+              no_checkpoints=False,
+              starting_epoch=current_epoch)
+
+    libchips.stop()
 
     if not args.disable_eval:
         print('\t EVALUATING')
-        with rio.open('/tmp/mul.tif') as raster_ds, rio.open('/tmp/mask.tif') as mask_ds:
-            evaluate(deeplab, raster_ds, mask_ds, args.bands, len(args.weights), args.window_size,
-                     device, args.label_nd, args.label_map, args.s3_bucket,
-                     args.s3_prefix, arg_hash)
+        libchips.start(
+            args.read_threads,  # Number of threads
+            b"/tmp/mul.tif",  # Image data
+            b"/tmp/mask.tif",  # Label data
+            6,  # Make all rasters float32
+            5,  # Make all labels int32
+            2,  # Evaluation mode
+            args.window_size,
+            len(args.bands),
+            np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+        evaluate(deeplab,
+                 args.max_eval_windows // args.batch_size,
+                 libchips,
+                 args.bands,
+                 args.batch_size,
+                 args.window_size,
+                 len(args.weights),
+                 device,
+                 args.label_map,
+                 args.label_nd,
+                 args.image_nd,
+                 args.s3_bucket,
+                 args.s3_prefix,
+                 arg_hash)
+        libchips.stop()
 
     exit(0)
