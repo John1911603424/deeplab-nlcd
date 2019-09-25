@@ -22,13 +22,17 @@ uint64_t current = 0;
 pthread_t *threads = NULL;
 pthread_mutex_t *mutexes = NULL;
 GDALDatasetH *raster_datasets = NULL;
+GDALRasterBandH *raster_bands = NULL;
 GDALDatasetH *label_datasets = NULL;
 void **raster_arrays = NULL;
 void **label_arrays = NULL;
 int *ready = NULL;
 
 /**
+ * Given a GDAL datat type, return the word length of that type.
  *
+ * @param GDALDataType dt The data type
+ * @return The word length
  */
 int word_size(GDALDataType dt)
 {
@@ -62,7 +66,9 @@ int word_size(GDALDataType dt)
 }
 
 /**
+ * Get the width of the dataset.
  *
+ * @return The width of the dataset
  */
 int get_width()
 {
@@ -70,7 +76,9 @@ int get_width()
 }
 
 /**
+ * Get the height of the dataset.
  *
+ * @return The height of the dataset
  */
 int get_height()
 {
@@ -78,7 +86,10 @@ int get_height()
 }
 
 /**
+ * Get the next available window.
  *
+ * @param raster_buffer The return-location for the imagery data
+ * @param label_buffer The return-location for the label data
  */
 void get_next(void *raster_buffer, void *label_buffer)
 {
@@ -109,7 +120,10 @@ void get_next(void *raster_buffer, void *label_buffer)
 }
 
 /**
+ * The code behind the reader threads.
  *
+ * @param _i The id of this particular thread
+ * @return Unused
  */
 void *reader(void *_i)
 {
@@ -184,7 +198,15 @@ void *reader(void *_i)
 }
 
 /**
+ * Given imagery and label filenames, start the reader threads.
  *
+ * @param _N The number of reader threads to create
+ * @param raster_filename The filename containing the imagery
+ * @param label_filename The filename containing the labels
+ * @param _operation_mode 1 for training mode, 2 for evaluation mode
+ * @param _window_size The desired window size
+ * @param _band_count The number of bands
+ * @param _bands An array of integers containing the desired bands
  */
 void start(int _N,
            const char *raster_filename, const char *label_filename,
@@ -195,11 +217,10 @@ void start(int _N,
 {
     if (!registered)
     {
+        srand(time(NULL));
         GDALAllRegister();
         registered = 1;
     }
-
-    srand(time(NULL));
 
     // Set globals
     N = _N;
@@ -239,7 +260,7 @@ void start(int _N,
 }
 
 /**
- *
+ * Stop the reader threads.
  */
 void stop()
 {
@@ -262,4 +283,13 @@ void stop()
     free(raster_arrays);
     free(label_arrays);
     free(ready);
+
+    bands = NULL;
+    threads = NULL;
+    mutexes = NULL;
+    raster_datasets = NULL;
+    label_datasets = NULL;
+    raster_arrays = NULL;
+    label_arrays = NULL;
+    ready = NULL;
 }

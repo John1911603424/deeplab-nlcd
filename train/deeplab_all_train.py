@@ -501,7 +501,7 @@ if True:
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
         parser.add_argument('--max-sample-windows', default=0, type=int)
-        parser.add_argument('--read-threads', default=8, type=int)
+        parser.add_argument('--read-threads', default=16, type=int)
         parser.add_argument('--s3-bucket', required=True,
                             help='prefix to apply when saving models to s3')
         parser.add_argument('--s3-prefix', required=True,
