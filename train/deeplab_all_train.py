@@ -704,14 +704,14 @@ if __name__ == '__main__':
     # ---------------------------------
     print('NATIVE CODE')
 
-    if not os.path.exists('/usr/lib/libchips.so'):
+    if not os.path.exists('/tmp/libchips.so'):
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.libchips)
         print('shared library bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/usr/lib/libchips.so')
+        s3.download_file(bucket, prefix, '/tmp/libchips.so')
         del s3
 
-    libchips = ctypes.CDLL("/usr/lib/libchips.so")
+    libchips = ctypes.CDLL('/tmp/libchips.so')
     libchips.start(
         args.read_threads,  # Number of threads
         b"/tmp/mul.tif",  # Image data

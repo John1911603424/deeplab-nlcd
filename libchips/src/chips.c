@@ -166,6 +166,13 @@ void *reader(void *_i)
             sleep(0);
             continue;
         }
+        if (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(raster_bands[i], x_offset, y_offset, window_size, window_size, 0, NULL))
+        {
+            pthread_mutex_unlock(&mutexes[i]);
+            sleep(0);
+            continue;
+        }
+
         err = GDALDatasetRasterIO(raster_datasets[i], 0,
                                   x_offset, y_offset, window_size, window_size,
                                   raster_arrays[i],
@@ -234,6 +241,7 @@ void start(int _N,
 
     // Create arrays
     raster_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
+    raster_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     raster_datasets[0] = GDALOpen(raster_filename, GA_ReadOnly);
     width = GDALGetRasterXSize(raster_datasets[0]);
@@ -249,6 +257,7 @@ void start(int _N,
     {
         if (i != 0)
             raster_datasets[i] = GDALOpen(raster_filename, GA_ReadOnly);
+        raster_bands[i] = GDALGetRasterBand(raster_datasets[i], 1);
         label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
         pthread_mutex_init(&mutexes[i], NULL);
         raster_arrays[i] = malloc(word_size(raster_data_type) * band_count * window_size * window_size);
@@ -279,6 +288,7 @@ void stop()
     free(threads);
     free(mutexes);
     free(raster_datasets);
+    free(raster_bands);
     free(label_datasets);
     free(raster_arrays);
     free(label_arrays);
@@ -288,6 +298,7 @@ void stop()
     threads = NULL;
     mutexes = NULL;
     raster_datasets = NULL;
+    raster_bands = NULL;
     label_datasets = NULL;
     raster_arrays = NULL;
     label_arrays = NULL;

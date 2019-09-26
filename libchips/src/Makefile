@@ -1,4 +1,4 @@
-CFLAGS ?= -Wall -Werror -O0 -ggdb3
+CFLAGS ?= -Wall -Werror -O
 LDFLAGS ?= $(shell pkg-config gdal --libs) -l:libstdc++.a -lpthread
 GDALCFLAGS ?= $(shell pkg-config gdal --cflags)
 
@@ -9,6 +9,7 @@ all: libchips.so
 
 libchips.so: chips.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
+	strip $@
 
 clean:
 	rm -f *.o
