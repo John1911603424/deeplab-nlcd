@@ -7,6 +7,7 @@
 
 // Global variables
 int N = 0;
+int M = 0;
 GDALDataType raster_data_type = -1;
 GDALDataType label_data_type = -1;
 int operation_mode = 0;
@@ -24,9 +25,31 @@ pthread_mutex_t *mutexes = NULL;
 GDALDatasetH *raster_datasets = NULL;
 GDALRasterBandH *raster_bands = NULL;
 GDALDatasetH *label_datasets = NULL;
-void **raster_arrays = NULL;
-void **label_arrays = NULL;
+
+// Slot-related variables
+void **imagery_slots = NULL;
+void **label_slots = NULL;
 int *ready = NULL;
+
+#define UNLOCK(index)                          \
+    {                                          \
+        pthread_mutex_unlock(&mutexes[index]); \
+        sleep(0);                              \
+    }
+#define UNLOCK_BREAK(index) \
+    {                       \
+        UNLOCK(index)       \
+        break;              \
+    }
+#define UNLOCK_CONTINUE(index) \
+    {                          \
+        UNLOCK(index)          \
+        continue;              \
+    }
+
+#define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(raster_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
+#define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
+#define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
 
 /**
  * Given a GDAL datat type, return the word length of that type.
@@ -95,25 +118,23 @@ void get_next(void *raster_buffer, void *label_buffer)
 {
     for (;; ++current)
     {
-        int i = current % N;
+        int slot = current % M;
 
-        if (!pthread_mutex_trylock(&mutexes[i]))
+        if (pthread_mutex_trylock(&mutexes[slot]) == 0)
         {
-            if (ready[i] != 1)
+            if (ready[slot] != 1)
             {
-                pthread_mutex_unlock(&mutexes[i]);
-                continue;
+                UNLOCK_CONTINUE(slot)
             }
             else
             {
-                memcpy(raster_buffer, raster_arrays[i], word_size(raster_data_type) * band_count * window_size * window_size);
+                memcpy(raster_buffer, imagery_slots[slot], word_size(raster_data_type) * band_count * window_size * window_size);
                 if (label_buffer != NULL)
                 {
-                    memcpy(label_buffer, label_arrays[i], word_size(label_data_type) * 1 * window_size * window_size);
+                    memcpy(label_buffer, label_slots[slot], word_size(label_data_type) * 1 * window_size * window_size);
                 }
-                ready[i] = 0;
-                pthread_mutex_unlock(&mutexes[i]);
-                break;
+                ready[slot] = 0;
+                UNLOCK_BREAK(slot)
             }
         }
     }
@@ -122,23 +143,24 @@ void get_next(void *raster_buffer, void *label_buffer)
 /**
  * The code behind the reader threads.
  *
- * @param _i The id of this particular thread
+ * @param _id The id of this particular thread
  * @return Unused
  */
-void *reader(void *_i)
+void *reader(void *_id)
 {
-    uint64_t i = (uint64_t)_i;
+    uint64_t id = (uint64_t)_id;
     int x_offset = 0;
     int y_offset = 0;
+    int slot = -1;
     CPLErr err = 0;
 
     while (operation_mode == 1 || operation_mode == 2)
     {
-        // Get training or evaluation chip
+        // Get a suitable training or evaluation window
         if (operation_mode == 1) // Training chip
         {
             x_offset = y_offset = 0;
-            while (((x_offset + y_offset) % 7) == 0)
+            while (BAD_TRAINING_WINDOW || EMPTY_WINDOW)
             {
                 x_offset = rand() % (width / window_size);
                 y_offset = rand() % (height / window_size);
@@ -149,7 +171,7 @@ void *reader(void *_i)
             // XXX should not be random
             x_offset = 0;
             y_offset = 1;
-            while (((x_offset + y_offset) % 7) != 0)
+            while (BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
             {
                 x_offset = rand() % (width / window_size);
                 y_offset = rand() % (height / window_size);
@@ -158,47 +180,61 @@ void *reader(void *_i)
         x_offset *= window_size;
         y_offset *= window_size;
 
-        // Read data
-        pthread_mutex_lock(&mutexes[i]);
-        if (ready[i] != 0)
+        // Find an unused data slot
+        for (slot = rand(); (operation_mode == 1 || operation_mode == 2); ++slot)
         {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
-        }
-        if (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(raster_bands[i], x_offset, y_offset, window_size, window_size, 0, NULL))
-        {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
+            slot = slot % M;
+            // If slot not locked
+            if (pthread_mutex_trylock(&mutexes[slot]) == 0)
+            {
+                // If slot empty, break out of loop and proceed.  If
+                // not, keep looping.
+                if (ready[slot] == 0)
+                {
+                    break;
+                }
+                else
+                {
+                    UNLOCK_CONTINUE(slot)
+                }
+            }
         }
 
-        err = GDALDatasetRasterIO(raster_datasets[i], 0,
+        // XXX operation_mode might be cleared at this point.  That
+        // will result in unsafe writes, but that is okay because a
+        // shutdown is in progress.  If that is the case, then the
+        // lock might not be held.  The unlock operations which follow
+        // have undefined behavior (but it is fine).
+
+        // Read imagery
+        err = GDALDatasetRasterIO(raster_datasets[id], 0,
                                   x_offset, y_offset, window_size, window_size,
-                                  raster_arrays[i],
+                                  imagery_slots[slot],
                                   window_size, window_size,
                                   raster_data_type, band_count, bands,
                                   0, 0, 0);
         if (err != CE_None)
         {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
+            UNLOCK_CONTINUE(slot)
         }
-        err = GDALDatasetRasterIO(label_datasets[i], 0,
+
+        // Read labels
+        err = GDALDatasetRasterIO(label_datasets[id], 0,
                                   x_offset, y_offset, window_size, window_size,
-                                  label_arrays[i],
+                                  label_slots[slot],
                                   window_size, window_size,
                                   label_data_type, 1, NULL,
                                   0, 0, 0);
         if (err != CE_None)
         {
-            pthread_mutex_unlock(&mutexes[i]);
-            sleep(0);
-            continue;
+            UNLOCK_CONTINUE(slot)
         }
-        ready[i] = 1;
-        pthread_mutex_unlock(&mutexes[i]);
+
+        // The slot is now ready for reading
+        ready[id] = 1;
+
+        // Done
+        UNLOCK(slot)
     }
 
     return NULL;
@@ -208,6 +244,7 @@ void *reader(void *_i)
  * Given imagery and label filenames, start the reader threads.
  *
  * @param _N The number of reader threads to create
+ * @param _M The number of slots
  * @param raster_filename The filename containing the imagery
  * @param label_filename The filename containing the labels
  * @param _operation_mode 1 for training mode, 2 for evaluation mode
@@ -216,6 +253,7 @@ void *reader(void *_i)
  * @param _bands An array of integers containing the desired bands
  */
 void start(int _N,
+           int _M,
            const char *raster_filename, const char *label_filename,
            GDALDataType _raster_data_type, GDALDataType _label_data_type,
            int _operation_mode,
@@ -231,6 +269,7 @@ void start(int _N,
 
     // Set globals
     N = _N;
+    M = _M;
     raster_data_type = _raster_data_type;
     label_data_type = _label_data_type;
     operation_mode = _operation_mode;
@@ -239,7 +278,7 @@ void start(int _N,
     bands = (int *)malloc(sizeof(int) * band_count);
     memcpy(bands, _bands, sizeof(int) * band_count);
 
-    // Create arrays
+    // Per-thread arrays (except for width and height)
     raster_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     raster_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
@@ -247,12 +286,19 @@ void start(int _N,
     width = GDALGetRasterXSize(raster_datasets[0]);
     height = GDALGetRasterYSize(raster_datasets[0]);
     threads = (pthread_t *)malloc(sizeof(pthread_t) * N);
-    mutexes = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * N);
-    raster_arrays = malloc(sizeof(void *) * N);
-    label_arrays = malloc(sizeof(void *) * N);
-    ready = calloc(N, sizeof(int));
+    mutexes = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * M);
+
+    // Per-slot arrays
+    imagery_slots = malloc(sizeof(void *) * M);
+    label_slots = malloc(sizeof(void *) * M);
+    ready = calloc(M, sizeof(int));
 
     // Fill arrays, start threads
+    for (int64_t i = 0; i < M; ++i)
+    {
+        imagery_slots[i] = malloc(word_size(raster_data_type) * band_count * window_size * window_size);
+        label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
+    }
     for (int64_t i = 0; i < N; ++i)
     {
         if (i != 0)
@@ -260,8 +306,6 @@ void start(int _N,
         raster_bands[i] = GDALGetRasterBand(raster_datasets[i], 1);
         label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
         pthread_mutex_init(&mutexes[i], NULL);
-        raster_arrays[i] = malloc(word_size(raster_data_type) * band_count * window_size * window_size);
-        label_arrays[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
         threads[i] = pthread_create(&threads[i], NULL, reader, (void *)i);
     }
 
@@ -279,8 +323,11 @@ void stop()
         pthread_join(threads[i], NULL);
         GDALClose(raster_datasets[i]);
         GDALClose(label_datasets[i]);
-        free(raster_arrays[i]);
-        free(label_arrays[i]);
+    }
+    for (int i = 0; i < M; ++i)
+    {
+        free(imagery_slots[i]);
+        free(label_slots[i]);
         ready[i] = 0;
     }
 
@@ -290,17 +337,18 @@ void stop()
     free(raster_datasets);
     free(raster_bands);
     free(label_datasets);
-    free(raster_arrays);
-    free(label_arrays);
+    free(imagery_slots);
+    free(label_slots);
     free(ready);
 
+    N = M = 0;
     bands = NULL;
     threads = NULL;
     mutexes = NULL;
     raster_datasets = NULL;
     raster_bands = NULL;
     label_datasets = NULL;
-    raster_arrays = NULL;
-    label_arrays = NULL;
+    imagery_slots = NULL;
+    label_slots = NULL;
     ready = NULL;
 }
