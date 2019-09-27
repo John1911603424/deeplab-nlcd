@@ -1,4 +1,9 @@
+*.aux.xml
+libchips/src/main
+.mypy_cache/
+*.o
 *.pth
 *.pyc
+*.so
 *.tif
-.mypy_cache/
+.vscode/
