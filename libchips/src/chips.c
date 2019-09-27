@@ -32,20 +32,20 @@ void **imagery_slots = NULL;
 void **label_slots = NULL;
 int *ready = NULL;
 
-#define UNLOCK(index)                          \
+#define UNLOCK(index, useconds)                \
     {                                          \
         pthread_mutex_unlock(&mutexes[index]); \
-        sleep(0);                              \
+        usleep(useconds);                      \
     }
-#define UNLOCK_BREAK(index) \
-    {                       \
-        UNLOCK(index)       \
-        break;              \
+#define UNLOCK_BREAK(index, useconds) \
+    {                                 \
+        UNLOCK(index, useconds)       \
+        break;                        \
     }
-#define UNLOCK_CONTINUE(index) \
-    {                          \
-        UNLOCK(index)          \
-        continue;              \
+#define UNLOCK_CONTINUE(index, useconds) \
+    {                                    \
+        UNLOCK(index, useconds)          \
+        continue;                        \
     }
 
 #define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
@@ -125,7 +125,7 @@ void get_next(void *imagery_buffer, void *label_buffer)
         {
             if (ready[slot] != 1)
             {
-                UNLOCK_CONTINUE(slot)
+                UNLOCK_CONTINUE(slot, 0)
             }
             else
             {
@@ -135,7 +135,8 @@ void get_next(void *imagery_buffer, void *label_buffer)
                     memcpy(label_buffer, label_slots[slot], word_size(label_data_type) * 1 * window_size * window_size);
                 }
                 ready[slot] = 0;
-                UNLOCK_BREAK(slot)
+                pthread_mutex_unlock(&mutexes[slot]);
+                break;
             }
         }
     }
@@ -194,7 +195,7 @@ void *reader(void *_id)
             if (retval == 0)
             {
                 pthread_mutex_unlock(&mutexes[slot]);
-                // If slot empty, break out of loop and proceed.  If
+                // If slot is empty, break out of loop and proceed.  If
                 // not, keep looping.
                 has_lock = 1;
                 if (ready[slot] == 0)
@@ -204,13 +205,13 @@ void *reader(void *_id)
                 else
                 {
                     ++slot;
-                    UNLOCK_CONTINUE(slot)
+                    UNLOCK_CONTINUE(slot, 1000)
                 }
             }
         }
         if (operation_mode != 1 && operation_mode != 2 && has_lock)
         {
-            UNLOCK_BREAK(slot);
+            UNLOCK_BREAK(slot, 0);
         }
 
         // Read imagery
@@ -222,7 +223,7 @@ void *reader(void *_id)
                                   0, 0, 0);
         if (err != CE_None)
         {
-            UNLOCK_CONTINUE(slot)
+            UNLOCK_CONTINUE(slot, 1000)
         }
 
         // Read labels
@@ -234,14 +235,14 @@ void *reader(void *_id)
                                   0, 0, 0);
         if (err != CE_None)
         {
-            UNLOCK_CONTINUE(slot)
+            UNLOCK_CONTINUE(slot, 1000)
         }
 
         // The slot is now ready for reading
         ready[slot] = 1;
 
         // Done
-        UNLOCK(slot)
+        UNLOCK(slot, 1000)
     }
 
     return NULL;
@@ -304,6 +305,7 @@ void start(int _N,
     {
         imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
         label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
+        // XXX consider https://stackoverflow.com/a/26311657
         pthread_mutex_init(&mutexes[i], NULL);
     }
     for (int64_t i = 0; i < N; ++i)

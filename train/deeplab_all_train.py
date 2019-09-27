@@ -1110,7 +1110,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         libchips.start(
             args.read_threads,  # Number of threads
-            256, # The number of read slots
+            args.read_threads, # The number of read slots
             b'/tmp/mul.tif',  # Image data
             b'/tmp/mask.tif',  # Label data
             6,  # Make all rasters float32
