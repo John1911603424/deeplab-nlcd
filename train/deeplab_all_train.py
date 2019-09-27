@@ -714,6 +714,7 @@ if __name__ == '__main__':
     libchips = ctypes.CDLL('/tmp/libchips.so')
     libchips.start(
         args.read_threads,  # Number of threads
+        256, # Number of slots
         b'/tmp/mul.tif',  # Image data
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
@@ -1109,6 +1110,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         libchips.start(
             args.read_threads,  # Number of threads
+            256, # The number of read slots
             b'/tmp/mul.tif',  # Image data
             b'/tmp/mask.tif',  # Label data
             6,  # Make all rasters float32

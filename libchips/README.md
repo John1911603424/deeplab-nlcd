@@ -2,13 +2,14 @@
 import ctypes
 import numpy as np
 
-libchips = ctypes.CDLL("./libchips/src/libchips.so")
+libchips = ctypes.CDLL("./libchips.so")
 bands = np.array(range(1,8), dtype=np.int32)
 bands_ptr = bands.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 libchips.start(
     16,  # Number of threads
-    b"/tmp/mul.tif",  # Image data
-    b"/tmp/mask.tif",  # Label data
+    16, # Number of threads
+    b"../../mul.tif",  # Image data
+    b"../../mask.tif",  # Label data
     6,  # Make all rasters float32
     5,  # Make all labels int32
     1,  # Training mode
