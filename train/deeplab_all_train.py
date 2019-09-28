@@ -18,9 +18,6 @@ import numpy as np  # type: ignore
 import torch
 import torchvision  # type: ignore
 
-# if os.environ.get('CURL_CA_BUNDLE') is None:
-#    os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
-
 MEANS: List[float] = []
 STDS: List[float] = []
 WATCHDOG_MUTEX: threading.Lock = threading.Lock()
@@ -712,9 +709,10 @@ if __name__ == '__main__':
         del s3
 
     libchips = ctypes.CDLL('/tmp/libchips.so')
+    libchips.init()
     libchips.start(
         args.read_threads,  # Number of threads
-        256, # Number of slots
+        256,  # Number of slots
         b'/tmp/mul.tif',  # Image data
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
@@ -1110,7 +1108,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         libchips.start(
             args.read_threads,  # Number of threads
-            args.read_threads, # The number of read slots
+            args.read_threads,  # The number of read slots
             b'/tmp/mul.tif',  # Image data
             b'/tmp/mask.tif',  # Label data
             6,  # Make all rasters float32
@@ -1135,4 +1133,5 @@ if __name__ == '__main__':
                  arg_hash)
         libchips.stop()
 
+    libchips.deinit()
     exit(0)

@@ -17,7 +17,6 @@ int band_count = 0;
 int *bands = NULL;
 int width = 0;
 int height = 0;
-int registered = 0;
 uint64_t current = 0;
 
 // Thread-related variables
@@ -249,6 +248,22 @@ void *reader(void *_id)
 }
 
 /**
+ * Initialize the library.
+ */
+void init()
+{
+    GDALAllRegister();
+}
+
+/**
+ * Deinitialize the library.
+ */
+void deinit()
+{
+    GDALDestroy();
+}
+
+/**
  * Given imagery and label filenames, start the reader threads.
  *
  * @param _N The number of reader threads to create
@@ -268,12 +283,6 @@ void start(int _N,
            int _window_size,
            int _band_count, int *_bands)
 {
-    if (!registered)
-    {
-        GDALAllRegister();
-        registered = 1;
-    }
-
     // Set globals
     N = _N;
     M = _M;
