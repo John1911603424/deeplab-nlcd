@@ -124,9 +124,10 @@ void get_next(void *imagery_buffer, void *label_buffer)
         {
             if (ready[slot] != 1)
             {
-                UNLOCK_CONTINUE(slot, 0)
+                pthread_mutex_unlock(&mutexes[slot]);
+                continue;
             }
-            else
+            else if (ready[slot] == 1)
             {
                 memcpy(imagery_buffer, imagery_slots[slot], word_size(imagery_data_type) * band_count * window_size * window_size);
                 if (label_buffer != NULL)
@@ -158,8 +159,6 @@ void *reader(void *_id)
 
     while (operation_mode == 1 || operation_mode == 2)
     {
-        int has_lock = 0;
-
         // Get a suitable training or evaluation window
         if (operation_mode == 1) // Training chip
         {
@@ -185,33 +184,24 @@ void *reader(void *_id)
         y_offset *= window_size;
 
         // Find an unused data slot
-        for (slot = rand_r(&state); (operation_mode == 1 || operation_mode == 2);)
+        for (slot = rand_r(&state) % M; (operation_mode == 1 || operation_mode == 2); slot = (slot + 1) % M)
         {
-            slot = slot % M;
-
-            // If slot not locked
-            int retval = pthread_mutex_trylock(&mutexes[slot]);
-            if (retval == 0)
+            // If slot is unlocked and slot is empty, read
+            if ((pthread_mutex_trylock(&mutexes[slot]) == 0) && (ready[slot] == 0))
             {
-                pthread_mutex_unlock(&mutexes[slot]);
-                // If slot is empty, break out of loop and proceed.  If
-                // not, keep looping.
-                has_lock = 1;
-                if (ready[slot] == 0)
-                {
-                    break;
-                }
-                else
-                {
-                    ++slot;
-                    UNLOCK_CONTINUE(slot, 1000)
-                }
+                goto read_things;
             }
+            UNLOCK_CONTINUE(slot, 100);
         }
-        if (operation_mode != 1 && operation_mode != 2 && has_lock)
+
+        // If search for slot terminated because the mode changed,
+        // break out of the loop
+        if (operation_mode != 1 && operation_mode != 2)
         {
-            UNLOCK_BREAK(slot, 0);
+            UNLOCK_BREAK((slot + M - 1) % M, 0);
         }
+
+    read_things:
 
         // Read imagery
         err = GDALDatasetRasterIO(imagery_datasets[id], 0,

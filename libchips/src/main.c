@@ -6,16 +6,20 @@
 
 int main(int argc, char **argv)
 {
-    int bands[7] = {1, 2, 3, 4, 5, 6, 7};
-    float *imagery_buffer = (float *)malloc(224 * 224 * 7 * sizeof(float));
-    int32_t *label_buffer = (int32_t *)malloc(224 * 224 * 7 * sizeof(int32_t));
+    const int band_count = 12;
+    const int window_size = 32;
+    int bands[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    float *imagery_buffer = (float *)malloc(window_size * window_size * band_count * sizeof(float));
+    int32_t *label_buffer = (int32_t *)malloc(window_size * window_size * band_count * sizeof(int32_t));
 
     init();
-    start(4, 4, "../../mul.tif", "../../mask.tif", 6, 5, 1, 224, 7, bands);
-    for (int i = 0; i < 8; ++i)
+    start(16, 256, "../../mul.tif", "../../mask.tif", 6, 5, 1, window_size, band_count, bands);
+    for (int i = 0; i < 1000; ++i)
     {
         get_next(imagery_buffer, label_buffer);
+        fprintf(stderr, "!");
     }
+    fprintf(stderr, "\n");
     stop();
     deinit();
 
