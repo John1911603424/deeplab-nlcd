@@ -1,6 +1,10 @@
 #ifndef __CHIPS_H__
 #define __CHIPS_H__
 
+void init();
+
+void deinit();
+
 void start(int _N,
            int _M,
            const char *imagery_filename, const char *label_filename,
