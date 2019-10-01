@@ -18,8 +18,6 @@ import numpy as np  # type: ignore
 import torch
 import torchvision  # type: ignore
 
-MEANS: List[float] = []
-STDS: List[float] = []
 WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
@@ -101,42 +99,6 @@ if True:
                     gap, seconds), file=sys.stderr)
                 os._exit(-1)
 
-# Sampling
-if True:
-    def get_random_sample(libchips: ctypes.CDLL,
-                          window_size: int,
-                          band_count: int,
-                          image_nd: Union[float, int]) -> np.ndarray:
-        """Get a random sample from the given raster dataset
-
-        Arguments:
-            libchips {ctypes.CDLL} -- Handle that can be used to read the dataset
-            window_size {int} -- The size of the sample window
-            band_count {int} -- The number of bands in the image
-            image_nd {Union[None, Union[float, int]]} -- The image nodata
-
-        Returns:
-            np.ndarray -- A stack of samples from image bands
-        """
-        data = []
-        shape = (band_count, window_size, window_size)
-        a = np.zeros(shape, dtype=np.float32)
-        a_ptr = a.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        libchips.get_next(a_ptr, ctypes.c_void_p(0))
-
-        for i in range(band_count):
-            if image_nd is not None:
-                band = np.extract(a[i] != image_nd, a[i])
-            else:
-                band = a[i].flatten()
-            band = np.extract(~np.isnan(band), band)
-            data.append(band.copy())
-        min_len = min(list(map(len, data)))
-        data = [sub_data[0:min_len] for sub_data in data]
-        data = np.stack(data, axis=1)
-
-        return data
-
 # Training
 if True:
     def numpy_replace(np_arr: np.ndarray,
@@ -193,10 +155,6 @@ if True:
             libchips.get_next(temp1_ptr, temp2_ptr)
             data.append(temp1.copy())
             labels.append(temp2.copy())
-
-        # Scale image NODATA value
-        if image_nd is not None:
-            image_nd = (image_nd - MEANS[0])/STDS[0]
 
         raster_batch = []
         label_batch = []
@@ -424,8 +382,6 @@ if True:
             evaluations.write('Recalls: {}\n'.format(recalls))
             evaluations.write('Precisions: {}\n'.format(precisions))
             evaluations.write('f1 scores: {}\n'.format(f1s))
-            evaluations.write('Means:               {}\n'.format(MEANS))
-            evaluations.write('Standard Deviations: {}\n'.format(STDS))
 
         s3 = boto3.client('s3')
         s3.upload_file('/tmp/evaluations.txt', bucket_name,
@@ -499,7 +455,6 @@ if True:
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
-        parser.add_argument('--max-sample-windows', default=0, type=int)
         parser.add_argument('--read-threads', default=16, type=int)
         parser.add_argument('--s3-bucket', required=True,
                             help='prefix to apply when saving models to s3')
@@ -722,28 +677,6 @@ if __name__ == '__main__':
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
-
-    # ---------------------------------
-    print('PRE-COMPUTING')
-
-    if args.max_sample_windows == -1:
-        for _ in range(len(args.bands)):
-            MEANS.append(0)
-            STDS.append(1)
-    else:
-        def sample():
-            return get_random_sample(libchips, args.window_size, len(args.bands), args.image_nd)
-        ws = [sample() for i in range(0, args.max_sample_windows)]
-        for i in range(0, len(args.bands)):
-            a = np.concatenate([w[:, i] for w in ws])
-            MEANS.append(a.mean())
-            STDS.append(a.std())
-        del a
-        del sample
-        del ws
-
-    print('Means:               {}'.format(MEANS))
-    print('Standard Deviations: {}'.format(STDS))
 
     # ---------------------------------
     print('RECORDING RUN')
