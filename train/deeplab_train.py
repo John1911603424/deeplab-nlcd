@@ -131,6 +131,8 @@ if True:
                 band = a[i].flatten()
             band = np.extract(~np.isnan(band), band)
             data.append(band.copy())
+        min_len = min(list(map(len, data)))
+        data = [sub_data[0:min_len] for sub_data in data]
         data = np.stack(data, axis=1)
 
         return data
@@ -509,8 +511,7 @@ if True:
                             help='the input that you are training to produce labels for')
         parser.add_argument(
             '--watchdog-seconds', help='The number of seconds that can pass without activity before the program is terminated (0 to disable)', default=0, type=int)
-        parser.add_argument('--weights', help='label to ignore',
-                            nargs='+', required=True, type=float)
+        parser.add_argument('--weights', nargs='+', required=True, type=float)
         parser.add_argument('--window-size', default=32, type=int)
         return parser
 
