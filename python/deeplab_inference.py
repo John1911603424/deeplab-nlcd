@@ -81,6 +81,55 @@ if True:
             except KeyError:
                 break
 
+# Warm-up
+if True:
+    def get_warmup_batch(libchips: ctypes.CDLL,
+                         band_count: int,
+                         image_nd: Union[None, Union[int, float]],
+                         batch_size: int = 8,
+                         window_size: int = 32) -> torch.Tensor:
+        """Get a warm-up batch
+
+        Arguments:
+            libchips {ctypes.CDLL} -- A shared library handled used for reading data
+            band_count {int} -- The number of bands
+            image_nd {Union[None, Union[int, float]]} -- The image nodata
+
+        Keyword Arguments:
+            batch_size {int} -- The size of a warm-up batch (default: {8})
+            window_size {int} -- The window size (default: {32})
+
+        Returns:
+            torch.Tensor -- A batch in the form of a PyTorch tensor
+        """
+        shape = (band_count, window_size, window_size)
+        temp1 = np.zeros(shape, dtype=np.float32)
+        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+        data = []
+        for _ in range(batch_size):
+            libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
+            data.append(temp1.copy())
+
+        raster_batch = []
+        for raster in data:
+
+            # NODATA from rasters
+            image_nds = np.isnan(raster).sum(axis=0)
+            if image_nd is not None:
+                image_nds += (raster == image_nd).sum(axis=0)
+
+            # Set label NODATA, remove NaNs from rasters
+            nodata = (image_nds > 0)
+            for i in range(len(raster)):
+                raster[i][nodata == True] = 0.0
+
+            raster_batch.append(raster)
+
+        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
+
+        return (raster_batch)
+
 # Inference
 if True:
     def get_inference_window(libchips: ctypes.CDLL,
@@ -382,6 +431,30 @@ if __name__ == '__main__':
 
     libchips = ctypes.CDLL('/tmp/libchips.so')
     libchips.init()
+
+    # ---------------------------------
+    print('WARMUP')
+    # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
+    if True:
+        deeplab.train()
+        libchips.start(
+            16,  # Number of threads
+            256,  # Number of slots
+            b'/tmp/mul.tif',  # Image data
+            ctypes.c_void_p(0),  # Label data
+            6,  # Make all rasters float32
+            5,  # Make all labels int32
+            1,  # Training mode
+            32,
+            len(args.bands),
+            np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+        with torch.no_grad():
+            for i in range(107):
+                batch = get_warmup_batch(
+                    libchips, len(args.bands), args.image_nd)
+                out = deeplab(batch.to(device))
+                del out
+        libchips.stop()
 
     # ---------------------------------
     print('INFERENCE')
