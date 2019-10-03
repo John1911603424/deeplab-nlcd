@@ -17,4 +17,7 @@ void stop();
 
 void get_next(void *imagery_buffer, void *label_buffer);
 
+int get_inference_chip(void *imagery_buffer,
+                       int x_offset, int y_offset,
+                       int attempts);
 #endif

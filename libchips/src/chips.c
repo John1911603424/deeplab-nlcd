@@ -109,6 +109,55 @@ int get_height()
 }
 
 /**
+ * Get an (inference) chip.  This can be used only if operation_mode 3
+ * is active.
+ *
+ * @param imagery_buffer The return-pointer for the imagery data
+ * @param x_offset The x-offset for the window (in pixels)
+ * @param y_offset The y-offset for the window (in pixels)
+ * @param attempts The maximum number of attempts to make to read the window
+ * @return 1 for success, 0 for failure
+ */
+int get_inference_chip(void *imagery_buffer,
+                       int x, int y,
+                       int attempts)
+{
+    int id = 0;
+    int x_offset = x / window_size;
+    int y_offset = y / window_size;
+
+    if ((operation_mode != 3) || EMPTY_WINDOW)
+    {
+        goto bad;
+    }
+
+    for (int i = 0; i < attempts; ++i)
+    {
+        CPLErr err = CE_None;
+
+        // Read imagery
+        err = GDALDatasetRasterIO(imagery_datasets[id], 0,
+                                  x, y, window_size, window_size,
+                                  imagery_buffer,
+                                  window_size, window_size,
+                                  imagery_data_type, band_count, bands,
+                                  0, 0, 0);
+        if (err != CE_None)
+        {
+            continue;
+        }
+        goto good;
+    }
+
+bad:
+    memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
+    return 0;
+
+good:
+    return 1;
+}
+
+/**
  * Get the next available window.
  *
  * @param imagery_buffer The return-location for the imagery data
@@ -154,7 +203,7 @@ void *reader(void *_id)
     int x_offset = 0;
     int y_offset = 0;
     int slot = -1;
-    CPLErr err = 0;
+    CPLErr err = CE_None;
     unsigned int state = (unsigned long)id;
 
     while (operation_mode == 1 || operation_mode == 2)
@@ -216,15 +265,18 @@ void *reader(void *_id)
         }
 
         // Read labels
-        err = GDALDatasetRasterIO(label_datasets[id], 0,
-                                  x_offset, y_offset, window_size, window_size,
-                                  label_slots[slot],
-                                  window_size, window_size,
-                                  label_data_type, 1, NULL,
-                                  0, 0, 0);
-        if (err != CE_None)
+        if (label_datasets[id] != NULL)
         {
-            UNLOCK_CONTINUE(slot, 1000)
+            err = GDALDatasetRasterIO(label_datasets[id], 0,
+                                      x_offset, y_offset, window_size, window_size,
+                                      label_slots[slot],
+                                      window_size, window_size,
+                                      label_data_type, 1, NULL,
+                                      0, 0, 0);
+            if (err != CE_None)
+            {
+                UNLOCK_CONTINUE(slot, 1000)
+            }
         }
 
         // The slot is now ready for reading
@@ -260,7 +312,7 @@ void deinit()
  * @param _M The number of slots
  * @param imagery_filename The filename containing the imagery
  * @param label_filename The filename containing the labels
- * @param _operation_mode 1 for training mode, 2 for evaluation mode
+ * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
  * @param _window_size The desired window size
  * @param _band_count The number of bands
  * @param _bands An array of integers containing the desired bands
@@ -304,15 +356,24 @@ void start(int _N,
     {
         imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
         label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
-        // XXX consider https://stackoverflow.com/a/26311657
         pthread_mutex_init(&mutexes[i], NULL);
     }
     for (int64_t i = 0; i < N; ++i)
     {
         if (i != 0)
+        {
             imagery_datasets[i] = GDALOpen(imagery_filename, GA_ReadOnly);
+        }
         imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
-        label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
+        if (label_filename != NULL)
+        {
+            label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
+        }
+        else
+        {
+            label_datasets[i] = NULL;
+        }
+
         pthread_create(&threads[i], NULL, reader, (void *)i);
     }
 
@@ -329,7 +390,10 @@ void stop()
     {
         pthread_join(threads[i], NULL);
         GDALClose(imagery_datasets[i]);
-        GDALClose(label_datasets[i]);
+        if (label_datasets[i] != NULL)
+        {
+            GDALClose(label_datasets[i]);
+        }
     }
     for (int i = 0; i < M; ++i)
     {
