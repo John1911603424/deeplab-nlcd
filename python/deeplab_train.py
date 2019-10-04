@@ -673,6 +673,8 @@ if __name__ == '__main__':
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
+        ctypes.c_void_p(0),  # means
+        ctypes.c_void_p(0),  # standard deviations
         1,  # Training mode
         args.window_size,
         len(args.bands),
@@ -1047,6 +1049,8 @@ if __name__ == '__main__':
             b'/tmp/mask.tif',  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
+            ctypes.c_void_p(0),  # means
+            ctypes.c_void_p(0),  # standard deviations
             2,  # Evaluation mode
             args.window_size,
             len(args.bands),
