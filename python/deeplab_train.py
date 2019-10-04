@@ -187,18 +187,10 @@ if True:
     def train(model: torch.nn.Module,
               opt: torch.optim.SGD,
               obj: torch.nn.CrossEntropyLoss,
-              batches_per_epoch: int,
               epochs: int,
               libchips: ctypes.CDLL,
-              bands: List[int],
-              batch_size: int,
-              window_size: int,
               device: torch.device,
-              label_mappings: Dict[int, int],
-              label_nd: Union[int, float],
-              image_nd: Union[None, Union[int, float]],
-              bucket_name: str,
-              s3_prefix: str,
+              args: Dict,
               arg_hash: str,
               no_checkpoints: bool = True,
               starting_epoch: int = 0):
@@ -208,18 +200,10 @@ if True:
             model {torch.nn.Module} -- The model to train
             opt {torch.optim.SGD} -- The optimizer to use
             obj {torch.nn.CrossEntropyLoss} -- The objective function to use
-            batches_per_epoch {int} -- The number of batches per "epoch"
             epochs {int} -- The number of "epochs"
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            bands {List[int]} -- The imagery bands to use
-            batch_size {int} -- The batch size
-            window_size {int} -- The window size
             device {torch.device} -- The device to use
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The imagery nodata
-            bucket_name {str} -- The bucket name
-            s3_prefix {str} -- The bucket prefix
+            args {Dict} -- The arguments dictionary
             arg_hash {str} -- The arguments hash
 
         Keyword Arguments:
@@ -227,18 +211,18 @@ if True:
             starting_epoch {int} -- The starting epoch (default: {0})
         """
         current_time = time.time()
-        band_count = len(bands)
+        band_count = len(args.bands)
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
-            for _ in range(batches_per_epoch):
+            for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips,
                                   band_count,
-                                  batch_size,
-                                  window_size,
-                                  label_mappings,
-                                  label_nd,
-                                  image_nd)
+                                  args.batch_size,
+                                  args.window_size,
+                                  args.label_map,
+                                  args.label_nd,
+                                  args.image_nd)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -254,7 +238,7 @@ if True:
                 opt.step()
                 avg_loss = avg_loss + loss.item()
 
-            avg_loss = avg_loss / batches_per_epoch
+            avg_loss = avg_loss / args.max_epoch_size
 
             last_time = current_time
             current_time = time.time()
@@ -265,11 +249,11 @@ if True:
                 global WATCHDOG_TIME
                 WATCHDOG_TIME = time.time()
 
-            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and bucket_name and s3_prefix)) and not no_checkpoints:
+            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.bucket_name and args.s3_prefix)) and not no_checkpoints:
                 torch.save(model.state_dict(), 'deeplab.pth')
                 s3 = boto3.client('s3')
-                s3.upload_file('deeplab.pth', bucket_name,
-                               '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
+                s3.upload_file('deeplab.pth', args.bucket_name,
+                               '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
                 del s3
 
 # Evaluation
@@ -285,7 +269,7 @@ if True:
             model {torch.nn.Module} -- The model to evaluate
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
             device {torch.device} -- The device to use for evaluation
-            args {Dict} -- Arguments
+            args {Dict} -- The arguments dictionary
             arg_hash {str} -- The hashed arguments
         """
         band_count = len(args.bands)
@@ -730,10 +714,10 @@ if __name__ == '__main__':
     else:
         raise Exception
 
-    batches_per_epoch = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
-                                                     (args.window_size * args.window_size * 7.0 * args.batch_size)))
+    args.max_epoch_size = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
+                                                       (args.window_size * args.window_size * 7.0 * args.batch_size)))
 
-    print('\t STEPS PER EPOCH={}'.format(batches_per_epoch))
+    print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
     obj = torch.nn.CrossEntropyLoss(
         ignore_index=args.label_nd,
         weight=torch.FloatTensor(args.weights).to(device)
@@ -796,18 +780,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs1,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              args.copy(),
               arg_hash)
 
         print('\t UPLOADING')
@@ -855,18 +831,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs2,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              args.copy(),
               arg_hash)
 
         print('\t UPLOADING')
@@ -905,18 +873,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs3,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              args.copy(),
               arg_hash)
 
         print('\t UPLOADING')
@@ -955,18 +915,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs4,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              args.copy(),
               arg_hash,
               no_checkpoints=False)
 
@@ -1005,18 +957,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs4,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              args.copy(),
               arg_hash,
               no_checkpoints=False,
               starting_epoch=current_epoch)
