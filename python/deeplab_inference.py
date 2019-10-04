@@ -3,12 +3,9 @@
 import argparse
 import copy
 import ctypes
-import hashlib
 import os
-import re
 import sys
 import threading
-import time
 from typing import *
 from urllib.parse import urlparse
 
@@ -18,11 +15,6 @@ import numpy as np  # type: ignore
 import rasterio as rio  # type: ignore
 import torch
 import torchvision  # type: ignore
-
-WATCHDOG_MUTEX: threading.Lock = threading.Lock()
-WATCHDOG_TIME: float = time.time()
-EVALUATIONS_BATCHES_DONE = 0
-
 
 # S3
 if True:
@@ -37,49 +29,6 @@ if True:
         """
         parsed = urlparse(url, allow_fragments=False)
         return (parsed.netloc, parsed.path.lstrip('/'))
-
-    def get_matching_s3_keys(bucket: str,
-                             prefix: str = '',
-                             suffix: str = '') -> Generator[str, None, None]:
-        """Generate all of the keys in a bucket with the given prefix and suffix
-
-        See https://alexwlchan.net/2017/07/listing-s3-keys/
-
-        Arguments:
-            bucket {str} -- The S3 bucket
-
-        Keyword Arguments:
-            prefix {str} -- The prefix to filter by (default: {''})
-            suffix {str} -- The suffix to filter by (default: {''})
-
-        Returns:
-            Generator[str, None, None] -- The list of keys
-        """
-        s3 = boto3.client('s3')
-        kwargs = {'Bucket': bucket}
-
-        # If the prefix is a single string (not a tuple of strings), we can
-        # do the filtering directly in the S3 API.
-        if isinstance(prefix, str):
-            kwargs['Prefix'] = prefix
-
-        while True:
-
-            # The S3 API response is a large blob of metadata.
-            # 'Contents' contains information about the listed objects.
-            resp = s3.list_objects_v2(**kwargs)
-            for obj in resp['Contents']:
-                key = obj['Key']
-                if key.startswith(prefix) and key.endswith(suffix):
-                    yield key
-
-            # The S3 API is paginated, returning up to 1000 keys at a time.
-            # Pass the continuation token into the next response, until we
-            # reach the final page (when this field is missing).
-            try:
-                kwargs['ContinuationToken'] = resp['NextContinuationToken']
-            except KeyError:
-                break
 
 # Warm-up
 if True:
@@ -126,18 +75,16 @@ if True:
 
             raster_batch.append(raster)
 
-        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
+        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
 
-        return (raster_batch)
+        return raster_batch_tensor
 
 # Inference
 if True:
     def get_inference_window(libchips: ctypes.CDLL,
                              x_offset: int,
                              y_offset: int,
-                             band_count: int,
-                             window_size: int,
-                             image_nd: Union[None, Union[int, float]]) -> Union[None, torch.Tensor]:
+                             args: argparse.Namespace) -> Union[None, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
@@ -151,14 +98,14 @@ if True:
         Returns:
             Union[None, torch.Tensor] -- The imagery data as a PyTorch tensor
         """
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands), args.window_size, args.window_size)
         image = np.zeros(shape, dtype=np.float32)
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
             image_nds = np.isnan(image)
-            if image_nd is not None:
-                image_nds += (image == image_nd)
+            if args.image_nd is not None:
+                image_nds += (image == args.image_nd)
             image[image_nds > 0] = 0.0
             return torch.from_numpy(np.stack([image], axis=0))
         else:
@@ -166,19 +113,6 @@ if True:
 
 # Arguments
 if True:
-    def hash_string(string: str) -> str:
-        """Return a SHA-256 hash of the given string
-
-        See: https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
-
-        Arguments:
-            string {str} -- The string to hash
-
-        Returns:
-            str -- The hashed string
-        """
-        return hashlib.sha256(string.encode('utf-8')).hexdigest()
-
     class StoreDictKeyPair(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             my_dict = {}
@@ -187,7 +121,7 @@ if True:
                 my_dict[int(k)] = int(v)
             setattr(namespace, self.dest, my_dict)
 
-    def training_cli_parser() -> argparse.ArgumentParser:
+    def inference_cli_parser() -> argparse.ArgumentParser:
         """Generate a parser for command line arguments
 
         See: https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
@@ -375,8 +309,8 @@ if True:
 
 if __name__ == '__main__':
 
-    parser = training_cli_parser()
-    args = training_cli_parser().parse_args()
+    parser = inference_cli_parser()
+    args = inference_cli_parser().parse_args()
 
     # ---------------------------------
     print('DATA')
@@ -505,8 +439,8 @@ if __name__ == '__main__':
                         y_offset = height - args.window_size - 1
                     window = rio.windows.Window(
                         x_offset, y_offset, args.window_size, args.window_size)
-                    tensor = get_inference_window(libchips, x_offset, y_offset, len(
-                        args.bands), args.window_size, args.image_nd)
+                    tensor = get_inference_window(
+                        libchips, x_offset, y_offset, args.copy())
                     if tensor is not None:
                         tensor = tensor.to(device)
                         out = deeplab(tensor)
