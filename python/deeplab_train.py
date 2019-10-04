@@ -275,54 +275,37 @@ if True:
 # Evaluation
 if True:
     def evaluate(model: torch.nn.Module,
-                 evaluation_batches: int,
                  libchips: ctypes.CDLL,
-                 bands: List[int],
-                 batch_size: int,
-                 window_size: int,
-                 label_count: int,
                  device: torch.device,
-                 label_mappings: Dict[int, int],
-                 label_nd: Union[int, float],
-                 image_nd: Union[None, Union[int, float]],
-                 bucket_name: str,
-                 s3_prefix: str,
+                 args: Dict,
                  arg_hash: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
             model {torch.nn.Module} -- The model to evaluate
-            evaluation_batches {int} -- The number of evaluation batches
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            bands {List[int]} -- The imagery bands to use
-            batch_size {int} -- The batch size
-            window_size {int} -- The window size
-            label_count {int} -- The number of classes
             device {torch.device} -- The device to use for evaluation
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd: Union[None, Union[int, float]],
-            bucket_name {str} -- The bucket name
-            s3_prefix {str} -- The S3 prefix
+            args {Dict} -- Arguments
             arg_hash {str} -- The hashed arguments
         """
-        band_count = len(bands)
+        band_count = len(args.bands)
         model.eval()
         with torch.no_grad():
-            tps = [0.0 for x in range(label_count)]
-            fps = [0.0 for x in range(label_count)]
-            fns = [0.0 for x in range(label_count)]
-            tns = [0.0 for x in range(label_count)]
+            num_classes = len(args.weights)
+            tps = [0.0 for x in range(num_classes)]
+            fps = [0.0 for x in range(num_classes)]
+            fns = [0.0 for x in range(num_classes)]
+            tns = [0.0 for x in range(num_classes)]
 
-            for _ in range(evaluation_batches):
+            for _ in range(args.max_eval_windows // args.batch_size):
                 batch = get_batch(
                     libchips,
                     band_count,
-                    batch_size,
-                    window_size,
-                    label_mappings,
-                    label_nd,
-                    image_nd)
+                    args.batch_size,
+                    args.window_size,
+                    args.label_map,
+                    args.label_nd,
+                    args.image_nd)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
@@ -333,13 +316,13 @@ if True:
                 del batch
 
                 # Make sure output reflects don't care values
-                if label_nd is not None:
-                    dont_care = (labels == label_nd)
+                if args.label_nd is not None:
+                    dont_care = (labels == args.label_nd)
                 else:
                     dont_care = np.zeros(labels.shape)
-                out = out + label_count*dont_care
+                out = out + len(args.weights)*dont_care
 
-                for j in range(label_count):
+                for j in range(len(args.weights)):
                     tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
                     fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
@@ -358,7 +341,7 @@ if True:
 
         recalls = []
         precisions = []
-        for j in range(label_count):
+        for j in range(len(args.weights)):
             recall = tps[j] / (tps[j] + fns[j])
             recalls.append(recall)
             precision = tps[j] / (tps[j] + fps[j])
@@ -368,7 +351,7 @@ if True:
         print('Precisions {}'.format(precisions))
 
         f1s = []
-        for j in range(label_count):
+        for j in range(len(args.weights)):
             f1 = 2 * (precisions[j] * recalls[j]) / \
                 (precisions[j] + recalls[j])
             f1s.append(f1)
@@ -384,8 +367,8 @@ if True:
             evaluations.write('f1 scores: {}\n'.format(f1s))
 
         s3 = boto3.client('s3')
-        s3.upload_file('/tmp/evaluations.txt', bucket_name,
-                       '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
+        s3.upload_file('/tmp/evaluations.txt', args.bucket_name,
+                       '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
         del s3
 
 # Arguments
@@ -1056,18 +1039,9 @@ if __name__ == '__main__':
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         evaluate(deeplab,
-                 args.max_eval_windows // args.batch_size,
                  libchips,
-                 args.bands,
-                 args.batch_size,
-                 args.window_size,
-                 len(args.weights),
                  device,
-                 args.label_map,
-                 args.label_nd,
-                 args.image_nd,
-                 args.s3_bucket,
-                 args.s3_prefix,
+                 args.copy(),
                  arg_hash)
         libchips.stop()
 
