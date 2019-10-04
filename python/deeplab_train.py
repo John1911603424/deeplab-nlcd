@@ -160,10 +160,11 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters
+            # Set label NODATA, remove NaNs from rasters, normalize
             nodata = ((image_nds + label_nds) > 0)
             label[nodata == True] = args.label_nd
             for i in range(len(raster)):
+                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
@@ -233,10 +234,10 @@ if True:
                 global WATCHDOG_TIME
                 WATCHDOG_TIME = time.time()
 
-            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.bucket_name and args.s3_prefix)) and not no_checkpoints:
+            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
                 torch.save(model.state_dict(), 'deeplab.pth')
                 s3 = boto3.client('s3')
-                s3.upload_file('deeplab.pth', args.bucket_name,
+                s3.upload_file('deeplab.pth', args.s3_bucket,
                                '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
                 del s3
 
@@ -328,7 +329,7 @@ if True:
             evaluations.write('f1 scores: {}\n'.format(f1s))
 
         s3 = boto3.client('s3')
-        s3.upload_file('/tmp/evaluations.txt', args.bucket_name,
+        s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
                        '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
         del s3
 
@@ -582,6 +583,11 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
+    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
+    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
+    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
     # ---------------------------------
     print('DATA')
 
@@ -590,6 +596,20 @@ if __name__ == '__main__':
         bucket, prefix = parse_s3_url(args.training_img)
         print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mul.tif')
+        try:
+            s3.download_file(bucket, '{}.aux.xml'.format(
+                prefix), '/tmp/mul.tif.aux.xml')
+        except:
+            pass
+        del s3
+    if not os.path.exists('/tmp/mul.tif.aux.xml'):
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.training_img)
+        try:
+            s3.download_file(bucket, '{}.aux.xml'.format(
+                prefix), '/tmp/mul.tif.aux.xml')
+        except:
+            pass
         del s3
     if not os.path.exists('/tmp/mask.tif'):
         s3 = boto3.client('s3')
@@ -617,12 +637,18 @@ if __name__ == '__main__':
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
-        ctypes.c_void_p(0),  # means
-        ctypes.c_void_p(0),  # standard deviations
+        mus_ptr,  # means
+        sigmas_ptr,  # standard deviations
         1,  # Training mode
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+
+    # ---------------------------------
+    print('STATISTICS')
+
+    print('\t MEANS={}'.format(args.mus))
+    print('\t SIGMAS={}'.format(args.sigmas))
 
     # ---------------------------------
     print('RECORDING RUN')
@@ -760,7 +786,7 @@ if __name__ == '__main__':
               args.epochs1,
               libchips,
               device,
-              args.copy(),
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -811,7 +837,7 @@ if __name__ == '__main__':
               args.epochs2,
               libchips,
               device,
-              args.copy(),
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -853,7 +879,7 @@ if __name__ == '__main__':
               args.epochs3,
               libchips,
               device,
-              args.copy(),
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -895,7 +921,7 @@ if __name__ == '__main__':
               args.epochs4,
               libchips,
               device,
-              args.copy(),
+              copy.copy(args),
               arg_hash,
               no_checkpoints=False)
 
@@ -937,7 +963,7 @@ if __name__ == '__main__':
               args.epochs4,
               libchips,
               device,
-              args.copy(),
+              copy.copy(args),
               arg_hash,
               no_checkpoints=False,
               starting_epoch=current_epoch)
@@ -962,7 +988,7 @@ if __name__ == '__main__':
         evaluate(deeplab,
                  libchips,
                  device,
-                 args.copy(),
+                 copy.copy(args),
                  arg_hash)
         libchips.stop()
 
