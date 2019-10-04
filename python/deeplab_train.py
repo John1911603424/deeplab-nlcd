@@ -121,37 +121,27 @@ if True:
         return b
 
     def get_batch(libchips: ctypes.CDLL,
-                  band_count: int,
-                  batch_size: int,
-                  window_size: int,
-                  label_mappings: Dict[int, int],
-                  label_nd: Union[int, float],
-                  image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+                  args: argparse.Namespace) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
-            band_count {int} -- The number of bands in the training set
-            window_size {int} -- The window size
-            batch_size {int} -- Batch size
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
+            args {argparse.Namespace} -- The arguments dictionary
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
         """
-        assert(label_nd is not None)
+        assert(args.label_nd is not None)
 
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands), args.window_size, args.window_size)
         temp1 = np.zeros(shape, dtype=np.float32)
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        temp2 = np.zeros((window_size, window_size), dtype=np.int32)
+        temp2 = np.zeros((args.window_size, args.window_size), dtype=np.int32)
         temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
         data = []
         labels = []
-        for _ in range(batch_size):
+        for _ in range(args.batch_size):
             libchips.get_next(temp1_ptr, temp2_ptr)
             data.append(temp1.copy())
             labels.append(temp2.copy())
@@ -162,27 +152,27 @@ if True:
 
             # NODATA from labels
             label = np.array(label, dtype=np.long)
-            label = numpy_replace(label, label_mappings, label_nd)
-            label_nds = (label == label_nd)
+            label = numpy_replace(label, args.label_map, args.label_nd)
+            label_nds = (label == args.label_nd)
 
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
-            if image_nd is not None:
-                image_nds += (raster == image_nd).sum(axis=0)
+            if args.image_nd is not None:
+                image_nds += (raster == args.image_nd).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
-            label[nodata == True] = label_nd
+            label[nodata == True] = args.label_nd
             for i in range(len(raster)):
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
             label_batch.append(label)
 
-        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
-        label_batch = torch.from_numpy(np.stack(label_batch, axis=0))
+        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
+        label_batch_tensor = torch.from_numpy(np.stack(label_batch, axis=0))
 
-        return (raster_batch, label_batch)
+        return (raster_batch_tensor, label_batch_tensor)
 
     def train(model: torch.nn.Module,
               opt: torch.optim.SGD,
@@ -190,7 +180,7 @@ if True:
               epochs: int,
               libchips: ctypes.CDLL,
               device: torch.device,
-              args: Dict,
+              args: argparse.Namespace,
               arg_hash: str,
               no_checkpoints: bool = True,
               starting_epoch: int = 0):
@@ -203,7 +193,7 @@ if True:
             epochs {int} -- The number of "epochs"
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
             device {torch.device} -- The device to use
-            args {Dict} -- The arguments dictionary
+            args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The arguments hash
 
         Keyword Arguments:
@@ -216,13 +206,7 @@ if True:
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
-                batch = get_batch(libchips,
-                                  band_count,
-                                  args.batch_size,
-                                  args.window_size,
-                                  args.label_map,
-                                  args.label_nd,
-                                  args.image_nd)
+                batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -261,7 +245,7 @@ if True:
     def evaluate(model: torch.nn.Module,
                  libchips: ctypes.CDLL,
                  device: torch.device,
-                 args: Dict,
+                 args: argparse.Namespace,
                  arg_hash: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
@@ -269,7 +253,7 @@ if True:
             model {torch.nn.Module} -- The model to evaluate
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
             device {torch.device} -- The device to use for evaluation
-            args {Dict} -- The arguments dictionary
+            args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The hashed arguments
         """
         band_count = len(args.bands)
@@ -282,14 +266,7 @@ if True:
             tns = [0.0 for x in range(num_classes)]
 
             for _ in range(args.max_eval_windows // args.batch_size):
-                batch = get_batch(
-                    libchips,
-                    band_count,
-                    args.batch_size,
-                    args.window_size,
-                    args.label_map,
-                    args.label_nd,
-                    args.image_nd)
+                batch = get_batch(libchips, args)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
