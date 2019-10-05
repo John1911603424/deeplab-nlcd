@@ -132,11 +132,11 @@ if True:
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
-        parser.add_argument(
-            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--classes', required=True,
                             help='The number of prediction classes', type=int)
         parser.add_argument('--final-predictions', action='store_true')
+        parser.add_argument(
+            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--inference-img', required=True,
                             help='The location of the image on which to predict')
         parser.add_argument(
@@ -145,9 +145,11 @@ if True:
                             help='The location of libchips.so')
         parser.add_argument('--model', required=True,
                             help='The model to use for preditions')
+        parser.add_argument('--no-warmup', action='store_true')
         parser.add_argument('--prediction-img', required=True,
                             help='The location where the prediction image should be stored')
-        parser.add_argument('--no-warmup', action='store_true')
+        parser.add_argument(
+            '--statistics-img-uri', help='The image from which to obtain statistics for normalization')
         parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
         return parser
@@ -370,6 +372,21 @@ if __name__ == '__main__':
     libchips.init()
 
     # ---------------------------------
+    print('STATISTICS')
+    if args.statistics_img_uri is None:
+        args.statistics_img_uri = '/tmp/mul.tif'
+    libchips.get_statistics(
+        args.statistics_img_uri.encode('utf-8'),
+        len(args.bands),
+        np.array(args.bands, dtype=np.int32).ctypes.data_as(
+            ctypes.POINTER(ctypes.c_int32)),
+        mus_ptr,
+        sigmas_ptr
+    )
+    print('MEANS={}'.format(args.mus))
+    print('SIGMAS={}'.format(args.sigmas))
+
+    # ---------------------------------
     print('WARMUP')
     # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
     if not args.no_warmup:
@@ -381,10 +398,10 @@ if __name__ == '__main__':
             ctypes.c_void_p(0),  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
-            mus_ptr,  # means
-            sigmas_ptr,  # standard deviations
+            ctypes.c_void_p(0),  # means
+            ctypes.c_void_p(0),  # standard deviations
             1,  # Training mode
-            32,
+            args.warmup_window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         with torch.no_grad():
@@ -404,8 +421,8 @@ if __name__ == '__main__':
         ctypes.c_void_p(0),  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
-        mus_ptr,  # means
-        sigmas_ptr,  # standard deviations
+        ctypes.c_void_p(0),  # means
+        ctypes.c_void_p(0),  # standard deviations
         3,  # Training mode
         args.window_size,
         len(args.bands),
@@ -466,5 +483,3 @@ if __name__ == '__main__':
 
     libchips.stop()
     libchips.deinit()
-
-# ./deeplab_inference.py --architecture resnet18 --bands 1 2 3 4 5 6 7 8 9 10 11 12 --inference-img www --libchips xxx --prediction-img yyy --model zzz --max-sample-windows 133 --classes 2

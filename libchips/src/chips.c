@@ -125,6 +125,32 @@ int get_height()
 }
 
 /**
+ * Get statistics from an image.
+ *
+ * @param imagery_filename The imagery from which to get the statistics
+ * @param band_count The number of bands
+ * @param mus The return-location of the means
+ * @param sigmas The return-location of the sigmas
+ */
+void get_statistics(const char *imagery_filename,
+                    int band_count,
+                    int *bands,
+                    double *mus,
+                    double *sigmas)
+{
+    GDALDatasetH dataset;
+
+    dataset = GDALOpen(imagery_filename, GA_ReadOnly);
+    for (int i = 0; mus && sigmas && (i < band_count); ++i)
+    {
+        GDALRasterBandH band = GDALGetRasterBand(dataset, bands[i]);
+        GDALGetRasterStatistics(band, 1, 1, NULL, NULL, mus + i, sigmas + i);
+    }
+    GDALClose(dataset);
+    return;
+}
+
+/**
  * Get an (inference) chip.  This can be used only if operation_mode 3
  * is active.
  *
