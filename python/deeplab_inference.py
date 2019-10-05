@@ -33,30 +33,24 @@ if True:
 # Warm-up
 if True:
     def get_warmup_batch(libchips: ctypes.CDLL,
-                         band_count: int,
-                         image_nd: Union[None, Union[int, float]],
-                         batch_size: int = 8,
-                         window_size: int = 32) -> torch.Tensor:
+                         args: argparse.Namespace) -> torch.Tensor:
         """Get a warm-up batch
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handled used for reading data
-            band_count {int} -- The number of bands
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
-
-        Keyword Arguments:
-            batch_size {int} -- The size of a warm-up batch (default: {8})
-            window_size {int} -- The window size (default: {32})
+            args {argparse.Namespace} -- The arguments
 
         Returns:
             torch.Tensor -- A batch in the form of a PyTorch tensor
         """
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands),
+                 args.warmup_window_size,
+                 args.warmup_window_size)
         temp1 = np.zeros(shape, dtype=np.float32)
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         data = []
-        for _ in range(batch_size):
+        for _ in range(args.batch_size):
             libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
             data.append(temp1.copy())
 
@@ -65,12 +59,13 @@ if True:
 
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
-            if image_nd is not None:
-                image_nds += (raster == image_nd).sum(axis=0)
+            if args.image_nd is not None:
+                image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters
+            # Set label NODATA, remove NaNs from rasters, normalize
             nodata = (image_nds > 0)
             for i in range(len(raster)):
+                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
@@ -91,9 +86,7 @@ if True:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
             x_offset {int} -- The x-offset of the desired window
             y_offset {int} -- The y-offset of the desired window
-            band_count {int} -- The number of bands in the training set
-            window_size {int} -- The window size
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
+            args {argparse.Namespace} -- Arguments
 
         Returns:
             Union[None, torch.Tensor] -- The imagery data as a PyTorch tensor
@@ -106,6 +99,8 @@ if True:
             image_nds = np.isnan(image)
             if args.image_nd is not None:
                 image_nds += (image == args.image_nd)
+            for i in range(len(args.bands)):
+                image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image[image_nds > 0] = 0.0
             return torch.from_numpy(np.stack([image], axis=0))
         else:
@@ -136,6 +131,7 @@ if True:
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
+        parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument(
             '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--classes', required=True,
@@ -151,6 +147,8 @@ if True:
                             help='The model to use for preditions')
         parser.add_argument('--prediction-img', required=True,
                             help='The location where the prediction image should be stored')
+        parser.add_argument('--no-warmup', action='store_true')
+        parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
         return parser
 
@@ -312,6 +310,11 @@ if __name__ == '__main__':
     parser = inference_cli_parser()
     args = inference_cli_parser().parse_args()
 
+    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
+    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
+    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
     # ---------------------------------
     print('DATA')
 
@@ -369,7 +372,7 @@ if __name__ == '__main__':
     # ---------------------------------
     print('WARMUP')
     # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
-    if True:
+    if not args.no_warmup:
         deeplab.train()
         libchips.start(
             16,  # Number of threads
@@ -378,16 +381,15 @@ if __name__ == '__main__':
             ctypes.c_void_p(0),  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
-            ctypes.c_void_p(0),  # means
-            ctypes.c_void_p(0),  # standard deviations
+            mus_ptr,  # means
+            sigmas_ptr,  # standard deviations
             1,  # Training mode
             32,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         with torch.no_grad():
             for i in range(107):
-                batch = get_warmup_batch(
-                    libchips, len(args.bands), args.image_nd)
+                batch = get_warmup_batch(libchips, copy.copy(args))
                 out = deeplab(batch.to(device))
                 del out
         libchips.stop()
@@ -402,8 +404,8 @@ if __name__ == '__main__':
         ctypes.c_void_p(0),  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
-        ctypes.c_void_p(0),  # means
-        ctypes.c_void_p(0),  # standard deviations
+        mus_ptr,  # means
+        sigmas_ptr,  # standard deviations
         3,  # Training mode
         args.window_size,
         len(args.bands),
@@ -440,7 +442,7 @@ if __name__ == '__main__':
                     window = rio.windows.Window(
                         x_offset, y_offset, args.window_size, args.window_size)
                     tensor = get_inference_window(
-                        libchips, x_offset, y_offset, args.copy())
+                        libchips, x_offset, y_offset, copy.copy(args))
                     if tensor is not None:
                         tensor = tensor.to(device)
                         out = deeplab(tensor)
