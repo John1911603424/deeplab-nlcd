@@ -50,7 +50,7 @@ if True:
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         data = []
-        for _ in range(args.batch_size):
+        for _ in range(args.warmup_batch_size):
             libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
             data.append(temp1.copy())
 
@@ -131,9 +131,10 @@ if True:
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
-        parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument('--classes', required=True,
                             help='The number of prediction classes', type=int)
+        parser.add_argument('--final-prediction-img',
+                            help='The location where the final prediction image should be stored')
         parser.add_argument('--final-predictions', action='store_true')
         parser.add_argument(
             '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
@@ -146,10 +147,11 @@ if True:
         parser.add_argument('--model', required=True,
                             help='The model to use for preditions')
         parser.add_argument('--no-warmup', action='store_true')
-        parser.add_argument('--prediction-img', required=True,
-                            help='The location where the prediction image should be stored')
+        parser.add_argument(
+            '--raw-prediction-img', help='The location where the raw prediction image should be stored')
         parser.add_argument(
             '--statistics-img-uri', help='The image from which to obtain statistics for normalization')
+        parser.add_argument('--warmup-batch-size', default=16, type=int)
         parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
         return parser
@@ -389,7 +391,13 @@ if __name__ == '__main__':
     # ---------------------------------
     print('WARMUP')
     # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
+    # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
+
     if not args.no_warmup:
+        def momentum_fn(m):
+            if isinstance(m, torch.nn.BatchNorm2d):
+                m.momentum = 0.9
+        deeplab.apply(momentum_fn)
         deeplab.train()
         libchips.start(
             16,  # Number of threads
@@ -429,24 +437,22 @@ if __name__ == '__main__':
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
     with rio.open('/tmp/mul.tif') as ds:
-        profile = ds.profile
-
-    if args.final_predictions:
-        profile.update(
+        profile_final = copy.copy(ds.profile)
+        profile_final.update(
             dtype=rio.uint8,
             count=1,
             compress='lzw'
         )
-    else:
-        profile.update(
+        profile_raw = copy.copy(ds.profile)
+        profile_raw.update(
             dtype=rio.float32,
-            count=args.classes-1,
+            count=args.classes,
             compress='lzw'
         )
 
     deeplab.eval()
     with torch.no_grad():
-        with rio.open('/tmp/pred.tif', 'w', **profile) as ds:
+        with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw:
             width = libchips.get_width()
             height = libchips.get_height()
             print('{} {}'.format(width, height))
@@ -466,20 +472,25 @@ if __name__ == '__main__':
                         if isinstance(out, dict):
                             out = out['out']
                         out = out.data.cpu().numpy()
-                        if args.final_predictions:
-                            out = np.apply_along_axis(np.argmax, 1, out)
-                            out = np.array(out, dtype=np.uint8)
-                            out = out * (0xff // (args.classes-1))
-                            ds.write(out[0], window=window, indexes=1)
-                        else:
-                            for i in range(1, args.classes):
-                                ds.write(out[0, i], window=window, indexes=i)
-                print('{}'.format(100.0 * x_offset / width))
+                        for i in range(0, args.classes):
+                            ds_raw.write(out[0, i], window=window, indexes=i+1)
+                        out = np.apply_along_axis(np.argmax, 1, out)
+                        out = np.array(out, dtype=np.uint8)
+                        out = out * (0xff // (args.classes-1))
+                        ds_final.write(out[0], window=window, indexes=1)
+                print('{}% complete'.format(
+                    (int)(100.0 * x_offset / width)))
 
-    s3 = boto3.client('s3')
-    bucket, prefix = parse_s3_url(args.prediction_img)
-    s3.upload_file('/tmp/pred.tif', bucket, prefix)
-    del s3
+    if args.final_prediction_img is not None:
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.final_prediction_img)
+        s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
+        del s3
+    if args.raw_prediction_img is not None:
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.final_prediction_img)
+        s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
+        del s3
 
     libchips.stop()
     libchips.deinit()
