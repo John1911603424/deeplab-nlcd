@@ -52,12 +52,28 @@ int *ready = NULL;
 #define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
 
 /**
+ * Initialize the library.
+ */
+void init()
+{
+    GDALAllRegister();
+}
+
+/**
+ * Deinitialize the library.
+ */
+void deinit()
+{
+    GDALDestroy();
+}
+
+/**
  * Given a GDAL datat type, return the word length of that type.
  *
  * @param GDALDataType dt The data type
  * @return The word length
  */
-int word_size(GDALDataType dt)
+static int word_size(GDALDataType dt)
 {
     switch (dt)
     {
@@ -106,6 +122,32 @@ int get_width()
 int get_height()
 {
     return height;
+}
+
+/**
+ * Get statistics from an image.
+ *
+ * @param imagery_filename The imagery from which to get the statistics
+ * @param band_count The number of bands
+ * @param mus The return-location of the means
+ * @param sigmas The return-location of the sigmas
+ */
+void get_statistics(const char *imagery_filename,
+                    int band_count,
+                    int *bands,
+                    double *mus,
+                    double *sigmas)
+{
+    GDALDatasetH dataset;
+
+    dataset = GDALOpen(imagery_filename, GA_ReadOnly);
+    for (int i = 0; mus && sigmas && (i < band_count); ++i)
+    {
+        GDALRasterBandH band = GDALGetRasterBand(dataset, bands[i]);
+        GDALGetRasterStatistics(band, 1, 1, NULL, NULL, mus + i, sigmas + i);
+    }
+    GDALClose(dataset);
+    return;
 }
 
 /**
@@ -197,7 +239,7 @@ void get_next(void *imagery_buffer, void *label_buffer)
  * @param _id The id of this particular thread
  * @return Unused
  */
-void *reader(void *_id)
+static void *reader(void *_id)
 {
     uint64_t id = (uint64_t)_id;
     int x_offset = 0;
@@ -290,28 +332,14 @@ void *reader(void *_id)
 }
 
 /**
- * Initialize the library.
- */
-void init()
-{
-    GDALAllRegister();
-}
-
-/**
- * Deinitialize the library.
- */
-void deinit()
-{
-    GDALDestroy();
-}
-
-/**
  * Given imagery and label filenames, start the reader threads.
  *
  * @param _N The number of reader threads to create
  * @param _M The number of slots
  * @param imagery_filename The filename containing the imagery
  * @param label_filename The filename containing the labels
+ * @param mus Return-location for the (approximate) means of the bands
+ * @param sigmas return-location for the (approximate) standard deviations of the bands
  * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
  * @param _window_size The desired window size
  * @param _band_count The number of bands
@@ -321,6 +349,7 @@ void start(int _N,
            int _M,
            const char *imagery_filename, const char *label_filename,
            GDALDataType _imagery_data_type, GDALDataType _label_data_type,
+           double *mus, double *sigmas,
            int _operation_mode,
            int _window_size,
            int _band_count, int *_bands)
@@ -357,6 +386,11 @@ void start(int _N,
         imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
         label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
         pthread_mutex_init(&mutexes[i], NULL);
+    }
+    for (int i = 0; mus && sigmas && (i < band_count); ++i)
+    {
+        GDALRasterBandH band = GDALGetRasterBand(imagery_datasets[0], bands[i]);
+        GDALGetRasterStatistics(band, 1, 1, NULL, NULL, mus + i, sigmas + i);
     }
     for (int64_t i = 0; i < N; ++i)
     {

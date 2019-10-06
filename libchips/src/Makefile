@@ -1,4 +1,4 @@
-CFLAGS ?= -Wall -Werror -O
+CFLAGS ?= -Wall -Werror -Os
 LDFLAGS ?= $(shell pkg-config gdal --libs) -l:libstdc++.a -lpthread
 GDALCFLAGS ?= $(shell pkg-config gdal --cflags)
 

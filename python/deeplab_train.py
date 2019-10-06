@@ -121,37 +121,27 @@ if True:
         return b
 
     def get_batch(libchips: ctypes.CDLL,
-                  band_count: int,
-                  batch_size: int,
-                  window_size: int,
-                  label_mappings: Dict[int, int],
-                  label_nd: Union[int, float],
-                  image_nd: Union[None, Union[int, float]]) -> Tuple[torch.Tensor, torch.Tensor]:
+                  args: argparse.Namespace) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
-            band_count {int} -- The number of bands in the training set
-            window_size {int} -- The window size
-            batch_size {int} -- Batch size
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
+            args {argparse.Namespace} -- The arguments dictionary
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
         """
-        assert(label_nd is not None)
+        assert(args.label_nd is not None)
 
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands), args.window_size, args.window_size)
         temp1 = np.zeros(shape, dtype=np.float32)
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        temp2 = np.zeros((window_size, window_size), dtype=np.int32)
+        temp2 = np.zeros((args.window_size, args.window_size), dtype=np.int32)
         temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
         data = []
         labels = []
-        for _ in range(batch_size):
+        for _ in range(args.batch_size):
             libchips.get_next(temp1_ptr, temp2_ptr)
             data.append(temp1.copy())
             labels.append(temp2.copy())
@@ -162,43 +152,36 @@ if True:
 
             # NODATA from labels
             label = np.array(label, dtype=np.long)
-            label = numpy_replace(label, label_mappings, label_nd)
-            label_nds = (label == label_nd)
+            label = numpy_replace(label, args.label_map, args.label_nd)
+            label_nds = (label == args.label_nd)
 
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
-            if image_nd is not None:
-                image_nds += (raster == image_nd).sum(axis=0)
+            if args.image_nd is not None:
+                image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters
+            # Set label NODATA, remove NaNs from rasters, normalize
             nodata = ((image_nds + label_nds) > 0)
-            label[nodata == True] = label_nd
+            label[nodata == True] = args.label_nd
             for i in range(len(raster)):
+                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
             label_batch.append(label)
 
-        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
-        label_batch = torch.from_numpy(np.stack(label_batch, axis=0))
+        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
+        label_batch_tensor = torch.from_numpy(np.stack(label_batch, axis=0))
 
-        return (raster_batch, label_batch)
+        return (raster_batch_tensor, label_batch_tensor)
 
     def train(model: torch.nn.Module,
               opt: torch.optim.SGD,
               obj: torch.nn.CrossEntropyLoss,
-              batches_per_epoch: int,
               epochs: int,
               libchips: ctypes.CDLL,
-              bands: List[int],
-              batch_size: int,
-              window_size: int,
               device: torch.device,
-              label_mappings: Dict[int, int],
-              label_nd: Union[int, float],
-              image_nd: Union[None, Union[int, float]],
-              bucket_name: str,
-              s3_prefix: str,
+              args: argparse.Namespace,
               arg_hash: str,
               no_checkpoints: bool = True,
               starting_epoch: int = 0):
@@ -208,18 +191,10 @@ if True:
             model {torch.nn.Module} -- The model to train
             opt {torch.optim.SGD} -- The optimizer to use
             obj {torch.nn.CrossEntropyLoss} -- The objective function to use
-            batches_per_epoch {int} -- The number of batches per "epoch"
             epochs {int} -- The number of "epochs"
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            bands {List[int]} -- The imagery bands to use
-            batch_size {int} -- The batch size
-            window_size {int} -- The window size
             device {torch.device} -- The device to use
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd {Union[None, Union[int, float]]} -- The imagery nodata
-            bucket_name {str} -- The bucket name
-            s3_prefix {str} -- The bucket prefix
+            args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The arguments hash
 
         Keyword Arguments:
@@ -227,18 +202,12 @@ if True:
             starting_epoch {int} -- The starting epoch (default: {0})
         """
         current_time = time.time()
-        band_count = len(bands)
+        band_count = len(args.bands)
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
-            for _ in range(batches_per_epoch):
-                batch = get_batch(libchips,
-                                  band_count,
-                                  batch_size,
-                                  window_size,
-                                  label_mappings,
-                                  label_nd,
-                                  image_nd)
+            for _ in range(args.max_epoch_size):
+                batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label = batch[1].to(device)
@@ -254,7 +223,7 @@ if True:
                 opt.step()
                 avg_loss = avg_loss + loss.item()
 
-            avg_loss = avg_loss / batches_per_epoch
+            avg_loss = avg_loss / args.max_epoch_size
 
             last_time = current_time
             current_time = time.time()
@@ -265,64 +234,40 @@ if True:
                 global WATCHDOG_TIME
                 WATCHDOG_TIME = time.time()
 
-            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and bucket_name and s3_prefix)) and not no_checkpoints:
+            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
                 torch.save(model.state_dict(), 'deeplab.pth')
                 s3 = boto3.client('s3')
-                s3.upload_file('deeplab.pth', bucket_name,
-                               '{}/{}/deeplab_checkpoint_{}.pth'.format(s3_prefix, arg_hash, i))
+                s3.upload_file('deeplab.pth', args.s3_bucket,
+                               '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
                 del s3
 
 # Evaluation
 if True:
     def evaluate(model: torch.nn.Module,
-                 evaluation_batches: int,
                  libchips: ctypes.CDLL,
-                 bands: List[int],
-                 batch_size: int,
-                 window_size: int,
-                 label_count: int,
                  device: torch.device,
-                 label_mappings: Dict[int, int],
-                 label_nd: Union[int, float],
-                 image_nd: Union[None, Union[int, float]],
-                 bucket_name: str,
-                 s3_prefix: str,
+                 args: argparse.Namespace,
                  arg_hash: str):
         """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
         Arguments:
             model {torch.nn.Module} -- The model to evaluate
-            evaluation_batches {int} -- The number of evaluation batches
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            bands {List[int]} -- The imagery bands to use
-            batch_size {int} -- The batch size
-            window_size {int} -- The window size
-            label_count {int} -- The number of classes
             device {torch.device} -- The device to use for evaluation
-            label_mappings {Dict[int, int]} -- The mapping between native and internal classes in the lable data
-            label_nd {Union[int, float]} -- The label nodata
-            image_nd: Union[None, Union[int, float]],
-            bucket_name {str} -- The bucket name
-            s3_prefix {str} -- The S3 prefix
+            args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The hashed arguments
         """
-        band_count = len(bands)
+        band_count = len(args.bands)
         model.eval()
         with torch.no_grad():
-            tps = [0.0 for x in range(label_count)]
-            fps = [0.0 for x in range(label_count)]
-            fns = [0.0 for x in range(label_count)]
-            tns = [0.0 for x in range(label_count)]
+            num_classes = len(args.weights)
+            tps = [0.0 for x in range(num_classes)]
+            fps = [0.0 for x in range(num_classes)]
+            fns = [0.0 for x in range(num_classes)]
+            tns = [0.0 for x in range(num_classes)]
 
-            for _ in range(evaluation_batches):
-                batch = get_batch(
-                    libchips,
-                    band_count,
-                    batch_size,
-                    window_size,
-                    label_mappings,
-                    label_nd,
-                    image_nd)
+            for _ in range(args.max_eval_windows // args.batch_size):
+                batch = get_batch(libchips, args)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
@@ -333,13 +278,13 @@ if True:
                 del batch
 
                 # Make sure output reflects don't care values
-                if label_nd is not None:
-                    dont_care = (labels == label_nd)
+                if args.label_nd is not None:
+                    dont_care = (labels == args.label_nd)
                 else:
                     dont_care = np.zeros(labels.shape)
-                out = out + label_count*dont_care
+                out = out + len(args.weights)*dont_care
 
-                for j in range(label_count):
+                for j in range(len(args.weights)):
                     tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
                     fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
@@ -358,7 +303,7 @@ if True:
 
         recalls = []
         precisions = []
-        for j in range(label_count):
+        for j in range(len(args.weights)):
             recall = tps[j] / (tps[j] + fns[j])
             recalls.append(recall)
             precision = tps[j] / (tps[j] + fps[j])
@@ -368,7 +313,7 @@ if True:
         print('Precisions {}'.format(precisions))
 
         f1s = []
-        for j in range(label_count):
+        for j in range(len(args.weights)):
             f1 = 2 * (precisions[j] * recalls[j]) / \
                 (precisions[j] + recalls[j])
             f1s.append(f1)
@@ -384,8 +329,8 @@ if True:
             evaluations.write('f1 scores: {}\n'.format(f1s))
 
         s3 = boto3.client('s3')
-        s3.upload_file('/tmp/evaluations.txt', bucket_name,
-                       '{}/{}/evaluations.txt'.format(s3_prefix, arg_hash))
+        s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
+                       '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
         del s3
 
 # Arguments
@@ -638,6 +583,11 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
+    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
+    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
+    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
     # ---------------------------------
     print('DATA')
 
@@ -646,6 +596,20 @@ if __name__ == '__main__':
         bucket, prefix = parse_s3_url(args.training_img)
         print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
         s3.download_file(bucket, prefix, '/tmp/mul.tif')
+        try:
+            s3.download_file(bucket, '{}.aux.xml'.format(
+                prefix), '/tmp/mul.tif.aux.xml')
+        except:
+            pass
+        del s3
+    if not os.path.exists('/tmp/mul.tif.aux.xml'):
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.training_img)
+        try:
+            s3.download_file(bucket, '{}.aux.xml'.format(
+                prefix), '/tmp/mul.tif.aux.xml')
+        except:
+            pass
         del s3
     if not os.path.exists('/tmp/mask.tif'):
         s3 = boto3.client('s3')
@@ -673,10 +637,18 @@ if __name__ == '__main__':
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
+        mus_ptr,  # means
+        sigmas_ptr,  # standard deviations
         1,  # Training mode
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+
+    # ---------------------------------
+    print('STATISTICS')
+
+    print('\t MEANS={}'.format(args.mus))
+    print('\t SIGMAS={}'.format(args.sigmas))
 
     # ---------------------------------
     print('RECORDING RUN')
@@ -745,10 +717,10 @@ if __name__ == '__main__':
     else:
         raise Exception
 
-    batches_per_epoch = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
-                                                     (args.window_size * args.window_size * 7.0 * args.batch_size)))
+    args.max_epoch_size = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
+                                                       (args.window_size * args.window_size * 7.0 * args.batch_size)))
 
-    print('\t STEPS PER EPOCH={}'.format(batches_per_epoch))
+    print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
     obj = torch.nn.CrossEntropyLoss(
         ignore_index=args.label_nd,
         weight=torch.FloatTensor(args.weights).to(device)
@@ -811,18 +783,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs1,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -870,18 +834,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs2,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -920,18 +876,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs3,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              copy.copy(args),
               arg_hash)
 
         print('\t UPLOADING')
@@ -970,18 +918,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs4,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              copy.copy(args),
               arg_hash,
               no_checkpoints=False)
 
@@ -1020,18 +960,10 @@ if __name__ == '__main__':
         train(deeplab,
               opt,
               obj,
-              batches_per_epoch,
               args.epochs4,
               libchips,
-              args.bands,
-              args.batch_size,
-              args.window_size,
               device,
-              args.label_map,
-              args.label_nd,
-              args.image_nd,
-              args.s3_bucket,
-              args.s3_prefix,
+              copy.copy(args),
               arg_hash,
               no_checkpoints=False,
               starting_epoch=current_epoch)
@@ -1047,23 +979,16 @@ if __name__ == '__main__':
             b'/tmp/mask.tif',  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
+            ctypes.c_void_p(0),  # means
+            ctypes.c_void_p(0),  # standard deviations
             2,  # Evaluation mode
             args.window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         evaluate(deeplab,
-                 args.max_eval_windows // args.batch_size,
                  libchips,
-                 args.bands,
-                 args.batch_size,
-                 args.window_size,
-                 len(args.weights),
                  device,
-                 args.label_map,
-                 args.label_nd,
-                 args.image_nd,
-                 args.s3_bucket,
-                 args.s3_prefix,
+                 copy.copy(args),
                  arg_hash)
         libchips.stop()
 

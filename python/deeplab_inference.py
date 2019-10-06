@@ -3,12 +3,9 @@
 import argparse
 import copy
 import ctypes
-import hashlib
 import os
-import re
 import sys
 import threading
-import time
 from typing import *
 from urllib.parse import urlparse
 
@@ -18,11 +15,6 @@ import numpy as np  # type: ignore
 import rasterio as rio  # type: ignore
 import torch
 import torchvision  # type: ignore
-
-WATCHDOG_MUTEX: threading.Lock = threading.Lock()
-WATCHDOG_TIME: float = time.time()
-EVALUATIONS_BATCHES_DONE = 0
-
 
 # S3
 if True:
@@ -38,76 +30,27 @@ if True:
         parsed = urlparse(url, allow_fragments=False)
         return (parsed.netloc, parsed.path.lstrip('/'))
 
-    def get_matching_s3_keys(bucket: str,
-                             prefix: str = '',
-                             suffix: str = '') -> Generator[str, None, None]:
-        """Generate all of the keys in a bucket with the given prefix and suffix
-
-        See https://alexwlchan.net/2017/07/listing-s3-keys/
-
-        Arguments:
-            bucket {str} -- The S3 bucket
-
-        Keyword Arguments:
-            prefix {str} -- The prefix to filter by (default: {''})
-            suffix {str} -- The suffix to filter by (default: {''})
-
-        Returns:
-            Generator[str, None, None] -- The list of keys
-        """
-        s3 = boto3.client('s3')
-        kwargs = {'Bucket': bucket}
-
-        # If the prefix is a single string (not a tuple of strings), we can
-        # do the filtering directly in the S3 API.
-        if isinstance(prefix, str):
-            kwargs['Prefix'] = prefix
-
-        while True:
-
-            # The S3 API response is a large blob of metadata.
-            # 'Contents' contains information about the listed objects.
-            resp = s3.list_objects_v2(**kwargs)
-            for obj in resp['Contents']:
-                key = obj['Key']
-                if key.startswith(prefix) and key.endswith(suffix):
-                    yield key
-
-            # The S3 API is paginated, returning up to 1000 keys at a time.
-            # Pass the continuation token into the next response, until we
-            # reach the final page (when this field is missing).
-            try:
-                kwargs['ContinuationToken'] = resp['NextContinuationToken']
-            except KeyError:
-                break
-
 # Warm-up
 if True:
     def get_warmup_batch(libchips: ctypes.CDLL,
-                         band_count: int,
-                         image_nd: Union[None, Union[int, float]],
-                         batch_size: int = 8,
-                         window_size: int = 32) -> torch.Tensor:
+                         args: argparse.Namespace) -> torch.Tensor:
         """Get a warm-up batch
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handled used for reading data
-            band_count {int} -- The number of bands
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
-
-        Keyword Arguments:
-            batch_size {int} -- The size of a warm-up batch (default: {8})
-            window_size {int} -- The window size (default: {32})
+            args {argparse.Namespace} -- The arguments
 
         Returns:
             torch.Tensor -- A batch in the form of a PyTorch tensor
         """
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands),
+                 args.warmup_window_size,
+                 args.warmup_window_size)
         temp1 = np.zeros(shape, dtype=np.float32)
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         data = []
-        for _ in range(batch_size):
+        for _ in range(args.warmup_batch_size):
             libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
             data.append(temp1.copy())
 
@@ -116,49 +59,48 @@ if True:
 
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
-            if image_nd is not None:
-                image_nds += (raster == image_nd).sum(axis=0)
+            if args.image_nd is not None:
+                image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters
+            # Set label NODATA, remove NaNs from rasters, normalize
             nodata = (image_nds > 0)
             for i in range(len(raster)):
+                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
 
-        raster_batch = torch.from_numpy(np.stack(raster_batch, axis=0))
+        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
 
-        return (raster_batch)
+        return raster_batch_tensor
 
 # Inference
 if True:
     def get_inference_window(libchips: ctypes.CDLL,
                              x_offset: int,
                              y_offset: int,
-                             band_count: int,
-                             window_size: int,
-                             image_nd: Union[None, Union[int, float]]) -> Union[None, torch.Tensor]:
+                             args: argparse.Namespace) -> Union[None, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
             x_offset {int} -- The x-offset of the desired window
             y_offset {int} -- The y-offset of the desired window
-            band_count {int} -- The number of bands in the training set
-            window_size {int} -- The window size
-            image_nd {Union[None, Union[int, float]]} -- The image nodata
+            args {argparse.Namespace} -- Arguments
 
         Returns:
             Union[None, torch.Tensor] -- The imagery data as a PyTorch tensor
         """
-        shape = (band_count, window_size, window_size)
+        shape = (len(args.bands), args.window_size, args.window_size)
         image = np.zeros(shape, dtype=np.float32)
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
             image_nds = np.isnan(image)
-            if image_nd is not None:
-                image_nds += (image == image_nd)
+            if args.image_nd is not None:
+                image_nds += (image == args.image_nd)
+            for i in range(len(args.bands)):
+                image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image[image_nds > 0] = 0.0
             return torch.from_numpy(np.stack([image], axis=0))
         else:
@@ -166,19 +108,6 @@ if True:
 
 # Arguments
 if True:
-    def hash_string(string: str) -> str:
-        """Return a SHA-256 hash of the given string
-
-        See: https://gist.github.com/nmalkin/e287f71788c57fd71bd0a7eec9345add
-
-        Arguments:
-            string {str} -- The string to hash
-
-        Returns:
-            str -- The hashed string
-        """
-        return hashlib.sha256(string.encode('utf-8')).hexdigest()
-
     class StoreDictKeyPair(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             my_dict = {}
@@ -187,7 +116,7 @@ if True:
                 my_dict[int(k)] = int(v)
             setattr(namespace, self.dest, my_dict)
 
-    def training_cli_parser() -> argparse.ArgumentParser:
+    def inference_cli_parser() -> argparse.ArgumentParser:
         """Generate a parser for command line arguments
 
         See: https://stackoverflow.com/questions/29986185/python-argparse-dict-arg
@@ -202,11 +131,13 @@ if True:
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
-        parser.add_argument(
-            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--classes', required=True,
                             help='The number of prediction classes', type=int)
+        parser.add_argument('--final-prediction-img',
+                            help='The location where the final prediction image should be stored')
         parser.add_argument('--final-predictions', action='store_true')
+        parser.add_argument(
+            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--inference-img', required=True,
                             help='The location of the image on which to predict')
         parser.add_argument(
@@ -215,8 +146,13 @@ if True:
                             help='The location of libchips.so')
         parser.add_argument('--model', required=True,
                             help='The model to use for preditions')
-        parser.add_argument('--prediction-img', required=True,
-                            help='The location where the prediction image should be stored')
+        parser.add_argument('--no-warmup', action='store_true')
+        parser.add_argument(
+            '--raw-prediction-img', help='The location where the raw prediction image should be stored')
+        parser.add_argument(
+            '--statistics-img-uri', help='The image from which to obtain statistics for normalization')
+        parser.add_argument('--warmup-batch-size', default=16, type=int)
+        parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
         return parser
 
@@ -375,8 +311,13 @@ if True:
 
 if __name__ == '__main__':
 
-    parser = training_cli_parser()
-    args = training_cli_parser().parse_args()
+    parser = inference_cli_parser()
+    args = inference_cli_parser().parse_args()
+
+    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
+    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
+    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     # ---------------------------------
     print('DATA')
@@ -433,9 +374,30 @@ if __name__ == '__main__':
     libchips.init()
 
     # ---------------------------------
+    print('STATISTICS')
+    if args.statistics_img_uri is None:
+        args.statistics_img_uri = '/tmp/mul.tif'
+    libchips.get_statistics(
+        args.statistics_img_uri.encode('utf-8'),
+        len(args.bands),
+        np.array(args.bands, dtype=np.int32).ctypes.data_as(
+            ctypes.POINTER(ctypes.c_int32)),
+        mus_ptr,
+        sigmas_ptr
+    )
+    print('MEANS={}'.format(args.mus))
+    print('SIGMAS={}'.format(args.sigmas))
+
+    # ---------------------------------
     print('WARMUP')
     # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
-    if True:
+    # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
+
+    if not args.no_warmup:
+        def momentum_fn(m):
+            if isinstance(m, torch.nn.BatchNorm2d):
+                m.momentum = 0.9
+        deeplab.apply(momentum_fn)
         deeplab.train()
         libchips.start(
             16,  # Number of threads
@@ -444,14 +406,15 @@ if __name__ == '__main__':
             ctypes.c_void_p(0),  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
+            ctypes.c_void_p(0),  # means
+            ctypes.c_void_p(0),  # standard deviations
             1,  # Training mode
-            32,
+            args.warmup_window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         with torch.no_grad():
             for i in range(107):
-                batch = get_warmup_batch(
-                    libchips, len(args.bands), args.image_nd)
+                batch = get_warmup_batch(libchips, copy.copy(args))
                 out = deeplab(batch.to(device))
                 del out
         libchips.stop()
@@ -466,30 +429,30 @@ if __name__ == '__main__':
         ctypes.c_void_p(0),  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
+        ctypes.c_void_p(0),  # means
+        ctypes.c_void_p(0),  # standard deviations
         3,  # Training mode
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
     with rio.open('/tmp/mul.tif') as ds:
-        profile = ds.profile
-
-    if args.final_predictions:
-        profile.update(
+        profile_final = copy.copy(ds.profile)
+        profile_final.update(
             dtype=rio.uint8,
             count=1,
             compress='lzw'
         )
-    else:
-        profile.update(
+        profile_raw = copy.copy(ds.profile)
+        profile_raw.update(
             dtype=rio.float32,
-            count=args.classes-1,
+            count=args.classes,
             compress='lzw'
         )
 
     deeplab.eval()
     with torch.no_grad():
-        with rio.open('/tmp/pred.tif', 'w', **profile) as ds:
+        with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw:
             width = libchips.get_width()
             height = libchips.get_height()
             print('{} {}'.format(width, height))
@@ -501,30 +464,33 @@ if __name__ == '__main__':
                         y_offset = height - args.window_size - 1
                     window = rio.windows.Window(
                         x_offset, y_offset, args.window_size, args.window_size)
-                    tensor = get_inference_window(libchips, x_offset, y_offset, len(
-                        args.bands), args.window_size, args.image_nd)
+                    tensor = get_inference_window(
+                        libchips, x_offset, y_offset, copy.copy(args))
                     if tensor is not None:
                         tensor = tensor.to(device)
                         out = deeplab(tensor)
                         if isinstance(out, dict):
                             out = out['out']
                         out = out.data.cpu().numpy()
-                        if args.final_predictions:
-                            out = np.apply_along_axis(np.argmax, 1, out)
-                            out = np.array(out, dtype=np.uint8)
-                            out = out * (0xff // (args.classes-1))
-                            ds.write(out[0], window=window, indexes=1)
-                        else:
-                            for i in range(1, args.classes):
-                                ds.write(out[0, i], window=window, indexes=i)
-                print('{}'.format(100.0 * x_offset / width))
+                        for i in range(0, args.classes):
+                            ds_raw.write(out[0, i], window=window, indexes=i+1)
+                        out = np.apply_along_axis(np.argmax, 1, out)
+                        out = np.array(out, dtype=np.uint8)
+                        out = out * (0xff // (args.classes-1))
+                        ds_final.write(out[0], window=window, indexes=1)
+                print('{}% complete'.format(
+                    (int)(100.0 * x_offset / width)))
 
-    s3 = boto3.client('s3')
-    bucket, prefix = parse_s3_url(args.prediction_img)
-    s3.upload_file('/tmp/pred.tif', bucket, prefix)
-    del s3
+    if args.final_prediction_img is not None:
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.final_prediction_img)
+        s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
+        del s3
+    if args.raw_prediction_img is not None:
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.final_prediction_img)
+        s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
+        del s3
 
     libchips.stop()
     libchips.deinit()
-
-# ./deeplab_inference.py --architecture resnet18 --bands 1 2 3 4 5 6 7 8 9 10 11 12 --inference-img www --libchips xxx --prediction-img yyy --model zzz --max-sample-windows 133 --classes 2
