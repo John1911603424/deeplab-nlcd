@@ -135,7 +135,6 @@ if True:
                             help='The number of prediction classes', type=int)
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
-        parser.add_argument('--final-predictions', action='store_true')
         parser.add_argument(
             '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
         parser.add_argument('--inference-img', required=True,
