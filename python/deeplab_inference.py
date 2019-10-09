@@ -487,7 +487,7 @@ if __name__ == '__main__':
         del s3
     if args.raw_prediction_img is not None:
         s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.final_prediction_img)
+        bucket, prefix = parse_s3_url(args.raw_prediction_img)
         s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
         del s3
 
