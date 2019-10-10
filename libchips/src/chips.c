@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+
 #include <assert.h>
-#include <string.h>
 #include <pthread.h>
+#include <time.h>
+#include <string.h>
+
 #include <gdal.h>
 
 // Global variables
@@ -17,7 +20,11 @@ int band_count = 0;
 int *bands = NULL;
 int width = 0;
 int height = 0;
+int radius = 0;
+int center_x = 0;
+int center_y = 0;
 uint64_t current = 0;
+pthread_mutex_t imagery_datasets_0_mutex;
 
 // Thread-related variables
 pthread_t *threads = NULL;
@@ -30,6 +37,19 @@ pthread_mutex_t *mutexes = NULL;
 void **imagery_slots = NULL;
 void **label_slots = NULL;
 int *ready = NULL;
+
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+#define DATASET0_LOCK                                  \
+    if (unlikely(id == 0))                             \
+    {                                                  \
+        pthread_mutex_lock(&imagery_datasets_0_mutex); \
+    }
+#define DATASET0_UNLOCK                                  \
+    if (unlikely(id == 0))                               \
+    {                                                    \
+        pthread_mutex_unlock(&imagery_datasets_0_mutex); \
+    }
 
 #define UNLOCK(index, useconds)                \
     {                                          \
@@ -48,6 +68,7 @@ int *ready = NULL;
     }
 
 #define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
+#define BAD_WINDOW (x_offset < 0 || x_offset > ((width - 1) / window_size) || y_offset < 0 || y_offset > ((height - 1) / window_size))
 #define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
 #define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
 
@@ -170,7 +191,8 @@ int get_inference_chip(void *imagery_buffer,
 
     if ((operation_mode != 3) || EMPTY_WINDOW)
     {
-        goto bad;
+        memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
+        return 0;
     }
 
     for (int i = 0; i < attempts; ++i)
@@ -188,15 +210,40 @@ int get_inference_chip(void *imagery_buffer,
         {
             continue;
         }
-        goto good;
+        else
+        {
+            break;
+        }
     }
 
-bad:
-    memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
-    return 0;
-
-good:
     return 1;
+}
+
+/**
+ * Recenter
+ */
+void recenter(int verbose)
+{
+    int id = 0;
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
+    int x_offset = -1;
+    int y_offset = -1;
+
+    DATASET0_LOCK
+    while (BAD_WINDOW || EMPTY_WINDOW)
+    {
+        x_offset = rand_r((unsigned int *)&(tp.tv_nsec)) % (width / window_size);
+        y_offset = rand_r((unsigned int *)&(tp.tv_nsec)) % (height / window_size);
+    }
+    DATASET0_UNLOCK
+    center_x = x_offset;
+    center_y = y_offset;
+
+    if (verbose)
+    {
+        fprintf(stderr, "RECENTERED: %d %d\n", center_x * window_size, center_y * window_size);
+    }
 }
 
 /**
@@ -250,25 +297,29 @@ static void *reader(void *_id)
 
     while (operation_mode == 1 || operation_mode == 2)
     {
+        int wradius = radius / window_size;
+
         // Get a suitable training or evaluation window
         if (operation_mode == 1) // Training chip
         {
-            x_offset = y_offset = 0;
-            while (BAD_TRAINING_WINDOW || EMPTY_WINDOW)
+            x_offset = y_offset = -1;
+            while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
             {
-                x_offset = rand_r(&state) % (width / window_size);
-                y_offset = rand_r(&state) % (height / window_size);
+                const int rand_x = rand_r(&state) % (2 * wradius);
+                const int rand_y = rand_r(&state) % (2 * wradius);
+                x_offset = center_x + rand_x - wradius;
+                y_offset = center_y + rand_y - wradius;
             }
         }
         else if (operation_mode == 2) // Evaluation chip
         {
-            // XXX should not be random
-            x_offset = 0;
-            y_offset = 1;
-            while (BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
+            x_offset = y_offset = -1;
+            while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
             {
-                x_offset = rand_r(&state) % (width / window_size);
-                y_offset = rand_r(&state) % (height / window_size);
+                const int rand_x = rand_r(&state) % (2 * wradius);
+                const int rand_y = rand_r(&state) % (2 * wradius);
+                x_offset = center_x + rand_x - wradius;
+                y_offset = center_y + rand_y - wradius;
             }
         }
         x_offset *= window_size;
@@ -295,6 +346,7 @@ static void *reader(void *_id)
     read_things:
 
         // Read imagery
+        DATASET0_LOCK
         err = GDALDatasetRasterIO(imagery_datasets[id], 0,
                                   x_offset, y_offset, window_size, window_size,
                                   imagery_slots[slot],
@@ -303,6 +355,7 @@ static void *reader(void *_id)
                                   0, 0, 0);
         if (err != CE_None)
         {
+            DATASET0_UNLOCK
             UNLOCK_CONTINUE(slot, 1000)
         }
 
@@ -317,9 +370,11 @@ static void *reader(void *_id)
                                       0, 0, 0);
             if (err != CE_None)
             {
+                DATASET0_UNLOCK
                 UNLOCK_CONTINUE(slot, 1000)
             }
         }
+        DATASET0_UNLOCK
 
         // The slot is now ready for reading
         ready[slot] = 1;
@@ -340,6 +395,7 @@ static void *reader(void *_id)
  * @param label_filename The filename containing the labels
  * @param mus Return-location for the (approximate) means of the bands
  * @param sigmas return-location for the (approximate) standard deviations of the bands
+ * @param _radius The approximate radius (in pixels) of the typical component of the image
  * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
  * @param _window_size The desired window size
  * @param _band_count The number of bands
@@ -350,6 +406,7 @@ void start(int _N,
            const char *imagery_filename, const char *label_filename,
            GDALDataType _imagery_data_type, GDALDataType _label_data_type,
            double *mus, double *sigmas,
+           int _radius,
            int _operation_mode,
            int _window_size,
            int _band_count, int *_bands)
@@ -363,13 +420,16 @@ void start(int _N,
     window_size = _window_size;
     band_count = _band_count;
     bands = (int *)malloc(sizeof(int) * band_count);
+    radius = _radius;
     memcpy(bands, _bands, sizeof(int) * band_count);
+    pthread_mutex_init(&imagery_datasets_0_mutex, NULL);
 
     // Per-thread arrays (except for width and height)
     imagery_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     imagery_first_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     imagery_datasets[0] = GDALOpen(imagery_filename, GA_ReadOnly);
+    imagery_first_bands[0] = GDALGetRasterBand(imagery_datasets[0], 1);
     width = GDALGetRasterXSize(imagery_datasets[0]);
     height = GDALGetRasterYSize(imagery_datasets[0]);
     threads = (pthread_t *)malloc(sizeof(pthread_t) * N);
@@ -379,6 +439,8 @@ void start(int _N,
     imagery_slots = malloc(sizeof(void *) * M);
     label_slots = malloc(sizeof(void *) * M);
     ready = calloc(M, sizeof(int));
+
+    recenter(0);
 
     // Fill arrays, start threads
     for (int64_t i = 0; i < M; ++i)
@@ -397,8 +459,8 @@ void start(int _N,
         if (i != 0)
         {
             imagery_datasets[i] = GDALOpen(imagery_filename, GA_ReadOnly);
+            imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
         }
-        imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
         if (label_filename != NULL)
         {
             label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);

@@ -5,6 +5,7 @@ import copy
 import ctypes
 import hashlib
 import os
+import random
 import re
 import sys
 import threading
@@ -12,9 +13,9 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
-import boto3  # type: ignore
-
 import numpy as np  # type: ignore
+
+import boto3  # type: ignore
 import torch
 import torchvision  # type: ignore
 
@@ -225,6 +226,8 @@ if True:
 
             avg_loss = avg_loss / args.max_epoch_size
 
+            libchips.recenter(1)
+
             last_time = current_time
             current_time = time.time()
             print('\t\t epoch={} time={} avg_loss={}'.format(
@@ -289,6 +292,9 @@ if True:
                     fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
                     tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
+
+                if random.randint(0, 10) == 0:
+                    libchips.recenter(1)
 
                 global EVALUATIONS_BATCHES_DONE
                 EVALUATIONS_BATCHES_DONE += 1
@@ -400,6 +406,7 @@ if True:
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
+        parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', default=16, type=int)
         parser.add_argument('--s3-bucket', required=True,
                             help='prefix to apply when saving models to s3')
@@ -632,13 +639,14 @@ if __name__ == '__main__':
     libchips.init()
     libchips.start(
         args.read_threads,  # Number of threads
-        256,  # Number of slots
+        max(args.read_threads, args.batch_size * 8),  # Number of slots
         b'/tmp/mul.tif',  # Image data
         b'/tmp/mask.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
         mus_ptr,  # means
         sigmas_ptr,  # standard deviations
+        args.radius,  # typical radius of a component
         1,  # Training mode
         args.window_size,
         len(args.bands),
@@ -968,6 +976,14 @@ if __name__ == '__main__':
               no_checkpoints=False,
               starting_epoch=current_epoch)
 
+        print('\t UPLOADING')
+
+        torch.save(deeplab.state_dict(), 'deeplab.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('deeplab.pth', args.s3_bucket,
+                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+        del s3
+
     libchips.stop()
 
     if not args.disable_eval:
@@ -981,6 +997,7 @@ if __name__ == '__main__':
             5,  # Make all labels int32
             ctypes.c_void_p(0),  # means
             ctypes.c_void_p(0),  # standard deviations
+            args.radius,  # typical radius of a component
             2,  # Evaluation mode
             args.window_size,
             len(args.bands),

@@ -21,6 +21,7 @@ libchips.start(
     5,  # Make all labels int32
     mus_ptr, # Pointer to array of means
     sigmas_ptr, # Pointer to array of standard deviations
+    10000, # Typical radius of a component
     1,  # Training mode
     256,
     len(bands),

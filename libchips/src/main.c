@@ -20,26 +20,28 @@ int main(int argc, char **argv)
           "../../mul.tif", "../../mask.tif",
           6, 5,
           mus, sigmas,
+          10000,
           1, window_size, BAND_COUNT, bands);
-    for (int i = 0; i < BAND_COUNT; ++i)
-    {
-        fprintf(stderr, "%lf %lf\n", mus[i], sigmas[i]);
-    }
+    fprintf(stderr, "%d %d\n", get_width(), get_height());
 
-    fprintf(stderr, "\n");
     get_statistics("../../mul.tif", BAND_COUNT, bands, mus, sigmas);
     for (int i = 0; i < BAND_COUNT; ++i)
     {
         fprintf(stderr, "%lf %lf\n", mus[i], sigmas[i]);
     }
-
     fprintf(stderr, "\n");
+
     for (int i = 0; i < 1000; ++i)
     {
         get_next(imagery_buffer, label_buffer);
+        if (i % 100 == 1)
+        {
+            recenter(1);
+        }
         fprintf(stderr, "!");
     }
     fprintf(stderr, "\n");
+
     stop();
     deinit();
 

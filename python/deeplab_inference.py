@@ -146,6 +146,7 @@ if True:
         parser.add_argument('--model', required=True,
                             help='The model to use for preditions')
         parser.add_argument('--no-warmup', action='store_true')
+        parser.add_argument('--radius', default=10000)
         parser.add_argument(
             '--raw-prediction-img', help='The location where the raw prediction image should be stored')
         parser.add_argument(
@@ -391,7 +392,6 @@ if __name__ == '__main__':
     print('WARMUP')
     # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
     # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
-
     if not args.no_warmup:
         def momentum_fn(m):
             if isinstance(m, torch.nn.BatchNorm2d):
@@ -407,6 +407,7 @@ if __name__ == '__main__':
             5,  # Make all labels int32
             ctypes.c_void_p(0),  # means
             ctypes.c_void_p(0),  # standard deviations
+            args.radius, # typical radius of a component
             1,  # Training mode
             args.warmup_window_size,
             len(args.bands),
@@ -423,13 +424,14 @@ if __name__ == '__main__':
 
     libchips.start(
         1,  # Number of threads
-        1,  # Number of slots
+        0,  # Number of slots
         b'/tmp/mul.tif',  # Image data
         ctypes.c_void_p(0),  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
         ctypes.c_void_p(0),  # means
         ctypes.c_void_p(0),  # standard deviations
+        args.radius, # typical radius of component
         3,  # Training mode
         args.window_size,
         len(args.bands),

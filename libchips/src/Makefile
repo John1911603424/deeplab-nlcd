@@ -1,11 +1,14 @@
 CFLAGS ?= -Wall -Werror -Os
-LDFLAGS ?= $(shell pkg-config gdal --libs) -l:libstdc++.a -lpthread
+LDFLAGS ?= $(shell pkg-config gdal --libs) -lstdc++ -lpthread
 GDALCFLAGS ?= $(shell pkg-config gdal --cflags)
 
 all: libchips.so
 
 %.o: %.c
 	$(CC) $(GDALCFLAGS) $(CFLAGS) -fPIC $< -c -o $@
+
+%.o: %.cpp
+	$(CXX) $(GDALCFLAGS) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
 
 libchips.so: chips.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
