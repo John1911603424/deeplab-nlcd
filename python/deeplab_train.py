@@ -225,8 +225,8 @@ if True:
                 avg_loss = avg_loss + loss.item()
 
             avg_loss = avg_loss / args.max_epoch_size
-
-            libchips.recenter(1)
+            if no_checkpoints or avg_loss < args.loss_cutoff:
+                libchips.recenter(1)
 
             last_time = current_time
             current_time = time.time()
@@ -403,6 +403,7 @@ if True:
         parser.add_argument(
             '--learning-rate4', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
         parser.add_argument('--libchips', required=True)
+        parser.add_argument('--loss-cutoff', default=0.10, type=float)
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
