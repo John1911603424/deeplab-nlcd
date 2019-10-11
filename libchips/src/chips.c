@@ -68,7 +68,7 @@ int *ready = NULL;
     }
 
 #define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
-#define BAD_WINDOW (x_offset < 0 || x_offset > ((width - 1) / window_size) || y_offset < 0 || y_offset > ((height - 1) / window_size))
+#define BAD_WINDOW (x_offset < 0 || x_offset > ((width / window_size) - 1) || y_offset < 0 || y_offset > ((height / window_size) - 1))
 #define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
 #define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
 
@@ -355,6 +355,7 @@ static void *reader(void *_id)
                                   0, 0, 0);
         if (err != CE_None)
         {
+            fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
             DATASET0_UNLOCK
             UNLOCK_CONTINUE(slot, 1000)
         }
@@ -370,6 +371,7 @@ static void *reader(void *_id)
                                       0, 0, 0);
             if (err != CE_None)
             {
+                fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
                 DATASET0_UNLOCK
                 UNLOCK_CONTINUE(slot, 1000)
             }
