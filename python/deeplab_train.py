@@ -261,7 +261,7 @@ if True:
             arg_hash {str} -- The hashed arguments
         """
         band_count = len(args.bands)
-        model.eval()
+        model.train()  # sic
         with torch.no_grad():
             num_classes = len(args.weights)
             tps = [0.0 for x in range(num_classes)]
@@ -293,7 +293,7 @@ if True:
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
                     tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
 
-                if random.randint(0, 10) == 0:
+                if random.randint(0, args.max_epoch_size) == 0:
                     libchips.recenter(1)
 
                 global EVALUATIONS_BATCHES_DONE
