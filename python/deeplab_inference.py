@@ -432,7 +432,7 @@ if __name__ == '__main__':
         ctypes.c_void_p(0),  # means
         ctypes.c_void_p(0),  # standard deviations
         args.radius, # typical radius of component
-        3,  # Training mode
+        3,  # Inference mode
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
@@ -485,11 +485,13 @@ if __name__ == '__main__':
     if args.final_prediction_img is not None:
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.final_prediction_img)
+        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
         s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
         del s3
     if args.raw_prediction_img is not None:
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.raw_prediction_img)
+        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
         s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
         del s3
 
