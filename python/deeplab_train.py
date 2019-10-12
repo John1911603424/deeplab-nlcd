@@ -312,7 +312,7 @@ if True:
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
                     tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
 
-                if random.randint(0, args.max_epoch_size) == 0:
+                if random.randint(0, args.batch_size * 4) == 0:
                     libchips.recenter(1)
 
                 global EVALUATIONS_BATCHES_DONE
