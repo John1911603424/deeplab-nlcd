@@ -144,7 +144,7 @@ if True:
         labels = []
         for _ in range(args.batch_size):
             libchips.get_next(temp1_ptr, temp2_ptr)
-            data.append(temp1.copy())
+            rasters.append(temp1.copy())
             labels.append(temp2.copy())
 
         raster_batch = []
@@ -156,16 +156,37 @@ if True:
             label = numpy_replace(label, args.label_map, args.label_nd)
             label_nds = (label == args.label_nd)
 
+            if args.by_the_power_of_greyskull:
+                with np.errstate(all='ignore'):
+                    b2 = raster[2-1]
+                    b3 = raster[3-1]
+                    b4 = raster[4-1]
+                    b8 = raster[8-1]
+                    b11 = raster[11-1]
+                    b12 = raster[12-1]
+                    ndwi = (b3 - b8)/(b3 + b8)
+                    mndwi = (b3 - b11)/(b3 + b11)
+                    jndwi = (b3 - b12)/(b3 + b12)
+                    awei = 4.0*(b3 - b12) - 0.25*b8 - 2.75*b11
+                    wri = (b3 + b4)/(b8 + b12)
+                    ndbi = (b11 - b8)/(b11 + b8)
+                    ndvi = (b8 - b4)/(b8 + b4)
+                    evi = (b8 - b4)/((b8 + 6.0*b4 - 7.5*b2) + 1.0)
+                inds = [ndwi, mndwi, jndwi, awei, wri, ndbi, ndvi, evi]
+                raster = np.stack(inds, axis=0)
+            else:
+                for i in range(len(raster)):
+                    raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
+
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters, normalize
+            # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
             label[nodata == True] = args.label_nd
             for i in range(len(raster)):
-                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
@@ -203,7 +224,6 @@ if True:
             starting_epoch {int} -- The starting epoch (default: {0})
         """
         current_time = time.time()
-        band_count = len(args.bands)
         model.train()
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
@@ -260,7 +280,6 @@ if True:
             args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The hashed arguments
         """
-        band_count = len(args.bands)
         model.train()  # sic
         with torch.no_grad():
             num_classes = len(args.weights)
@@ -378,6 +397,8 @@ if True:
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
+        parser.add_argument(
+            '--by-the-power-of-greyskull', action='store_true')
         parser.add_argument(
             '--disable-eval', help='Disable evaluation after training', action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)
@@ -596,6 +617,11 @@ if __name__ == '__main__':
     mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
+    if args.by_the_power_of_greyskull:
+        args.band_count = 8
+    else:
+        args.band_count = len(args.bands)
+
     # ---------------------------------
     print('DATA')
 
@@ -750,7 +776,7 @@ if __name__ == '__main__':
 
     if complete_thru == -1:
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
@@ -759,7 +785,7 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
@@ -810,7 +836,7 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
@@ -861,7 +887,7 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
@@ -903,7 +929,7 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
@@ -948,7 +974,7 @@ if __name__ == '__main__':
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
         deeplab = make_model(
-            len(args.bands),
+            args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights)
         ).to(device)
