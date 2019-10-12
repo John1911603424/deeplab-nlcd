@@ -140,7 +140,7 @@ if True:
         temp2 = np.zeros((args.window_size, args.window_size), dtype=np.int32)
         temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
-        data = []
+        rasters = []
         labels = []
         for _ in range(args.batch_size):
             libchips.get_next(temp1_ptr, temp2_ptr)
@@ -149,7 +149,7 @@ if True:
 
         raster_batch = []
         label_batch = []
-        for raster, label in zip(data, labels):
+        for raster, label in zip(rasters, labels):
 
             # NODATA from labels
             label = np.array(label, dtype=np.long)

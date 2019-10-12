@@ -38,7 +38,15 @@ int main(int argc, char **argv)
         {
             recenter(1);
         }
-        fprintf(stderr, "!");
+
+        if (imagery_buffer[0] != 0.0)
+        {
+            fprintf(stderr, "!");
+        }
+        else
+        {
+            fprintf(stderr, ".");
+        }
     }
     fprintf(stderr, "\n");
 

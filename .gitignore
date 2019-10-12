@@ -6,4 +6,5 @@ libchips/src/main
 *.pyc
 *.so
 *.tif
+*.vrt
 .vscode/
