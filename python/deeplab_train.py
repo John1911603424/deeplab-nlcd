@@ -428,6 +428,8 @@ if True:
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument(
             '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
+        parser.add_argument('--optimizer', default='sgd',
+                            choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', default=16, type=int)
         parser.add_argument('--s3-bucket', required=True,
@@ -813,7 +815,12 @@ if __name__ == '__main__':
                 ps.append(p)
             else:
                 p.grad = None
-        opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate1)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
 
         train(deeplab,
               opt,
@@ -864,7 +871,12 @@ if __name__ == '__main__':
                 ps.append(p)
             else:
                 p.grad = None
-        opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate2)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
 
         train(deeplab,
               opt,
@@ -906,7 +918,12 @@ if __name__ == '__main__':
                 ps.append(p)
             else:
                 p.grad = None
-        opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate3)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
 
         train(deeplab,
               opt,
@@ -948,7 +965,12 @@ if __name__ == '__main__':
                 ps.append(p)
             else:
                 p.grad = None
-        opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate4)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
 
         train(deeplab,
               opt,
@@ -990,7 +1012,12 @@ if __name__ == '__main__':
                 ps.append(p)
             else:
                 p.grad = None
-        opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate4)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
 
         train(deeplab,
               opt,
