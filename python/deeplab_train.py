@@ -396,8 +396,7 @@ if True:
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
-        parser.add_argument(
-            '--by-the-power-of-greyskull', action='store_true')
+        parser.add_argument('--by-the-power-of-greyskull', action='store_true')
         parser.add_argument(
             '--disable-eval', help='Disable evaluation after training', action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)

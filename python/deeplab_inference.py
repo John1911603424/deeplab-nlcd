@@ -49,23 +49,43 @@ if True:
         temp1 = np.zeros(shape, dtype=np.float32)
         temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        data = []
+        rasters = []
         for _ in range(args.warmup_batch_size):
             libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
-            data.append(temp1.copy())
+            rasters.append(temp1.copy())
 
         raster_batch = []
-        for raster in data:
+        for raster in rasters:
+
+            if args.by_the_power_of_greyskull:
+                with np.errstate(all='ignore'):
+                    b2 = raster[2-1]
+                    b3 = raster[3-1]
+                    b4 = raster[4-1]
+                    b5 = raster[5-1]
+                    b8 = raster[8-1]
+                    b11 = raster[11-1]
+                    b12 = raster[12-1]
+                    ndwi = (b3 - b8)/(b3 + b8)
+                    mndwi = (b3 - b11)/(b3 + b11)
+                    wri = (b3 + b4)/(b8 + b12)
+                    ndci = (b5 - b4)/(b5 + b4)
+                    # ndbi = (b11 - b8)/(b11 + b8)
+                    # ndvi = (b8 - b4)/(b8 + b4)
+                inds = [ndwi, mndwi, wri, ndci]
+                raster = np.stack(inds, axis=0)
+            else:
+                for i in range(len(raster)):
+                    raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
             # NODATA from rasters
             image_nds = np.isnan(raster).sum(axis=0)
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # Set label NODATA, remove NaNs from rasters, normalize
+            # Remove NaNs from rasters
             nodata = (image_nds > 0)
             for i in range(len(raster)):
-                raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
                 raster[i][nodata == True] = 0.0
 
             raster_batch.append(raster)
@@ -96,12 +116,31 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            image_nds = np.isnan(image)
+            if args.by_the_power_of_greyskull:
+                with np.errstate(all='ignore'):
+                    b2 = image[2-1]
+                    b3 = image[3-1]
+                    b4 = image[4-1]
+                    b5 = image[5-1]
+                    b8 = image[8-1]
+                    b11 = image[11-1]
+                    b12 = image[12-1]
+                    ndwi = (b3 - b8)/(b3 + b8)
+                    mndwi = (b3 - b11)/(b3 + b11)
+                    wri = (b3 + b4)/(b8 + b12)
+                    ndci = (b5 - b4)/(b5 + b4)
+                    # ndbi = (b11 - b8)/(b11 + b8)
+                    # ndvi = (b8 - b4)/(b8 + b4)
+                inds = [ndwi, mndwi, wri, ndci]
+                image = np.stack(inds, axis=0)
+            else:
+                for i in range(len(image)):
+                    image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
+            image_nds = np.isnan(image).sum(axis=0)
             if args.image_nd is not None:
-                image_nds += (image == args.image_nd)
-            for i in range(len(args.bands)):
-                image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
-            image[image_nds > 0] = 0.0
+                image_nds += (image == args.image_nd).sum(axis=0)
+            for i in range(len(image)):
+                image[i][image_nds > 0] = 0.0
             return torch.from_numpy(np.stack([image], axis=0))
         else:
             return None
@@ -131,6 +170,7 @@ if True:
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
+        parser.add_argument('--by-the-power-of-greyskull', action='store_true')
         parser.add_argument('--classes', required=True,
                             help='The number of prediction classes', type=int)
         parser.add_argument('--final-prediction-img',
@@ -319,6 +359,11 @@ if __name__ == '__main__':
     mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
+    if args.by_the_power_of_greyskull:
+        args.band_count = 4
+    else:
+        args.band_count = len(args.bands)
+
     # ---------------------------------
     print('DATA')
 
@@ -353,7 +398,7 @@ if __name__ == '__main__':
     device = torch.device(args.backend)
 
     deeplab = make_model(
-        len(args.bands),
+        args.band_count,
         input_stride=args.input_stride,
         class_count=args.classes
     ).to(device)
@@ -407,7 +452,7 @@ if __name__ == '__main__':
             5,  # Make all labels int32
             ctypes.c_void_p(0),  # means
             ctypes.c_void_p(0),  # standard deviations
-            args.radius, # typical radius of a component
+            args.radius,  # typical radius of a component
             1,  # Training mode
             args.warmup_window_size,
             len(args.bands),
@@ -431,7 +476,7 @@ if __name__ == '__main__':
         5,  # Make all labels int32
         ctypes.c_void_p(0),  # means
         ctypes.c_void_p(0),  # standard deviations
-        args.radius, # typical radius of component
+        args.radius,  # typical radius of component
         3,  # Inference mode
         args.window_size,
         len(args.bands),
