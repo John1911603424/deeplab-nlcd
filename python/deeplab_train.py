@@ -161,18 +161,17 @@ if True:
                     b2 = raster[2-1]
                     b3 = raster[3-1]
                     b4 = raster[4-1]
+                    b5 = raster[5-1]
                     b8 = raster[8-1]
                     b11 = raster[11-1]
                     b12 = raster[12-1]
                     ndwi = (b3 - b8)/(b3 + b8)
                     mndwi = (b3 - b11)/(b3 + b11)
-                    jndwi = (b3 - b12)/(b3 + b12)
-                    awei = 4.0*(b3 - b12) - 0.25*b8 - 2.75*b11
                     wri = (b3 + b4)/(b8 + b12)
-                    ndbi = (b11 - b8)/(b11 + b8)
-                    ndvi = (b8 - b4)/(b8 + b4)
-                    evi = (b8 - b4)/((b8 + 6.0*b4 - 7.5*b2) + 1.0)
-                inds = [ndwi, mndwi, jndwi, awei, wri, ndbi, ndvi, evi]
+                    ndci = (b5 - b4)/(b5 + b4)
+                    # ndbi = (b11 - b8)/(b11 + b8)
+                    # ndvi = (b8 - b4)/(b8 + b4)
+                inds = [ndwi, mndwi, wri, ndci]
                 raster = np.stack(inds, axis=0)
             else:
                 for i in range(len(raster)):
@@ -620,7 +619,7 @@ if __name__ == '__main__':
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     if args.by_the_power_of_greyskull:
-        args.band_count = 8
+        args.band_count = 4
     else:
         args.band_count = len(args.bands)
 
