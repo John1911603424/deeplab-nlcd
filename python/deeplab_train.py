@@ -390,7 +390,7 @@ if True:
         """
         parser = argparse.ArgumentParser()
         parser.add_argument('--architecture', required=True, help='The desired model architecture',
-                            choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
+                            choices=['resnet18', 'resnet18-low', 'resnet34', 'resnet101', 'stock'])
         parser.add_argument('--backend', help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True,
@@ -447,7 +447,7 @@ if True:
 # Architectures
 if True:
     class DeepLabResnet18(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count):
+        def __init__(self, band_count, input_stride, class_count, low=False):
             super(DeepLabResnet18, self).__init__()
             resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
@@ -465,6 +465,8 @@ if True:
                 self.factor = 16
             else:
                 self.factor = 32
+            if low:
+                self.factor = self.factor // 4
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -490,6 +492,10 @@ if True:
 
     def make_model_resnet18(band_count, input_stride=1, class_count=2):
         deeplab = DeepLabResnet18(band_count, input_stride, class_count)
+        return deeplab
+
+    def make_model_resnet18_low(band_count, input_stride=1, class_count=2):
+        deeplab = DeepLabResnet18(band_count, input_stride, class_count, True)
         return deeplab
 
     class DeepLabResnet34(torch.nn.Module):
@@ -740,6 +746,8 @@ if __name__ == '__main__':
 
     if args.architecture == 'resnet18':
         make_model = make_model_resnet18
+    elif args.architecture == 'resnet18-low':
+        make_model = make_model_resnet18_low
     elif args.architecture == 'resnet34':
         make_model = make_model_resnet34
     elif args.architecture == 'resnet101':
