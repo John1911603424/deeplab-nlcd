@@ -156,6 +156,11 @@ if True:
             label = numpy_replace(label, args.label_map, args.label_nd)
             label_nds = (label == args.label_nd)
 
+            # NODATA from rasters
+            image_nds = np.zeros(raster[0].shape)
+            if args.image_nd is not None:
+                image_nds += (raster == args.image_nd).sum(axis=0)
+
             if args.by_the_power_of_greyskull:
                 with np.errstate(all='ignore'):
                     b2 = raster[2-1]
@@ -178,9 +183,7 @@ if True:
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
             # NODATA from rasters
-            image_nds = np.isnan(raster).sum(axis=0)
-            if args.image_nd is not None:
-                image_nds += (raster == args.image_nd).sum(axis=0)
+            image_nds += np.isnan(raster).sum(axis=0) # + -> +=
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
