@@ -260,6 +260,7 @@ if True:
                         loss = args.sigmoid*sigmoid_loss + \
                             (1.0-args.sigmoid)*loss
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
                     opt.step()
                     avg_loss = avg_loss + loss.item()
 
