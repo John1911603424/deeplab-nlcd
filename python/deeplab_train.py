@@ -241,25 +241,27 @@ if True:
                 pred = model(batch[0].to(device))
                 label_long = batch[1].to(device)
                 label_float = (batch[1] == 1).to(device, dtype=torch.float)
-                if isinstance(pred, dict):
-                    pred_out: torch.Tensor = pred.get('out')  # type: ignore
-                    pred_aux: torch.Tensor = pred.get('aux')  + 1e-6 # type: ignore
-                    out_loss = obj(pred_out, label_long)
-                    aux_loss = obj(pred_aux, label_long)
-                    loss = 1.0*out_loss + 0.4*aux_loss
-                else:
-                    loss = obj(pred, label_long)
-                if obj2 is not None and sigmoid is not None:
+                with torch.autograd.detect_anomaly():
                     if isinstance(pred, dict):
-                        non_background = pred.get('out')[:, 1, :, :]
+                        pred_out = pred.get('out')  # type: ignore
+                        out_loss = obj(pred_out, label_long)
+                        pred_aux = pred.get('aux')  # type: ignore
+                        aux_loss = obj(pred_aux, label_long)
+                        loss = 1.0*out_loss + 0.4*aux_loss
                     else:
-                        non_background = pred[:, 1, :, :]
-                    non_background = sigmoid(non_background)
-                    sigmoid_loss = obj2(non_background, label_float)
-                    loss = args.sigmoid*sigmoid_loss + (1.0-args.sigmoid)*loss
-                loss.backward()
-                opt.step()
-                avg_loss = avg_loss + loss.item()
+                        loss = obj(pred, label_long)
+                    if obj2 is not None and sigmoid is not None:
+                        if isinstance(pred, dict):
+                            non_background = pred.get('out')[:, 1, :, :]
+                        else:
+                            non_background = pred[:, 1, :, :]
+                        non_background = sigmoid(non_background)
+                        sigmoid_loss = obj2(non_background, label_float)
+                        loss = args.sigmoid*sigmoid_loss + \
+                            (1.0-args.sigmoid)*loss
+                    loss.backward()
+                    opt.step()
+                    avg_loss = avg_loss + loss.item()
 
             avg_loss = avg_loss / args.max_epoch_size
             if no_checkpoints or avg_loss < args.loss_cutoff:
