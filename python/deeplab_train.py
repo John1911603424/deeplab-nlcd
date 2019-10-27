@@ -183,7 +183,7 @@ if True:
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
             # NODATA from rasters
-            image_nds += np.isnan(raster).sum(axis=0) # + -> +=
+            image_nds += np.isnan(raster).sum(axis=0)  # + -> +=
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
@@ -227,21 +227,36 @@ if True:
         """
         current_time = time.time()
         model.train()
+        if (args.sigmoid > 0.0) and (args.sigmoid <= 1.0):
+            obj2 = torch.nn.MSELoss().to(device)
+            sigmoid = torch.nn.Sigmoid().to(device)
+        else:
+            obj2 = None
+            sigmoid = None
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
-                label = batch[1].to(device)
+                label_long = batch[1].to(device)
+                label_float = (batch[1] == 1).to(device, dtype=torch.float)
                 if isinstance(pred, dict):
                     pred_out: torch.Tensor = pred.get('out')  # type: ignore
-                    pred_aux: torch.Tensor = pred.get('aux')  # type: ignore
-                    out_loss = obj(pred_out, label)
-                    aux_loss = obj(pred_aux, label)
+                    pred_aux: torch.Tensor = pred.get('aux')  + 1e-6 # type: ignore
+                    out_loss = obj(pred_out, label_long)
+                    aux_loss = obj(pred_aux, label_long)
                     loss = 1.0*out_loss + 0.4*aux_loss
                 else:
-                    loss = 1.0*obj(pred, label)
+                    loss = obj(pred, label_long)
+                if obj2 is not None and sigmoid is not None:
+                    if isinstance(pred, dict):
+                        non_background = pred.get('out')[:, 1, :, :]
+                    else:
+                        non_background = pred[:, 1, :, :]
+                    non_background = sigmoid(non_background)
+                    sigmoid_loss = obj2(non_background, label_float)
+                    loss = args.sigmoid*sigmoid_loss + (1.0-args.sigmoid)*loss
                 loss.backward()
                 opt.step()
                 avg_loss = avg_loss + loss.item()
