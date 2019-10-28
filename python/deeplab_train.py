@@ -163,6 +163,7 @@ if True:
 
             if args.by_the_power_of_greyskull:
                 with np.errstate(all='ignore'):
+                    epsilon = 1e-7
                     b2 = raster[2-1]
                     b3 = raster[3-1]
                     b4 = raster[4-1]
@@ -170,12 +171,12 @@ if True:
                     b8 = raster[8-1]
                     b11 = raster[11-1]
                     b12 = raster[12-1]
-                    ndwi = (b3 - b8)/(b3 + b8)
-                    mndwi = (b3 - b11)/(b3 + b11)
-                    wri = (b3 + b4)/(b8 + b12)
-                    ndci = (b5 - b4)/(b5 + b4)
-                    # ndbi = (b11 - b8)/(b11 + b8)
-                    # ndvi = (b8 - b4)/(b8 + b4)
+                    ndwi = (b3 - b8)/(b3 + b8 + epsilon)
+                    mndwi = (b3 - b11)/(b3 + b11 + epsilon)
+                    wri = (b3 + b4)/(b8 + b12 + epsilon)
+                    ndci = (b5 - b4)/(b5 + b4 + epsilon)
+                    # ndbi = (b11 - b8)/(b11 + b8 + epsilon)
+                    # ndvi = (b8 - b4)/(b8 + b4 + epsilon)
                 inds = [ndwi, mndwi, wri, ndci]
                 raster = np.stack(inds, axis=0)
             else:
