@@ -23,10 +23,11 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
-OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
-SCALER = Union[int, float]
 INT2INT = Dict[int, int]
+OBJ = Union[torch.nn.CrossEntropyLoss, torch.nn.MSELoss]
+OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
 PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
+SCALER = Union[int, float]
 
 # S3
 if True:
@@ -209,7 +210,7 @@ if True:
 
     def train(model: torch.nn.Module,
               opt: OPT,
-              obj: torch.nn.CrossEntropyLoss,
+              obj: OBJ,
               epochs: int,
               libchips: ctypes.CDLL,
               device: torch.device,
@@ -221,8 +222,8 @@ if True:
 
         Arguments:
             model {torch.nn.Module} -- The model to train
-            opt {torch.optim.SGD} -- The optimizer to use
-            obj {torch.nn.CrossEntropyLoss} -- The objective function to use
+            opt {OPT} -- The optimizer to use
+            obj {OBJ} -- The objective function to use
             epochs {int} -- The number of "epochs"
             libchips {ctypes.CDLL} -- A shared library handle through which data can be read
             device {torch.device} -- The device to use
@@ -235,12 +236,6 @@ if True:
         """
         current_time = time.time()
         model.train()
-        if (args.sigmoid > 0.0) and (args.sigmoid <= 1.0):
-            obj2: Optional[torch.nn.MSELoss] = torch.nn.MSELoss().to(device)
-            sigmoid: Optional[torch.nn.Sigmoid] = torch.nn.Sigmoid().to(device)
-        else:
-            obj2 = None
-            sigmoid = None
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
@@ -249,32 +244,22 @@ if True:
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
-                label_long = batch[1].to(device)
-                label_float = (batch[1] == 1).to(device, dtype=torch.float)
                 with torch.autograd.detect_anomaly():
-                    if isinstance(pred, dict):
-                        pred_out: torch.Tensor = \
-                            pred.get('out')  # type: ignore
-                        out_loss = obj(pred_out, label_long)
-                        pred_aux: torch.Tensor = \
-                            pred.get('aux')  # type: ignore
-                        aux_loss = obj(pred_aux, label_long)
-                        loss = 1.0*out_loss + 0.4*aux_loss
+                    if 'binary' in args.architecture:
+                        label_float = (batch[1] == 1).to(device, dtype=torch.float)
+                        loss = obj(pred[:, 0, :, :], label_float)
                     else:
-                        loss = obj(pred, label_long)
-                    if obj2 is not None and sigmoid is not None:
+                        label_long = batch[1].to(device)
                         if isinstance(pred, dict):
-                            pred_out2 = pred.get('out')
-                            if pred_out is not None:
-                                non_background = pred_out[:, 1, :, :]
-                            else:
-                                raise Exception('Malformed dictionary')
+                            pred_out: torch.Tensor = \
+                                pred.get('out')  # type: ignore
+                            out_loss = obj(pred_out, label_long)
+                            pred_aux: torch.Tensor = \
+                                pred.get('aux')  # type: ignore
+                            aux_loss = obj(pred_aux, label_long)
+                            loss = 1.0*out_loss + 0.4*aux_loss
                         else:
-                            non_background = pred[:, 1, :, :]
-                        non_background = sigmoid(non_background)
-                        sigmoid_loss = obj2(non_background, label_float)
-                        loss = args.sigmoid*sigmoid_loss + \
-                            (1.0-args.sigmoid)*loss
+                            loss = obj(pred, label_long)
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
                     opt.step()
@@ -298,7 +283,7 @@ if True:
                     torch.save(model.state_dict(), 'deeplab.pth')
                     s3 = boto3.client('s3')
                     s3.upload_file('deeplab.pth', args.s3_bucket,
-                                '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
+                                   '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
                     del s3
 
 # Evaluation
@@ -331,7 +316,10 @@ if True:
                 if isinstance(out, dict):
                     out = out['out']
                 out = out.data.cpu().numpy()
-                out = np.apply_along_axis(np.argmax, 1, out)
+                if 'binary' in args.architecture:
+                    out = np.array(out > 0.5, dtype=np.long)
+                else:
+                    out = np.apply_along_axis(np.argmax, 1, out)
 
                 labels = batch[1].cpu().numpy()
                 del batch
@@ -393,7 +381,7 @@ if True:
         if not args.no_upload:
             s3 = boto3.client('s3')
             s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
-                        '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
             del s3
 
 # Arguments
@@ -431,7 +419,7 @@ if True:
         parser.add_argument('--architecture',
                             required=True,
                             help='The desired model architecture',
-                            choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
+                            choices=['resnet18-binary', 'resnet18', 'resnet34', 'resnet101', 'stock'])
         parser.add_argument('--backend',
                             help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
@@ -496,7 +484,6 @@ if True:
         parser.add_argument('--s3-prefix',
                             required=True,
                             help='prefix to apply when saving models to s3')
-        parser.add_argument('--sigmoid', default=0.0, type=float)
         parser.add_argument('--start-from',
                             help='The saved model to start the fourth phase from')
         parser.add_argument('--training-img',
@@ -511,6 +498,46 @@ if True:
 
 # Architectures
 if True:
+    class DeepLabResnet18Binary(torch.nn.Module):
+        def __init__(self, band_count, input_stride, divisor):
+            super(DeepLabResnet18Binary, self).__init__()
+            class_count = 1
+            resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
+            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+                resnet18, return_layers={'layer4': 'out'})
+            inplanes = 512
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                inplanes, class_count)
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+            self.sigmoid = torch.nn.Sigmoid()
+
+            if input_stride == 1:
+                self.factor = 16 // divisor
+            else:
+                self.factor = 32 // divisor
+
+        def forward(self, x):
+            [w, h] = x.shape[-2:]
+
+            features = self.backbone(torch.nn.functional.interpolate(
+                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
+
+            result = {}
+
+            x = features['out']
+            x = self.classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+
+            x = self.sigmoid(x)
+
+            return x
+
+    def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1):
+        deeplab = DeepLabResnet18Binary(band_count, input_stride, divisor)
+        return deeplab
+
     class DeepLabResnet18(torch.nn.Module):
         def __init__(self, band_count, input_stride, class_count, divisor):
             super(DeepLabResnet18, self).__init__()
@@ -554,7 +581,8 @@ if True:
             return result
 
     def make_model_resnet18(band_count, input_stride=1, class_count=2, divisor=1):
-        deeplab = DeepLabResnet18(band_count, input_stride, class_count, divisor)
+        deeplab = DeepLabResnet18(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
     class DeepLabResnet34(torch.nn.Module):
@@ -600,16 +628,17 @@ if True:
             return result
 
     def make_model_resnet34(band_count, input_stride=1, class_count=2, divisor=1):
-        deeplab = DeepLabResnet34(band_count, input_stride, class_count, divisor)
+        deeplab = DeepLabResnet34(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
     class DeepLabResnet101(torch.nn.Module):
         def __init__(self, band_count, input_stride, class_count, divisor):
             super(DeepLabResnet101, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet101(
+            resnet101 = torchvision.models.resnet.resnet101(
                 pretrained=True, replace_stride_with_dilation=[False, True, True])
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
+                resnet101, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 2048
             self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
                 inplanes, class_count)
@@ -647,7 +676,8 @@ if True:
             return result
 
     def make_model_resnet101(band_count, input_stride=1, class_count=2, divisor=1):
-        deeplab = DeepLabResnet101(band_count, input_stride, class_count, divisor)
+        deeplab = DeepLabResnet101(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
     def make_model_stock(band_count, input_stride=1, class_count=2, divisor=1):
@@ -760,7 +790,7 @@ if __name__ == '__main__':
     if not args.no_upload:
         s3 = boto3.client('s3')
         s3.upload_file('/tmp/args.txt', args.s3_bucket,
-                    '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
+                       '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
         del s3
 
     # ---------------------------------
@@ -806,7 +836,9 @@ if __name__ == '__main__':
         args.batch_size = 2
         print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
 
-    if args.architecture == 'resnet18':
+    if args.architecture == 'resnet18-binary':
+        make_model = make_model_resnet18_binary
+    elif args.architecture == 'resnet18':
         make_model = make_model_resnet18
     elif args.architecture == 'resnet34':
         make_model = make_model_resnet34
@@ -824,10 +856,13 @@ if __name__ == '__main__':
                                                        (args.window_size * args.window_size * 7.0 * args.batch_size)))
 
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
-    obj = torch.nn.CrossEntropyLoss(
-        ignore_index=args.label_nd,
-        weight=torch.FloatTensor(args.weights).to(device)
-    ).to(device)
+    if 'binary' in args.architecture:
+        obj = torch.nn.MSELoss().to(device)
+    else:
+        obj = torch.nn.CrossEntropyLoss(
+            ignore_index=args.label_nd,
+            weight=torch.FloatTensor(args.weights).to(device)
+        ).to(device)
 
     # ---------------------------------
     if args.watchdog_seconds > 0:
@@ -865,15 +900,16 @@ if __name__ == '__main__':
     elif complete_thru < 0:
         print('\t TRAINING FIRST AND LAST LAYERS')
 
-        last_class = deeplab.classifier[4]
-        last_class_aux = deeplab.aux_classifier[4]
-        input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
+        last_class = deeplab.classifier[4]
         for p in last_class.parameters():
             p.requires_grad = True
-        for p in last_class_aux.parameters():
-            p.requires_grad = True
+        if 'binary' not in args.architecture:
+            last_class_aux = deeplab.aux_classifier[4]
+            for p in last_class_aux.parameters():
+                p.requires_grad = True
+        input_filters = deeplab.backbone.conv1
         for p in input_filters.parameters():
             p.requires_grad = True
 
@@ -905,7 +941,7 @@ if __name__ == '__main__':
             torch.save(deeplab.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                        '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     if complete_thru == 1:
@@ -923,15 +959,16 @@ if __name__ == '__main__':
     elif complete_thru < 1:
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
-        last_class = deeplab.classifier[4]
-        last_class_aux = deeplab.aux_classifier[4]
-        input_filters = deeplab.backbone.conv1
         for p in deeplab.parameters():
             p.requires_grad = False
+        last_class = deeplab.classifier[4]
         for p in last_class.parameters():
             p.requires_grad = True
-        for p in last_class_aux.parameters():
-            p.requires_grad = True
+        if 'binary' not in args.architecture:
+            last_class_aux = deeplab.aux_classifier[4]
+            for p in last_class_aux.parameters():
+                p.requires_grad = True
+        input_filters = deeplab.backbone.conv1
         for p in input_filters.parameters():
             p.requires_grad = True
 
@@ -962,7 +999,7 @@ if __name__ == '__main__':
             torch.save(deeplab.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     if complete_thru == 2:
@@ -1010,7 +1047,7 @@ if __name__ == '__main__':
             torch.save(deeplab.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     if complete_thru == 3:
@@ -1059,7 +1096,7 @@ if __name__ == '__main__':
             torch.save(deeplab.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     if complete_thru == 4:
@@ -1108,7 +1145,7 @@ if __name__ == '__main__':
             torch.save(deeplab.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
-                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+                           '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     libchips.stop()
