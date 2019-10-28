@@ -294,11 +294,12 @@ if True:
                 WATCHDOG_TIME = time.time()
 
             if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
-                torch.save(model.state_dict(), 'deeplab.pth')
-                s3 = boto3.client('s3')
-                s3.upload_file('deeplab.pth', args.s3_bucket,
-                               '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
-                del s3
+                if not args.no_upload:
+                    torch.save(model.state_dict(), 'deeplab.pth')
+                    s3 = boto3.client('s3')
+                    s3.upload_file('deeplab.pth', args.s3_bucket,
+                                '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
+                    del s3
 
 # Evaluation
 if True:
@@ -389,10 +390,11 @@ if True:
             evaluations.write('Precisions: {}\n'.format(precisions))
             evaluations.write('f1 scores: {}\n'.format(f1s))
 
-        s3 = boto3.client('s3')
-        s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
-                       '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            s3 = boto3.client('s3')
+            s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
+                        '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
+            del s3
 
 # Arguments
 if True:
@@ -440,9 +442,6 @@ if True:
         parser.add_argument('--by-the-power-of-greyskull',
                             help='Pass this flag to enable special behavior',
                             action='store_true')
-        parser.add_argument('--disable-eval',
-                            help='Disable evaluation after training',
-                            action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)
         parser.add_argument('--epochs2', default=0, type=int)
         parser.add_argument('--epochs3', default=5, type=int)
@@ -479,6 +478,12 @@ if True:
         parser.add_argument('--max-eval-windows',
                             default=sys.maxsize, type=int,
                             help='The maximum number of windows that will be used for evaluation')
+        parser.add_argument('--no-eval',
+                            help='Disable evaluation after training',
+                            action='store_true')
+        parser.add_argument('--no-upload',
+                            help='Do not upload anything to S3',
+                            action='store_true')
         parser.add_argument('--optimizer', default='sgd',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
@@ -664,7 +669,8 @@ if __name__ == '__main__':
     hashed_args = copy.copy(args)
     hashed_args.script = sys.argv[0]
     del hashed_args.backend
-    del hashed_args.disable_eval
+    del hashed_args.no_eval
+    del hashed_args.no_upload
     del hashed_args.max_eval_windows
     del hashed_args.read_threads
     del hashed_args.watchdog_seconds
@@ -751,10 +757,11 @@ if __name__ == '__main__':
     with open('/tmp/args.txt', 'w') as f:
         f.write(str(args) + '\n')
         f.write(str(sys.argv) + '\n')
-    s3 = boto3.client('s3')
-    s3.upload_file('/tmp/args.txt', args.s3_bucket,
-                   '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
-    del s3
+    if not args.no_upload:
+        s3 = boto3.client('s3')
+        s3.upload_file('/tmp/args.txt', args.s3_bucket,
+                    '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
+        del s3
 
     # ---------------------------------
     print('INITIALIZING')
@@ -763,23 +770,24 @@ if __name__ == '__main__':
     current_epoch = 0
     current_pth = None
     if args.start_from is None:
-        for pth in get_matching_s3_keys(
-                bucket=args.s3_bucket,
-                prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
-                suffix='pth'):
-            m1 = re.match('.*deeplab_(\d+).pth$', pth)
-            m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
-            if m1:
-                phase = int(m1.group(1))
-                if phase > complete_thru:
-                    complete_thru = phase
-                    current_pth = pth
-            if m2:
-                checkpoint_epoch = int(m2.group(1))
-                if checkpoint_epoch > current_epoch:
-                    complete_thru = 4
-                    current_epoch = checkpoint_epoch+1
-                    current_pth = pth
+        if not args.no_upload:
+            for pth in get_matching_s3_keys(
+                    bucket=args.s3_bucket,
+                    prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
+                    suffix='pth'):
+                m1 = re.match('.*deeplab_(\d+).pth$', pth)
+                m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
+                if m1:
+                    phase = int(m1.group(1))
+                    if phase > complete_thru:
+                        complete_thru = phase
+                        current_pth = pth
+                if m2:
+                    checkpoint_epoch = int(m2.group(1))
+                    if checkpoint_epoch > current_epoch:
+                        complete_thru = 4
+                        current_epoch = checkpoint_epoch+1
+                        current_pth = pth
     elif args.start_from is not None:
         complete_thru = 4
         current_epoch = 0
@@ -892,13 +900,13 @@ if __name__ == '__main__':
               copy.copy(args),
               arg_hash)
 
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            print('\t UPLOADING')
+            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                        '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
     if complete_thru == 1:
         s3 = boto3.client('s3')
@@ -949,13 +957,13 @@ if __name__ == '__main__':
               copy.copy(args),
               arg_hash)
 
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            print('\t UPLOADING')
+            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                        '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
     if complete_thru == 2:
         s3 = boto3.client('s3')
@@ -997,13 +1005,13 @@ if __name__ == '__main__':
               copy.copy(args),
               arg_hash)
 
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            print('\t UPLOADING')
+            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                        '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
     if complete_thru == 3:
         s3 = boto3.client('s3')
@@ -1046,13 +1054,13 @@ if __name__ == '__main__':
               arg_hash,
               no_checkpoints=False)
 
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            print('\t UPLOADING')
+            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
     if complete_thru == 4:
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
@@ -1095,17 +1103,17 @@ if __name__ == '__main__':
               no_checkpoints=False,
               starting_epoch=current_epoch)
 
-        print('\t UPLOADING')
-
-        torch.save(deeplab.state_dict(), 'deeplab.pth')
-        s3 = boto3.client('s3')
-        s3.upload_file('deeplab.pth', args.s3_bucket,
-                       '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
-        del s3
+        if not args.no_upload:
+            print('\t UPLOADING')
+            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            s3 = boto3.client('s3')
+            s3.upload_file('deeplab.pth', args.s3_bucket,
+                        '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+            del s3
 
     libchips.stop()
 
-    if not args.disable_eval:
+    if not args.no_eval:
         print('\t EVALUATING')
         libchips.start(
             args.read_threads,  # Number of threads
