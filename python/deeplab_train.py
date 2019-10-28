@@ -238,6 +238,8 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
+                while not (batch[0] == 1).any() and args.reroll > random.random():
+                    batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred = model(batch[0].to(device))
                 label_long = batch[1].to(device)
@@ -469,6 +471,7 @@ if True:
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', default=16, type=int)
+        parser.add_argument('--reroll', default=0.0, type=float)
         parser.add_argument('--s3-bucket',
                             required=True,
                             help='prefix to apply when saving models to s3')
