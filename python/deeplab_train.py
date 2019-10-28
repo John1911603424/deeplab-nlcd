@@ -166,29 +166,32 @@ if True:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
             if args.by_the_power_of_greyskull:
-                with np.errstate(all='ignore'):
-                    epsilon = 1e-7
-                    b2 = raster[2-1]
-                    b3 = raster[3-1]
-                    b4 = raster[4-1]
-                    b5 = raster[5-1]
-                    b8 = raster[8-1]
-                    b11 = raster[11-1]
-                    b12 = raster[12-1]
-                    ndwi = (b3 - b8)/(b3 + b8 + epsilon)
-                    mndwi = (b3 - b11)/(b3 + b11 + epsilon)
-                    wri = (b3 + b4)/(b8 + b12 + epsilon)
-                    ndci = (b5 - b4)/(b5 + b4 + epsilon)
-                    # ndbi = (b11 - b8)/(b11 + b8 + epsilon)
-                    # ndvi = (b8 - b4)/(b8 + b4 + epsilon)
-                inds = [ndwi, mndwi, wri, ndci]
+                epsilon = 1e-7
+                b2 = raster[2-1]
+                b3 = raster[3-1]
+                b4 = raster[4-1]
+                b5 = raster[5-1]
+                b8 = raster[8-1]
+                b11 = raster[11-1]
+                b12 = raster[12-1]
+                ndwi = (b3 - b8)/(b3 + b8 + epsilon)
+                mndwi = (b3 - b11)/(b3 + b11 + epsilon)
+                wri = (b3 + b4)/(b8 + b12 + epsilon)
+                ndci = (b5 - b4)/(b5 + b4 + epsilon)
+                ndbi = (b11 - b8)/(b11 + b8 + epsilon)
+                ndvi = (b8 - b4)/(b8 + b4 + epsilon)
+                # blue = (b2 - args.mus[2-1]) / args.sigmas[2-1]
+                # green = (b3 - args.mus[3-1]) / args.sigmas[3-1]
+                # red = (b4 - args.mus[4-1]) / args.sigmas[4-1]
+                # nir = (b8 - args.mus[8-1]) / args.sigmas[8-1]
+                inds = [ndwi, mndwi, wri, ndci, ndbi, ndvi]
                 raster = np.stack(inds, axis=0)
             else:
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
             # NODATA from rasters
-            image_nds += np.isnan(raster).sum(axis=0)  # + -> +=
+            image_nds += np.isnan(raster).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
@@ -242,7 +245,7 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
-                while not (batch[0] == 1).any() and args.reroll > random.random():
+                while not (batch[1] == 1).any() and args.reroll > random.random():
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
@@ -481,7 +484,7 @@ if True:
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', default=16, type=int)
-        parser.add_argument('--reroll', default=0.0, type=float)
+        parser.add_argument('--reroll', default=0.90, type=float)
         parser.add_argument('--s3-bucket',
                             required=True,
                             help='prefix to apply when saving models to s3')
@@ -681,7 +684,7 @@ if __name__ == '__main__':
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     if args.by_the_power_of_greyskull:
-        args.band_count = 4
+        args.band_count = 6
     else:
         args.band_count = len(args.bands)
 
