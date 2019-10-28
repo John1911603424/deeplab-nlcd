@@ -23,6 +23,10 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
+OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
+SCALER = Union[int, float]
+INT2INT = Dict[int, int]
+PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
 
 # S3
 if True:
@@ -103,14 +107,14 @@ if True:
 # Training
 if True:
     def numpy_replace(np_arr: np.ndarray,
-                      replacement_dict: Dict[int, int],
-                      label_nd: Union[int, float]) -> np.ndarray:
+                      replacement_dict: INT2INT,
+                      label_nd: SCALER) -> np.ndarray:
         """Replace the contents of np_arr according to the mapping given in replacement_dict
 
         Arguments:
             np_arr {np.ndarray} -- The numpy array to alter
-            replacement_dict {Dict[int, int]} -- The replacement mapping
-            label_nd {Union[int, float]} -- The label nodata
+            replacement_dict {INT2INT} -- The replacement mapping
+            label_nd {SCALER} -- The label nodata
 
         Returns:
             np.ndarray -- The array with replacement performed
@@ -201,7 +205,7 @@ if True:
         return (raster_batch_tensor, label_batch_tensor)
 
     def train(model: torch.nn.Module,
-              opt: torch.optim.SGD,
+              opt: OPT,
               obj: torch.nn.CrossEntropyLoss,
               epochs: int,
               libchips: ctypes.CDLL,
@@ -229,8 +233,8 @@ if True:
         current_time = time.time()
         model.train()
         if (args.sigmoid > 0.0) and (args.sigmoid <= 1.0):
-            obj2 = torch.nn.MSELoss().to(device)
-            sigmoid = torch.nn.Sigmoid().to(device)
+            obj2: Optional[torch.nn.MSELoss] = torch.nn.MSELoss().to(device)
+            sigmoid: Optional[torch.nn.Sigmoid] = torch.nn.Sigmoid().to(device)
         else:
             obj2 = None
             sigmoid = None
@@ -241,21 +245,27 @@ if True:
                 while not (batch[0] == 1).any() and args.reroll > random.random():
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
-                pred = model(batch[0].to(device))
+                pred: PRED = model(batch[0].to(device))
                 label_long = batch[1].to(device)
                 label_float = (batch[1] == 1).to(device, dtype=torch.float)
                 with torch.autograd.detect_anomaly():
                     if isinstance(pred, dict):
-                        pred_out = pred.get('out')  # type: ignore
+                        pred_out: torch.Tensor = \
+                            pred.get('out')  # type: ignore
                         out_loss = obj(pred_out, label_long)
-                        pred_aux = pred.get('aux')  # type: ignore
+                        pred_aux: torch.Tensor = \
+                            pred.get('aux')  # type: ignore
                         aux_loss = obj(pred_aux, label_long)
                         loss = 1.0*out_loss + 0.4*aux_loss
                     else:
                         loss = obj(pred, label_long)
                     if obj2 is not None and sigmoid is not None:
                         if isinstance(pred, dict):
-                            non_background = pred.get('out')[:, 1, :, :]
+                            pred_out2 = pred.get('out')
+                            if pred_out is not None:
+                                non_background = pred_out[:, 1, :, :]
+                            else:
+                                raise Exception('Malformed dictionary')
                         else:
                             non_background = pred[:, 1, :, :]
                         non_background = sigmoid(non_background)
@@ -869,7 +879,8 @@ if __name__ == '__main__':
             else:
                 p.grad = None
         if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
+            opt: OPT = torch.optim.SGD(
+                ps, lr=args.learning_rate1, momentum=0.9)
         elif args.optimizer == 'adam':
             opt = torch.optim.Adam(ps, lr=args.learning_rate1)
         elif args.optimizer == 'adamw':
