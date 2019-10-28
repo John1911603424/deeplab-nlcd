@@ -164,33 +164,43 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture', required=True, help='The desired model architecture',
-                            choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
-        parser.add_argument('--backend', help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
+        parser.add_argument('--architecture',
+                            help='The desired model architecture',
+                            required=True, choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
+        parser.add_argument('--backend',
+                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
-        parser.add_argument('--bands', required=True,
-                            help='list of bands to train on (1 indexed)', nargs='+', type=int)
-        parser.add_argument('--by-the-power-of-greyskull', action='store_true')
-        parser.add_argument('--classes', required=True,
-                            help='The number of prediction classes', type=int)
+        parser.add_argument('--bands',
+                            required=True, nargs='+', type=int,
+                            help='list of bands to train on (1 indexed)')
+        parser.add_argument('--by-the-power-of-greyskull',
+                            action='store_true')
+        parser.add_argument('--classes',
+                            required=True, type=int,
+                            help='The number of prediction classes')
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
-        parser.add_argument(
-            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
-        parser.add_argument('--inference-img', required=True,
+        parser.add_argument('--image-nd',
+                            default=None, type=float,
+                            help='image value to ignore - must be on the first band')
+        parser.add_argument('--inference-img',
+                            required=True,
                             help='The location of the image on which to predict')
-        parser.add_argument(
-            '--input-stride', help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md', default=2, type=int)
-        parser.add_argument('--libchips', required=True,
+        parser.add_argument('--input-stride',
+                            default=2, type=int,
+                            help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md')
+        parser.add_argument('--libchips',
+                            required=True,
                             help='The location of libchips.so')
-        parser.add_argument('--model', required=True,
+        parser.add_argument('--model',
+                            required=True,
                             help='The model to use for preditions')
         parser.add_argument('--no-warmup', action='store_true')
         parser.add_argument('--radius', default=10000)
-        parser.add_argument(
-            '--raw-prediction-img', help='The location where the raw prediction image should be stored')
-        parser.add_argument(
-            '--statistics-img-uri', help='The image from which to obtain statistics for normalization')
+        parser.add_argument('--raw-prediction-img',
+                            help='The location where the raw prediction image should be stored')
+        parser.add_argument('--statistics-img-uri',
+                            help='The image from which to obtain statistics for normalization')
         parser.add_argument('--warmup-batch-size', default=16, type=int)
         parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)

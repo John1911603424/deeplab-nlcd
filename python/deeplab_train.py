@@ -23,6 +23,10 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
+OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
+SCALER = Union[int, float]
+INT2INT = Dict[int, int]
+PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
 
 # S3
 if True:
@@ -103,14 +107,14 @@ if True:
 # Training
 if True:
     def numpy_replace(np_arr: np.ndarray,
-                      replacement_dict: Dict[int, int],
-                      label_nd: Union[int, float]) -> np.ndarray:
+                      replacement_dict: INT2INT,
+                      label_nd: SCALER) -> np.ndarray:
         """Replace the contents of np_arr according to the mapping given in replacement_dict
 
         Arguments:
             np_arr {np.ndarray} -- The numpy array to alter
-            replacement_dict {Dict[int, int]} -- The replacement mapping
-            label_nd {Union[int, float]} -- The label nodata
+            replacement_dict {INT2INT} -- The replacement mapping
+            label_nd {SCALER} -- The label nodata
 
         Returns:
             np.ndarray -- The array with replacement performed
@@ -162,28 +166,32 @@ if True:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
             if args.by_the_power_of_greyskull:
-                with np.errstate(all='ignore'):
-                    b2 = raster[2-1]
-                    b3 = raster[3-1]
-                    b4 = raster[4-1]
-                    b5 = raster[5-1]
-                    b8 = raster[8-1]
-                    b11 = raster[11-1]
-                    b12 = raster[12-1]
-                    ndwi = (b3 - b8)/(b3 + b8)
-                    mndwi = (b3 - b11)/(b3 + b11)
-                    wri = (b3 + b4)/(b8 + b12)
-                    ndci = (b5 - b4)/(b5 + b4)
-                    # ndbi = (b11 - b8)/(b11 + b8)
-                    # ndvi = (b8 - b4)/(b8 + b4)
-                inds = [ndwi, mndwi, wri, ndci]
+                epsilon = 1e-7
+                b2 = raster[2-1]
+                b3 = raster[3-1]
+                b4 = raster[4-1]
+                b5 = raster[5-1]
+                b8 = raster[8-1]
+                b11 = raster[11-1]
+                b12 = raster[12-1]
+                ndwi = (b3 - b8)/(b3 + b8 + epsilon)
+                mndwi = (b3 - b11)/(b3 + b11 + epsilon)
+                wri = (b3 + b4)/(b8 + b12 + epsilon)
+                ndci = (b5 - b4)/(b5 + b4 + epsilon)
+                ndbi = (b11 - b8)/(b11 + b8 + epsilon)
+                ndvi = (b8 - b4)/(b8 + b4 + epsilon)
+                # blue = (b2 - args.mus[2-1]) / args.sigmas[2-1]
+                # green = (b3 - args.mus[3-1]) / args.sigmas[3-1]
+                # red = (b4 - args.mus[4-1]) / args.sigmas[4-1]
+                # nir = (b8 - args.mus[8-1]) / args.sigmas[8-1]
+                inds = [ndwi, mndwi, wri, ndci, ndbi, ndvi]
                 raster = np.stack(inds, axis=0)
             else:
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
             # NODATA from rasters
-            image_nds += np.isnan(raster).sum(axis=0) # + -> +=
+            image_nds += np.isnan(raster).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
             nodata = ((image_nds + label_nds) > 0)
@@ -200,7 +208,7 @@ if True:
         return (raster_batch_tensor, label_batch_tensor)
 
     def train(model: torch.nn.Module,
-              opt: torch.optim.SGD,
+              opt: OPT,
               obj: torch.nn.CrossEntropyLoss,
               epochs: int,
               libchips: ctypes.CDLL,
@@ -227,24 +235,50 @@ if True:
         """
         current_time = time.time()
         model.train()
+        if (args.sigmoid > 0.0) and (args.sigmoid <= 1.0):
+            obj2: Optional[torch.nn.MSELoss] = torch.nn.MSELoss().to(device)
+            sigmoid: Optional[torch.nn.Sigmoid] = torch.nn.Sigmoid().to(device)
+        else:
+            obj2 = None
+            sigmoid = None
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
+                while not (batch[1] == 1).any() and args.reroll > random.random():
+                    batch = get_batch(libchips, args)
                 opt.zero_grad()
-                pred = model(batch[0].to(device))
-                label = batch[1].to(device)
-                if isinstance(pred, dict):
-                    pred_out: torch.Tensor = pred.get('out')  # type: ignore
-                    pred_aux: torch.Tensor = pred.get('aux')  # type: ignore
-                    out_loss = obj(pred_out, label)
-                    aux_loss = obj(pred_aux, label)
-                    loss = 1.0*out_loss + 0.4*aux_loss
-                else:
-                    loss = 1.0*obj(pred, label)
-                loss.backward()
-                opt.step()
-                avg_loss = avg_loss + loss.item()
+                pred: PRED = model(batch[0].to(device))
+                label_long = batch[1].to(device)
+                label_float = (batch[1] == 1).to(device, dtype=torch.float)
+                with torch.autograd.detect_anomaly():
+                    if isinstance(pred, dict):
+                        pred_out: torch.Tensor = \
+                            pred.get('out')  # type: ignore
+                        out_loss = obj(pred_out, label_long)
+                        pred_aux: torch.Tensor = \
+                            pred.get('aux')  # type: ignore
+                        aux_loss = obj(pred_aux, label_long)
+                        loss = 1.0*out_loss + 0.4*aux_loss
+                    else:
+                        loss = obj(pred, label_long)
+                    if obj2 is not None and sigmoid is not None:
+                        if isinstance(pred, dict):
+                            pred_out2 = pred.get('out')
+                            if pred_out is not None:
+                                non_background = pred_out[:, 1, :, :]
+                            else:
+                                raise Exception('Malformed dictionary')
+                        else:
+                            non_background = pred[:, 1, :, :]
+                        non_background = sigmoid(non_background)
+                        sigmoid_loss = obj2(non_background, label_float)
+                        loss = args.sigmoid*sigmoid_loss + \
+                            (1.0-args.sigmoid)*loss
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
+                    opt.step()
+                    avg_loss = avg_loss + loss.item()
 
             avg_loss = avg_loss / args.max_epoch_size
             if no_checkpoints or avg_loss < args.loss_cutoff:
@@ -392,57 +426,80 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture', required=True, help='The desired model architecture',
-                            choices=['resnet18', 'resnet18-low', 'resnet34', 'resnet101', 'stock'])
-        parser.add_argument('--backend', help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
+        parser.add_argument('--architecture',
+                            required=True,
+                            help='The desired model architecture',
+                            choices=['resnet18', 'resnet18-low',
+                                     'resnet34', 'resnet101', 'stock'])
+        parser.add_argument('--backend',
+                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
-        parser.add_argument('--bands', required=True,
+        parser.add_argument('--bands',
+                            required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
-        parser.add_argument('--by-the-power-of-greyskull', action='store_true')
-        parser.add_argument(
-            '--disable-eval', help='Disable evaluation after training', action='store_true')
+        parser.add_argument('--by-the-power-of-greyskull',
+                            help='Pass this flag to enable special behavior',
+                            action='store_true')
+        parser.add_argument('--disable-eval',
+                            help='Disable evaluation after training',
+                            action='store_true')
         parser.add_argument('--epochs1', default=5, type=int)
         parser.add_argument('--epochs2', default=0, type=int)
         parser.add_argument('--epochs3', default=5, type=int)
         parser.add_argument('--epochs4', default=15, type=int)
-        parser.add_argument(
-            '--image-nd', help='image value to ignore - must be on the first band', default=None, type=float)
-        parser.add_argument(
-            '--input-stride', help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md', default=2, type=int)
-        parser.add_argument('--label-img', required=True,
+        parser.add_argument('--image-nd',
+                            default=None, type=float,
+                            help='image value to ignore - must be on the first band')
+        parser.add_argument('--input-stride',
+                            default=2, type=int,
+                            help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md')
+        parser.add_argument('--label-img',
+                            required=True,
                             help='labels to train')
-        parser.add_argument('--label-map', help='comma separated list of mappings to apply to training labels',
+        parser.add_argument('--label-map',
+                            help='comma separated list of mappings to apply to training labels',
                             action=StoreDictKeyPair, default=None)
-        parser.add_argument(
-            '--label-nd', help='label to ignore', default=None, type=int)
-        parser.add_argument(
-            '--learning-rate1', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
-        parser.add_argument(
-            '--learning-rate2', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
-        parser.add_argument(
-            '--learning-rate3', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
-        parser.add_argument(
-            '--learning-rate4', help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.001, type=float)
+        parser.add_argument('--label-nd',
+                            default=None, type=int,
+                            help='label to ignore')
+        parser.add_argument('--learning-rate1',
+                            default=0.005, type=float,
+                            help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)')
+        parser.add_argument('--learning-rate2',
+                            default=0.001, type=float,
+                            help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)')
+        parser.add_argument('--learning-rate3',
+                            help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)', default=0.005, type=float)
+        parser.add_argument('--learning-rate4',
+                            default=0.001, type=float,
+                            help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)')
         parser.add_argument('--libchips', required=True)
         parser.add_argument('--loss-cutoff', default=0.10, type=float)
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
-        parser.add_argument(
-            '--max-eval-windows', help='The maximum number of windows that will be used for evaluation', default=sys.maxsize, type=int)
+        parser.add_argument('--max-eval-windows',
+                            default=sys.maxsize, type=int,
+                            help='The maximum number of windows that will be used for evaluation')
         parser.add_argument('--optimizer', default='sgd',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', default=16, type=int)
-        parser.add_argument('--s3-bucket', required=True,
+        parser.add_argument('--reroll', default=0.90, type=float)
+        parser.add_argument('--s3-bucket',
+                            required=True,
                             help='prefix to apply when saving models to s3')
-        parser.add_argument('--s3-prefix', required=True,
+        parser.add_argument('--s3-prefix',
+                            required=True,
                             help='prefix to apply when saving models to s3')
-        parser.add_argument(
-            '--start-from', help='The saved model to start the fourth phase from')
-        parser.add_argument('--training-img', required=True,
+        parser.add_argument('--sigmoid', default=0.0, type=float)
+        parser.add_argument('--start-from',
+                            help='The saved model to start the fourth phase from')
+        parser.add_argument('--training-img',
+                            required=True,
                             help='the input that you are training to produce labels for')
-        parser.add_argument(
-            '--watchdog-seconds', help='The number of seconds that can pass without activity before the program is terminated (0 to disable)', default=0, type=int)
+        parser.add_argument('--watchdog-seconds',
+                            default=0, type=int,
+                            help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
         parser.add_argument('--weights', nargs='+', required=True, type=float)
         parser.add_argument('--window-size', default=32, type=int)
         return parser
@@ -627,7 +684,7 @@ if __name__ == '__main__':
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     if args.by_the_power_of_greyskull:
-        args.band_count = 4
+        args.band_count = 6
     else:
         args.band_count = len(args.bands)
 
@@ -825,7 +882,8 @@ if __name__ == '__main__':
             else:
                 p.grad = None
         if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate1, momentum=0.9)
+            opt: OPT = torch.optim.SGD(
+                ps, lr=args.learning_rate1, momentum=0.9)
         elif args.optimizer == 'adam':
             opt = torch.optim.Adam(ps, lr=args.learning_rate1)
         elif args.optimizer == 'adamw':
