@@ -127,12 +127,16 @@ if True:
         return b
 
     def get_batch(libchips: ctypes.CDLL,
-                  args: argparse.Namespace) -> Tuple[torch.Tensor, torch.Tensor]:
+                  args: argparse.Namespace,
+                  batch_multiplier: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
             args {argparse.Namespace} -- The arguments dictionary
+
+        Keyword Arguments:
+            batch_multiplier {int} -- How many base batches to fetch at once
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
@@ -147,7 +151,7 @@ if True:
 
         rasters = []
         labels = []
-        for _ in range(args.batch_size):
+        for _ in range(args.batch_size * batch_multiplier):
             libchips.get_next(temp1_ptr, temp2_ptr)
             rasters.append(temp1.copy())
             labels.append(temp2.copy())
@@ -246,7 +250,8 @@ if True:
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
                     if 'binary' in args.architecture:
-                        label_float = (batch[1] == 1).to(device, dtype=torch.float)
+                        label_float = (batch[1] == 1).to(
+                            device, dtype=torch.float)
                         loss = obj(pred[:, 0, :, :], label_float)
                     else:
                         label_long = batch[1].to(device)
@@ -310,8 +315,8 @@ if True:
             fns = [0.0 for x in range(num_classes)]
             tns = [0.0 for x in range(num_classes)]
 
-            for _ in range(args.max_eval_windows // args.batch_size):
-                batch = get_batch(libchips, args)
+            for _ in range(args.max_eval_windows // (4 * args.batch_size)):
+                batch = get_batch(libchips, args, 4)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
