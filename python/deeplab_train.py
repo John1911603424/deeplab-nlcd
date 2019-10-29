@@ -250,7 +250,8 @@ if True:
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
                     if 'binary' in args.architecture:
-                        label_float = (batch[1] == 1).to(device, dtype=torch.float)
+                        label_float = (batch[1] == 1).to(
+                            device, dtype=torch.float)
                         pred_sliced = pred[:, 0, :, :]
                         loss = obj(pred_sliced, label_float)
                     else:
@@ -323,7 +324,7 @@ if True:
                 out = out.data.cpu().numpy()
                 if 'binary' in args.architecture:
                     out = np.array(out > 0.5, dtype=np.long)
-                    out = out[:,0,:,:]
+                    out = out[:, 0, :, :]
                 else:
                     out = np.apply_along_axis(np.argmax, 1, out)
 
@@ -512,6 +513,7 @@ if True:
             inplanes = 512
             self.classifier = torch.nn.Conv2d(
                 in_channels=inplanes, out_channels=1, kernel_size=1)
+            # self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(inplanes, 1)
             self.backbone.conv1 = torch.nn.Conv2d(
                 band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
@@ -858,7 +860,7 @@ if __name__ == '__main__':
 
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
     if 'binary' in args.architecture:
-        obj = torch.nn.MSELoss(reduction='sum').to(device)
+        obj = torch.nn.BCEWithLogitsLoss(reduction='sum').to(device)
     else:
         obj = torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
