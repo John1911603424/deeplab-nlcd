@@ -24,7 +24,7 @@ WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
 INT2INT = Dict[int, int]
-OBJ = Union[torch.nn.CrossEntropyLoss, torch.nn.MSELoss]
+OBJ = Union[torch.nn.CrossEntropyLoss, torch.nn.BCEWithLogitsLoss]
 OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
 PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
 SCALER = Union[int, float]
@@ -504,6 +504,100 @@ if True:
 
 # Architectures
 if True:
+    class CheapLabBinary(torch.nn.Module):
+        def __init__(self, band_count, preprogrammed=False):
+            super(CheapLabBinary, self).__init__()
+            kernel_size = 3
+            padding_size = (kernel_size - 1) // 2
+            intermediate_channels1 = band_count
+            intermediate_channels2 = 20
+
+            self.conv1 = torch.nn.Conv2d(
+                band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
+            self.conv_numerator = torch.nn.Conv2d(
+                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=False)
+            self.batch_norm_numerator = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.conv_denominator = torch.nn.Conv2d(
+                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
+            self.batch_norm_denomenator = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.batch_norm_quotient = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.classifier = torch.nn.Conv2d(
+                intermediate_channels2, 1, kernel_size=1)
+
+            if band_count == 12 and preprogrammed == True:
+                with torch.no_grad():
+                    self.conv1.weight[:] = 1e-6
+                    self.conv1.weight[0, 2-1] = 1.0  # b2
+                    self.conv1.weight[1, 3-1] = 1.0  # b3
+                    self.conv1.weight[2, 4-1] = 1.0  # b4
+                    self.conv1.weight[3, 5-1] = 1.0  # b5
+                    self.conv1.weight[4, 8-1] = 1.0  # b8
+                    self.conv1.weight[5, 11-1] = 1.0  # b11
+                    self.conv1.weight[6, 12-1] = 1.0  # b12
+
+                    self.conv_numerator.weight[:] = 1e-6
+                    self.conv_denominator.weight[:] = 1e-6
+
+                    # ndwi
+                    self.conv_numerator.weight[0, 1] = 1.0
+                    self.conv_numerator.weight[0, 4] = -1.0
+                    self.conv_denominator.weight[0, 1] = 1.0
+                    self.conv_denominator.weight[0, 4] = 1.0
+
+                    # mndwi
+                    self.conv_numerator.weight[1, 1] = 1.0
+                    self.conv_numerator.weight[1, 5] = -1.0
+                    self.conv_denominator.weight[1, 1] = 1.0
+                    self.conv_denominator.weight[1, 5] = 1.0
+
+                    # wri
+                    self.conv_numerator.weight[2, 4] = 1.0
+                    self.conv_numerator.weight[2, 6] = -1.0
+                    self.conv_denominator.weight[2, 4] = 1.0
+                    self.conv_denominator.weight[2, 6] = 1.0
+
+                    # ndci
+                    self.conv_numerator.weight[3, 3] = 1.0
+                    self.conv_numerator.weight[3, 2] = -1.0
+                    self.conv_denominator.weight[3, 3] = 1.0
+                    self.conv_denominator.weight[3, 2] = 1.0
+
+                    # ndbi
+                    self.conv_numerator.weight[4, 5] = 1.0
+                    self.conv_numerator.weight[4, 4] = -1.0
+                    self.conv_denominator.weight[4, 5] = 1.0
+                    self.conv_denominator.weight[4, 4] = 1.0
+
+                    # ndvi
+                    self.conv_numerator.weight[5, 4] = 1.0
+                    self.conv_numerator.weight[5, 2] = -1.0
+                    self.conv_denominator.weight[5, 4] = 1.0
+                    self.conv_denominator.weight[5, 2] = 1.0
+
+                    if False:
+                        self.classifier.weight[:] = 1e-6
+                        self.classifier.weight[0, 0] = 0.5  # yes to ndwi
+                        self.classifier.weight[0, 1] = 0.5  # yes to mndwi
+                        self.classifier.weight[0, 5] = -2.0  # no to ndvi
+
+        def forward(self, x):
+            x = self.conv1(x)
+            numerator = self.conv_numerator(x)
+            numerator = self.batch_norm_numerator(numerator)
+            denomenator = self.conv_denominator(x)
+            denomenator = self.batch_norm_denomenator(denomenator)
+            x = numerator / (denomenator + 1e-7)
+            x = self.batch_norm_quotient(x)
+            x = self.classifier(x)
+            return x
+
+    def make_model_cheaplab_binary(band_count, input_stride=1, class_count=1, divisor=1):
+        cheaplab = CheapLabBinary(band_count)
+        return cheaplab
+
     class DeepLabResnet18Binary(torch.nn.Module):
         def __init__(self, band_count, input_stride, divisor):
             super(DeepLabResnet18Binary, self).__init__()
@@ -840,7 +934,7 @@ if __name__ == '__main__':
         print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
 
     if args.architecture == 'resnet18-binary':
-        make_model = make_model_resnet18_binary
+        make_model = make_model_cheaplab_binary
     elif args.architecture == 'resnet18':
         make_model = make_model_resnet18
     elif args.architecture == 'resnet34':
