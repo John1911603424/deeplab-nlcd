@@ -244,15 +244,15 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
-                while not (batch[1] == 1).any() and args.reroll > random.random():
+                while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
                     if 'binary' in args.architecture:
-                        label_float = (batch[1] == 1).to(
-                            device, dtype=torch.float)
-                        loss = obj(pred[:, 0, :, :], label_float)
+                        label_float = (batch[1] == 1).to(device, dtype=torch.float)
+                        pred_sliced = pred[:, 0, :, :]
+                        loss = obj(pred_sliced, label_float)
                     else:
                         label_long = batch[1].to(device)
                         if isinstance(pred, dict):
@@ -266,13 +266,12 @@ if True:
                         else:
                             loss = obj(pred, label_long)
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
                     opt.step()
                     avg_loss = avg_loss + loss.item()
 
             avg_loss = avg_loss / args.max_epoch_size
-            if no_checkpoints or avg_loss < args.loss_cutoff:
-                libchips.recenter(1)
+            libchips.recenter(1)
 
             last_time = current_time
             current_time = time.time()
@@ -307,7 +306,7 @@ if True:
             args {argparse.Namespace} -- The arguments dictionary
             arg_hash {str} -- The hashed arguments
         """
-        model.train()  # sic
+        model.eval()
         with torch.no_grad():
             num_classes = len(args.weights)
             tps = [0.0 for x in range(num_classes)]
@@ -315,14 +314,16 @@ if True:
             fns = [0.0 for x in range(num_classes)]
             tns = [0.0 for x in range(num_classes)]
 
-            for _ in range(args.max_eval_windows // (4 * args.batch_size)):
-                batch = get_batch(libchips, args, 4)
+            batch_mult = 4
+            for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
+                batch = get_batch(libchips, args, batch_mult)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
                 out = out.data.cpu().numpy()
                 if 'binary' in args.architecture:
                     out = np.array(out > 0.5, dtype=np.long)
+                    out = out[:,0,:,:]
                 else:
                     out = np.apply_along_axis(np.argmax, 1, out)
 
@@ -466,7 +467,6 @@ if True:
                             default=0.001, type=float,
                             help='float (probably between 10^-6 and 1) to tune SGD (see https://arxiv.org/abs/1206.5533)')
         parser.add_argument('--libchips', required=True)
-        parser.add_argument('--loss-cutoff', default=0.10, type=float)
         parser.add_argument('--max-epoch-size', default=sys.maxsize, type=int)
         parser.add_argument('--max-eval-windows',
                             default=sys.maxsize, type=int,
@@ -506,16 +506,14 @@ if True:
     class DeepLabResnet18Binary(torch.nn.Module):
         def __init__(self, band_count, input_stride, divisor):
             super(DeepLabResnet18Binary, self).__init__()
-            class_count = 1
             resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet18, return_layers={'layer4': 'out'})
             inplanes = 512
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                inplanes, class_count)
+            self.classifier = torch.nn.Conv2d(
+                in_channels=inplanes, out_channels=1, kernel_size=1)
             self.backbone.conv1 = torch.nn.Conv2d(
                 band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-            self.sigmoid = torch.nn.Sigmoid()
 
             if input_stride == 1:
                 self.factor = 16 // divisor
@@ -534,8 +532,6 @@ if True:
             x = self.classifier(x)
             x = torch.nn.functional.interpolate(
                 x, size=[w, h], mode='bilinear', align_corners=False)
-
-            x = self.sigmoid(x)
 
             return x
 
@@ -862,7 +858,7 @@ if __name__ == '__main__':
 
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
     if 'binary' in args.architecture:
-        obj = torch.nn.MSELoss().to(device)
+        obj = torch.nn.MSELoss(reduction='sum').to(device)
     else:
         obj = torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
@@ -907,14 +903,20 @@ if __name__ == '__main__':
 
         for p in deeplab.parameters():
             p.requires_grad = False
-        last_class = deeplab.classifier[4]
+        if 'binary' not in args.architecture:
+            last_class = deeplab.classifier[4]
+        else:
+            last_class = deeplab.classifier
         for p in last_class.parameters():
             p.requires_grad = True
         if 'binary' not in args.architecture:
             last_class_aux = deeplab.aux_classifier[4]
             for p in last_class_aux.parameters():
                 p.requires_grad = True
-        input_filters = deeplab.backbone.conv1
+        if hasattr(deeplab, 'backbone'):
+            input_filters = deeplab.backbone.conv1
+        else:
+            input_filters = deeplab.conv1
         for p in input_filters.parameters():
             p.requires_grad = True
 
@@ -966,14 +968,20 @@ if __name__ == '__main__':
 
         for p in deeplab.parameters():
             p.requires_grad = False
-        last_class = deeplab.classifier[4]
+        if 'binary' not in args.architecture:
+            last_class = deeplab.classifier[4]
+        else:
+            last_class = deeplab.classifier
         for p in last_class.parameters():
             p.requires_grad = True
         if 'binary' not in args.architecture:
             last_class_aux = deeplab.aux_classifier[4]
             for p in last_class_aux.parameters():
                 p.requires_grad = True
-        input_filters = deeplab.backbone.conv1
+        if hasattr(deeplab, 'backbone'):
+            input_filters = deeplab.backbone.conv1
+        else:
+            input_filters = deeplab.conv1
         for p in input_filters.parameters():
             p.requires_grad = True
 
