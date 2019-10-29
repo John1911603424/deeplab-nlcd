@@ -505,7 +505,7 @@ if True:
 # Architectures
 if True:
     class CheapLabBinary(torch.nn.Module):
-        def __init__(self, band_count, preprogrammed=False):
+        def __init__(self, band_count):
             super(CheapLabBinary, self).__init__()
             kernel_size = 3
             padding_size = (kernel_size - 1) // 2
@@ -524,64 +524,8 @@ if True:
                 intermediate_channels2)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            self.classifier = torch.nn.Conv2d(
-                intermediate_channels2, 1, kernel_size=1)
-
-            if band_count == 12 and preprogrammed == True:
-                with torch.no_grad():
-                    self.conv1.weight[:] = 1e-6
-                    self.conv1.weight[0, 2-1] = 1.0  # b2
-                    self.conv1.weight[1, 3-1] = 1.0  # b3
-                    self.conv1.weight[2, 4-1] = 1.0  # b4
-                    self.conv1.weight[3, 5-1] = 1.0  # b5
-                    self.conv1.weight[4, 8-1] = 1.0  # b8
-                    self.conv1.weight[5, 11-1] = 1.0  # b11
-                    self.conv1.weight[6, 12-1] = 1.0  # b12
-
-                    self.conv_numerator.weight[:] = 1e-6
-                    self.conv_denominator.weight[:] = 1e-6
-
-                    # ndwi
-                    self.conv_numerator.weight[0, 1] = 1.0
-                    self.conv_numerator.weight[0, 4] = -1.0
-                    self.conv_denominator.weight[0, 1] = 1.0
-                    self.conv_denominator.weight[0, 4] = 1.0
-
-                    # mndwi
-                    self.conv_numerator.weight[1, 1] = 1.0
-                    self.conv_numerator.weight[1, 5] = -1.0
-                    self.conv_denominator.weight[1, 1] = 1.0
-                    self.conv_denominator.weight[1, 5] = 1.0
-
-                    # wri
-                    self.conv_numerator.weight[2, 4] = 1.0
-                    self.conv_numerator.weight[2, 6] = -1.0
-                    self.conv_denominator.weight[2, 4] = 1.0
-                    self.conv_denominator.weight[2, 6] = 1.0
-
-                    # ndci
-                    self.conv_numerator.weight[3, 3] = 1.0
-                    self.conv_numerator.weight[3, 2] = -1.0
-                    self.conv_denominator.weight[3, 3] = 1.0
-                    self.conv_denominator.weight[3, 2] = 1.0
-
-                    # ndbi
-                    self.conv_numerator.weight[4, 5] = 1.0
-                    self.conv_numerator.weight[4, 4] = -1.0
-                    self.conv_denominator.weight[4, 5] = 1.0
-                    self.conv_denominator.weight[4, 4] = 1.0
-
-                    # ndvi
-                    self.conv_numerator.weight[5, 4] = 1.0
-                    self.conv_numerator.weight[5, 2] = -1.0
-                    self.conv_denominator.weight[5, 4] = 1.0
-                    self.conv_denominator.weight[5, 2] = 1.0
-
-                    if False:
-                        self.classifier.weight[:] = 1e-6
-                        self.classifier.weight[0, 0] = 0.5  # yes to ndwi
-                        self.classifier.weight[0, 1] = 0.5  # yes to mndwi
-                        self.classifier.weight[0, 5] = -2.0  # no to ndvi
+            self.classifier = torch.nn.Conv2d(intermediate_channels2, 1, kernel_size=1)
+            # self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(intermediate_channels2, 1)
 
         def forward(self, x):
             x = self.conv1(x)
