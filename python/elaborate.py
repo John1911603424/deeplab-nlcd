@@ -48,19 +48,31 @@ if __name__ == '__main__':
     )
 
     for filename in args.geojson:
-        rasterized_data = np.zeros(raster_data.shape, dtype=np.int32)
         shapes = []
+        rasterized_shapes = np.zeros(raster_data.shape, dtype=np.int32)
+
         with open(filename) as geojson:
             vector_data = json.load(geojson)
-        for feature in vector_data.get('features'):
+        features = vector_data.get('features')
+        for feature in features:
             s1 = shapely.geometry.shape(feature.get('geometry'))
             s2 = shapely.ops.transform(projection, s1)
             shapes.append(s2)
         shapes = list(zip(shapes, range(1, len(shapes) + 1)))
 
         rasterio.features.rasterize(
-            shapes, out=rasterized_data, transform=raster_transform)
+            shapes, out=rasterized_shapes, transform=raster_transform)
 
         if args.debug_output:
             with rio.open('{}.tif'.format(filename), 'w', **profile) as output_ds:
-                output_ds.write(rasterized_data, indexes=1)
+                output_ds.write(rasterized_shapes, indexes=1)
+
+        for feature, (_, i) in zip(features, shapes):
+            shape_mask = (rasterized_shapes == i)
+            properties = feature.get('properties')
+            count = shape_mask.sum()
+            score = (raster_data * shape_mask).sum() / float(count)
+            properties['score'] = score
+            properties['count'] = count
+
+        print(vector_data)
