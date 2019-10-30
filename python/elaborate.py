@@ -6,14 +6,12 @@ import functools
 import json
 from typing import *
 
-import boto3  # type: ignore
-
 import numpy as np  # type: ignore
-import pyproj
+import pyproj  # type: ignore
 import rasterio as rio  # type: ignore
-import rasterio.features
-import shapely.geometry
-import shapely.ops
+import rasterio.features  # type: ignore
+import shapely.geometry  # type: ignore
+import shapely.ops  # type: ignore
 
 
 def cli_parser() -> argparse.ArgumentParser:
