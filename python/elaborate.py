@@ -3,6 +3,7 @@
 import argparse
 import copy
 import functools
+import json
 from typing import *
 
 import boto3  # type: ignore
@@ -10,6 +11,9 @@ import boto3  # type: ignore
 import numpy as np  # type: ignore
 import pyproj
 import rasterio as rio  # type: ignore
+import rasterio.features
+import shapely.geometry
+import shapely.ops
 
 
 def cli_parser() -> argparse.ArgumentParser:
@@ -35,7 +39,6 @@ if __name__ == '__main__':
         raster_data = raster_ds.read(args.raster_band)
         raster_crs = raster_ds.crs.to_proj4()
         raster_transform = raster_ds.transform
-        print(raster_crs, type(raster_crs))
 
     projection = functools.partial(
         pyproj.transform,
@@ -43,4 +46,16 @@ if __name__ == '__main__':
         pyproj.Proj(raster_crs)
     )
 
-    rasterized_data = np.zeros(raster_data.shape, dtype=np.int32)
+    for filename in args.geojson:
+        rasterized_data = np.zeros(raster_data.shape, dtype=np.int32)
+        shapes = []
+        with open(filename) as geojson:
+            vector_data = json.load(geojson)
+        for feature in vector_data.get('features'):
+            s1 = shapely.geometry.shape(feature.get('geometry'))
+            s2 = shapely.ops.transform(projection, s1)
+            shapes.append(s2)
+        shapes = list(zip(shapes, range(1, len(shapes) + 1)))
+
+        rasterio.features.rasterize(
+            shapes, out=rasterized_data, transform=raster_transform)
