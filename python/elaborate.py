@@ -22,6 +22,7 @@ def cli_parser() -> argparse.ArgumentParser:
     parser.add_argument('--raster-band', default=1, type=int)
     parser.add_argument('--geojson', required=True, nargs='+', type=str)
     parser.add_argument('--geojson-crs', default='+init=epsg:4326', type=str)
+    parser.add_argument('--debug-output', action='store_true')
     return parser
 
 
@@ -59,3 +60,7 @@ if __name__ == '__main__':
 
         rasterio.features.rasterize(
             shapes, out=rasterized_data, transform=raster_transform)
+
+        if args.debug_output:
+            with rio.open('{}.tif'.format(filename), 'w', **profile) as output_ds:
+                output_ds.write(rasterized_data, indexes=1)
