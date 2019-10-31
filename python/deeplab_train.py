@@ -667,7 +667,7 @@ if True:
         parser.add_argument('--architecture',
                             required=True,
                             help='The desired model architecture',
-                            choices=['resnet18-binary', 'resnet18', 'resnet34', 'resnet101', 'stock'])
+                            choices=['cheaplab-binary', 'resnet18-binary', 'resnet18', 'resnet34', 'resnet101', 'stock'])
         parser.add_argument('--backend',
                             help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
@@ -747,9 +747,9 @@ if True:
     class CheapLabBinary(torch.nn.Module):
         def __init__(self, band_count):
             super(CheapLabBinary, self).__init__()
-            kernel_size = 3
+            kernel_size = 1
             padding_size = (kernel_size - 1) // 2
-            intermediate_channels1 = band_count
+            intermediate_channels1 = 20
             intermediate_channels2 = 20
 
             self.conv1 = torch.nn.Conv2d(
@@ -764,7 +764,6 @@ if True:
                 intermediate_channels2)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            # self.classifier = torch.nn.Conv2d(intermediate_channels2, 1, kernel_size=1)
             self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
                 intermediate_channels2, 1)
 
@@ -1108,7 +1107,9 @@ if __name__ == '__main__':
         args.batch_size = 2
         print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
 
-    if args.architecture == 'resnet18-binary':
+    if args.architecture == 'cheaplab-binary':
+        make_model = make_model_cheaplab_binary
+    elif args.architecture == 'resnet18-binary':
         make_model = make_model_resnet18_binary
     elif args.architecture == 'resnet18':
         make_model = make_model_resnet18
