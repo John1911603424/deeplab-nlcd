@@ -84,7 +84,7 @@ if True:
         raster_batch = []
         for raster in rasters:
 
-            if args.by_the_power_of_greyskull:
+            if False and args.by_the_power_of_greyskull:
                 with np.errstate(all='ignore'):
                     b2 = raster[2-1]
                     b3 = raster[3-1]
@@ -143,7 +143,7 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if args.by_the_power_of_greyskull:
+            if False and args.by_the_power_of_greyskull:
                 with np.errstate(all='ignore'):
                     b2 = image[2-1]
                     b3 = image[3-1]
@@ -193,15 +193,14 @@ if True:
         parser = argparse.ArgumentParser()
         parser.add_argument('--architecture',
                             help='The desired model architecture',
-                            required=True, choices=['resnet18', 'resnet34', 'resnet101', 'stock'])
+                            required=True, choices=['cheaplab-binary', 'resnet18-binary', 'resnet18', 'resnet34', 'resnet101', 'stock'])
         parser.add_argument('--backend',
                             help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands',
                             required=True, nargs='+', type=int,
                             help='list of bands to train on (1 indexed)')
-        parser.add_argument('--by-the-power-of-greyskull',
-                            action='store_true')
+        # parser.add_argument('--by-the-power-of-greyskull', action='store_true')
         parser.add_argument('--classes',
                             required=True, type=int,
                             help='The number of prediction classes')
@@ -235,8 +234,82 @@ if True:
 
 # Architectures
 if True:
+    class CheapLabBinary(torch.nn.Module):
+        def __init__(self, band_count):
+            super(CheapLabBinary, self).__init__()
+            kernel_size = 1
+            padding_size = (kernel_size - 1) // 2
+            intermediate_channels1 = 20
+            intermediate_channels2 = 20
+
+            self.conv1 = torch.nn.Conv2d(
+                band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
+            self.conv_numerator = torch.nn.Conv2d(
+                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=False)
+            self.batch_norm_numerator = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.conv_denominator = torch.nn.Conv2d(
+                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
+            self.batch_norm_denomenator = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.batch_norm_quotient = torch.nn.BatchNorm2d(
+                intermediate_channels2)
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                intermediate_channels2, 1)
+
+        def forward(self, x):
+            x = self.conv1(x)
+            numerator = self.conv_numerator(x)
+            numerator = self.batch_norm_numerator(numerator)
+            denomenator = self.conv_denominator(x)
+            denomenator = self.batch_norm_denomenator(denomenator)
+            x = numerator / (denomenator + 1e-7)
+            x = self.batch_norm_quotient(x)
+            x = self.classifier(x)
+            return x
+
+    def make_model_cheaplab_binary(band_count, input_stride=1, class_count=1, divisor=1):
+        cheaplab = CheapLabBinary(band_count)
+        return cheaplab
+
+    class DeepLabResnet18Binary(torch.nn.Module):
+        def __init__(self, band_count, input_stride, divisor):
+            super(DeepLabResnet18Binary, self).__init__()
+            resnet18 = torchvision.models.resnet.resnet18(pretrained=False)
+            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
+                resnet18, return_layers={'layer4': 'out'})
+            inplanes = 512
+            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
+                inplanes, 1)
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+
+            if input_stride == 1:
+                self.factor = 16 // divisor
+            else:
+                self.factor = 32 // divisor
+
+        def forward(self, x):
+            [w, h] = x.shape[-2:]
+
+            features = self.backbone(torch.nn.functional.interpolate(
+                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
+
+            result = {}
+
+            x = features['out']
+            x = self.classifier(x)
+            x = torch.nn.functional.interpolate(
+                x, size=[w, h], mode='bilinear', align_corners=False)
+
+            return x
+
+    def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1):
+        deeplab = DeepLabResnet18Binary(band_count, input_stride, divisor)
+        return deeplab
+
     class DeepLabResnet18(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count):
+        def __init__(self, band_count, input_stride, class_count, divisor):
             super(DeepLabResnet18, self).__init__()
             resnet18 = torchvision.models.resnet.resnet18(pretrained=False)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
@@ -251,9 +324,9 @@ if True:
                 band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
             if input_stride == 1:
-                self.factor = 16
+                self.factor = 16 // divisor
             else:
-                self.factor = 32
+                self.factor = 32 // divisor
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -277,12 +350,13 @@ if True:
 
             return result
 
-    def make_model_resnet18(band_count, input_stride=1, class_count=2):
-        deeplab = DeepLabResnet18(band_count, input_stride, class_count)
+    def make_model_resnet18(band_count, input_stride=1, class_count=2, divisor=1):
+        deeplab = DeepLabResnet18(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
     class DeepLabResnet34(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count):
+        def __init__(self, band_count, input_stride, class_count, divisor):
             super(DeepLabResnet34, self).__init__()
             resnet34 = torchvision.models.resnet.resnet34(pretrained=False)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
@@ -297,9 +371,9 @@ if True:
                 band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
             if input_stride == 1:
-                self.factor = 16
+                self.factor = 16 // divisor
             else:
-                self.factor = 32
+                self.factor = 32 // divisor
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -323,17 +397,18 @@ if True:
 
             return result
 
-    def make_model_resnet34(band_count, input_stride=1, class_count=2):
-        deeplab = DeepLabResnet34(band_count, input_stride, class_count)
+    def make_model_resnet34(band_count, input_stride=1, class_count=2, divisor=1):
+        deeplab = DeepLabResnet34(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
     class DeepLabResnet101(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count):
+        def __init__(self, band_count, input_stride, class_count, divisor):
             super(DeepLabResnet101, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet101(
+            resnet101 = torchvision.models.resnet.resnet101(
                 pretrained=False, replace_stride_with_dilation=[False, True, True])
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
+                resnet101, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 2048
             self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
                 inplanes, class_count)
@@ -344,9 +419,9 @@ if True:
                 band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
             if input_stride == 1:
-                self.factor = 4
+                self.factor = 4 // divisor
             else:
-                self.factor = 8
+                self.factor = 8 // divisor
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -370,11 +445,12 @@ if True:
 
             return result
 
-    def make_model_resnet101(band_count, input_stride=1, class_count=2):
-        deeplab = DeepLabResnet101(band_count, input_stride, class_count)
+    def make_model_resnet101(band_count, input_stride=1, class_count=2, divisor=1):
+        deeplab = DeepLabResnet101(
+            band_count, input_stride, class_count, divisor)
         return deeplab
 
-    def make_model_stock(band_count, input_stride=1, class_count=2):
+    def make_model_stock(band_count, input_stride=1, class_count=2, divisor=1):
         deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
             pretrained=False)
         last_class = deeplab.classifier[4] = torch.nn.Conv2d(
@@ -396,7 +472,7 @@ if __name__ == '__main__':
     mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    if args.by_the_power_of_greyskull:
+    if False and args.by_the_power_of_greyskull:
         args.band_count = 4
     else:
         args.band_count = len(args.bands)
@@ -421,7 +497,11 @@ if __name__ == '__main__':
         s3.download_file(bucket, prefix, '/tmp/deeplab.pth')
         del s3
 
-    if args.architecture == 'resnet18':
+    if args.architecture == 'cheaplab-binary':
+        make_model = make_model_cheaplab_binary
+    elif args.architecture == 'resnet18-binary':
+        make_model = make_model_resnet18_binary
+    elif args.architecture == 'resnet18':
         make_model = make_model_resnet18
     elif args.architecture == 'resnet34':
         make_model = make_model_resnet34
@@ -557,10 +637,11 @@ if __name__ == '__main__':
                         out = out.data.cpu().numpy()
                         for i in range(0, args.classes):
                             ds_raw.write(out[0, i], window=window, indexes=i+1)
-                        out = np.apply_along_axis(np.argmax, 1, out)
-                        out = np.array(out, dtype=np.uint8)
-                        out = out * (0xff // (args.classes-1))
-                        ds_final.write(out[0], window=window, indexes=1)
+                        if args.classes > 1:
+                            out = np.apply_along_axis(np.argmax, 1, out)
+                            out = np.array(out, dtype=np.uint8)
+                            out = out * (0xff // (args.classes-1))
+                            ds_final.write(out[0], window=window, indexes=1)
                 print('{}% complete'.format(
                     (int)(100.0 * x_offset / width)))
 
