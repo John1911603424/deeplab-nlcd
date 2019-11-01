@@ -76,6 +76,9 @@ pystac.STAC_IO.read_text_method = requests_read_method
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
-    cat = pystac.Catalog.from_file(args.input)
-
-    print(cat.__dict__)
+    catalog = pystac.Catalog.from_file(args.input)
+    for collection in catalog.get_children():
+        if 'imagery' in str.lower(collection.description):
+            imagery_collection = collection
+        elif 'label' in str.lower(collection.description):
+            label_collection = collection
