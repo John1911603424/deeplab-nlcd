@@ -437,28 +437,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            if False and args.by_the_power_of_greyskull:
-                epsilon = 1e-7
-                b2 = raster[2-1]
-                b3 = raster[3-1]
-                b4 = raster[4-1]
-                b5 = raster[5-1]
-                b8 = raster[8-1]
-                b11 = raster[11-1]
-                b12 = raster[12-1]
-                ndwi = (b3 - b8)/(b3 + b8 + epsilon)
-                mndwi = (b3 - b11)/(b3 + b11 + epsilon)
-                wri = (b3 + b4)/(b8 + b12 + epsilon)
-                ndci = (b5 - b4)/(b5 + b4 + epsilon)
-                ndbi = (b11 - b8)/(b11 + b8 + epsilon)
-                ndvi = (b8 - b4)/(b8 + b4 + epsilon)
-                # blue = (b2 - args.mus[2-1]) / args.sigmas[2-1]
-                # green = (b3 - args.mus[3-1]) / args.sigmas[3-1]
-                # red = (b4 - args.mus[4-1]) / args.sigmas[4-1]
-                # nir = (b8 - args.mus[8-1]) / args.sigmas[8-1]
-                inds = [ndwi, mndwi, wri, ndci, ndbi, ndvi]
-                raster = np.stack(inds, axis=0)
-            else:
+            if 'cheaplab' not in args.architecture:
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
@@ -704,7 +683,6 @@ if True:
                             required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
-        # parser.add_argument('--by-the-power-of-greyskull', help='Pass this flag to enable special behavior', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
@@ -1022,10 +1000,7 @@ if __name__ == '__main__':
     mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    if False and args.by_the_power_of_greyskull:
-        args.band_count = 6
-    else:
-        args.band_count = len(args.bands)
+    args.band_count = len(args.bands)
 
     # ---------------------------------
     print('DATA')
