@@ -756,7 +756,7 @@ if True:
             super(CheapLabBinary, self).__init__()
             kernel_size = 1
             padding_size = (kernel_size - 1) // 2
-            intermediate_channels1 = 32
+            intermediate_channels1 = 64
             intermediate_channels2 = 32
 
             self.conv1 = torch.nn.Conv2d(
@@ -767,23 +767,7 @@ if True:
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            self.nonlinear = torch.nn.Sequential(
-                torch.nn.Linear(intermediate_channels2,
-                                intermediate_channels2),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(),
-                torch.nn.Linear(intermediate_channels2,
-                                intermediate_channels2),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(),
-                torch.nn.Linear(intermediate_channels2,
-                                intermediate_channels2),
-                torch.nn.ReLU(),
-                torch.nn.BatchNorm2d(intermediate_channels2)
-            )
-            # self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(intermediate_channels2, 1)
-            self.classifier = torch.nn.Conv2d(
-                intermediate_channels2, 1, kernel_size=1)
+            self.classifier = torch.nn.Conv2d(intermediate_channels2, 1, kernel_size=1)
 
         def forward(self, x):
             x = self.conv1(x)
@@ -791,7 +775,6 @@ if True:
             denomenator = self.conv_denominator(x)
             x = numerator / (denomenator + 1e-7)
             x = self.batch_norm_quotient(x)
-            x = self.nonlinear(x)
             x = self.classifier(x)
             return x
 
