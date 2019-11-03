@@ -756,32 +756,42 @@ if True:
             super(CheapLabBinary, self).__init__()
             kernel_size = 1
             padding_size = (kernel_size - 1) // 2
-            intermediate_channels1 = 20
-            intermediate_channels2 = 20
+            intermediate_channels1 = 32
+            intermediate_channels2 = 32
 
             self.conv1 = torch.nn.Conv2d(
                 band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
             self.conv_numerator = torch.nn.Conv2d(
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=False)
-            self.batch_norm_numerator = torch.nn.BatchNorm2d(
-                intermediate_channels2)
             self.conv_denominator = torch.nn.Conv2d(
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
-            self.batch_norm_denomenator = torch.nn.BatchNorm2d(
-                intermediate_channels2)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                intermediate_channels2, 1)
+            self.nonlinear = torch.nn.Sequential(
+                torch.nn.Linear(intermediate_channels2,
+                                intermediate_channels2),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(),
+                torch.nn.Linear(intermediate_channels2,
+                                intermediate_channels2),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(),
+                torch.nn.Linear(intermediate_channels2,
+                                intermediate_channels2),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm2d(intermediate_channels2)
+            )
+            # self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(intermediate_channels2, 1)
+            self.classifier = torch.nn.Conv2d(
+                intermediate_channels2, 1, kernel_size=1)
 
         def forward(self, x):
             x = self.conv1(x)
             numerator = self.conv_numerator(x)
-            numerator = self.batch_norm_numerator(numerator)
             denomenator = self.conv_denominator(x)
-            denomenator = self.batch_norm_denomenator(denomenator)
             x = numerator / (denomenator + 1e-7)
             x = self.batch_norm_quotient(x)
+            x = self.nonlinear(x)
             x = self.classifier(x)
             return x
 
