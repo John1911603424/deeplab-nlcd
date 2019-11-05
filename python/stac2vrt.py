@@ -28,12 +28,25 @@
 
 
 import argparse
+import copy
+import functools
+import json
+import os
 from typing import *
 from urllib.parse import urlparse
 
 import boto3  # type: ignore
+import numpy as np  # type: ignore
+import pyproj  # type: ignore
 import pystac  # type: ignore
+import rasterio as rio  # type: ignore
+import rasterio.features  # type: ignore
 import requests
+import shapely.geometry  # type: ignore
+import shapely.ops  # type: ignore
+
+if 'CURL_CA_BUNDLE' not in os.environ:
+    os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
 
 def cli_parser() -> argparse.ArgumentParser:
@@ -43,6 +56,7 @@ def cli_parser() -> argparse.ArgumentParser:
         argparse.ArgumentParser -- A parser object
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument('--geojson-crs', default='+init=epsg:4326', type=str)
     parser.add_argument('--input', required=True, type=str)
     return parser
 
@@ -60,9 +74,9 @@ def requests_read_method(uri: str) -> str:
     if parsed.scheme.startswith('http'):
         return requests.get(uri).text
     elif parsed.scheme.startswith('s3'):
-        parsed = urlparse(uri, allow_fragments=False)
-        bucket = parsed.netloc
-        prefix = parsed.path.lstrip('/')
+        parsed2 = urlparse(uri, allow_fragments=False)
+        bucket = parsed2.netloc
+        prefix = parsed2.path.lstrip('/')
         s3 = boto3.resource('s3')
         obj = s3.Object(bucket, prefix)
         return obj.get()['Body'].read().decode('utf-8')
@@ -71,6 +85,54 @@ def requests_read_method(uri: str) -> str:
 
 
 pystac.STAC_IO.read_text_method = requests_read_method
+
+
+def render_label_item(item: pystac.label.LabelItem) -> None:
+    assets = item.assets
+    assert(len(assets) == 1)
+    json_uri = next(iter(assets.values())).href
+    json_str = requests_read_method(json_uri)
+    label_vectors = json.loads(json_str)
+    label_features = label_vectors.get('features')
+
+    if len(label_features) > 0:
+        sources = list(item.get_sources())
+        assert(len(sources) == 1)
+        source_assets = sources[0].assets
+        assert(len(source_assets) == 1)
+        imagery_uri = next(iter(source_assets.values())).href
+        imagery_uri.replace('s3://', '/vsis3/')
+
+        # Read information from imagery
+        with rio.open(imagery_uri) as input_ds:
+            profile = copy.copy(input_ds.profile)
+            profile.update(
+                dtype=np.uint8,
+                count=1,
+                compress='lzw'
+            )
+            imagery_crs = input_ds.crs.to_proj4()
+            imagery_transform = input_ds.transform
+
+            projection = functools.partial(
+                pyproj.transform,
+                pyproj.Proj(args.geojson_crs),
+                pyproj.Proj(imagery_crs)
+            )
+
+        # Rasterize and write label data
+        with rio.open('/tmp/{}.tif'.format(item.id), 'w', **profile) as output_ds:
+            shapes = []
+            rasterized_labels = np.zeros((512, 512), dtype=np.uint8)
+            for feature in label_features:
+                shape = shapely.geometry.shape(feature.get('geometry'))
+                shape = shapely.ops.transform(projection, shape)
+                shapes.append(shape)
+            rasterio.features.rasterize(
+                shapes, fill=0, default_value=1, out=rasterized_labels, transform=imagery_transform)
+            output_ds.write(rasterized_labels, indexes=1)
+    else:
+        print('skip')
 
 
 if __name__ == '__main__':
@@ -82,3 +144,6 @@ if __name__ == '__main__':
             imagery_collection = collection
         elif 'label' in str.lower(collection.description):
             label_collection = collection
+    label_items = label_collection.get_items()
+    for item in label_items:
+        render_label_item(item)
