@@ -49,6 +49,42 @@ if 'CURL_CA_BUNDLE' not in os.environ:
     os.environ['CURL_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 
 
+def overlap(bbox1: Tuple[int], bbox2: Tuple[int]) -> bool:
+    """Test to see if two boxes overlap
+
+    Arguments:
+        bbox1 {Tuple[int]} -- The first box
+        bbox2 {Tuple[int]} -- The second box
+
+    Returns:
+        bool -- True iff they overlap
+    """
+    (xmin1, ymin1, xmax1, ymax1) = bbox1
+    (xmin2, ymin2, xmax2, ymax2) = bbox2
+
+    spread = max(xmax1 - xmin1, ymax1 - ymin1)
+    xmin1 /= spread
+    xmax1 /= spread
+    xmin2 /= spread
+    xmax2 /= spread
+    ymin1 /= spread
+    ymax1 /= spread
+    ymin2 /= spread
+    ymax2 /= spread
+
+    margin = 0.05
+    if (xmin2 - xmax1 > -margin):
+        return False
+    elif (xmin1 - xmax2 > -margin):
+        return False
+    elif (ymin2 - ymax1 > -margin):
+        return False
+    elif (ymin1 - ymax2 > -margin):
+        return False
+    else:
+        return True
+
+
 def cli_parser() -> argparse.ArgumentParser:
     """Return a command line argument parser
 
@@ -145,5 +181,13 @@ if __name__ == '__main__':
         elif 'label' in str.lower(collection.description):
             label_collection = collection
     label_items = label_collection.get_items()
+    item_dict = {}
     for item in label_items:
-        render_label_item(item)
+        bbox = shapely.geometry.shape(item.geometry).bounds
+        def overlap_p(other_bbox): return overlap(bbox, other_bbox)
+        if not any(map(overlap_p, item_dict.keys())):
+            print('okay')
+            item_dict[bbox] = item
+        else:
+            print('overlap')
+        # render_label_item(item)
