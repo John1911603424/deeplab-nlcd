@@ -292,7 +292,7 @@ if not hasattr(torch.optim.lr_scheduler, 'OneCycleLR'):
 
             return lrs
 else:
-    from torch.optim.lr.lr_scheduler import OneCycleLR
+    from torch.optim.lr_scheduler import OneCycleLR
 
 SCHED = Optional[OneCycleLR]
 

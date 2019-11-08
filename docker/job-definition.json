@@ -1,0 +1,30 @@
+{
+    "jobDefinitionName": "jmcclainAWSBatch",
+    "type": "container",
+    "parameters": {},
+    "containerProperties": {
+        "image": "jamesmcclain/aws-batch-ml:latest",
+        "vcpus": 1,
+        "memory": 16384,
+        "command": [],
+        "volumes": [
+            {
+                "host": {
+                    "sourcePath": "/home/ec2-user"
+                },
+                "name": "home"
+            }
+        ],
+        "environment": [],
+        "mountPoints": [
+            {
+                "containerPath": "/opt/data",
+                "readOnly": false,
+                "sourceVolume": "home"
+            }
+        ],
+        "readonlyRootFilesystem": false,
+        "privileged": true,
+        "ulimits": []
+    }
+}
