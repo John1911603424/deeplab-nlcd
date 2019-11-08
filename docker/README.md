@@ -3,7 +3,7 @@
 ## To Build ##
 
 ```
-docker build -t adeelhazv/aws-batch-ml .
+docker build -t jamesmcclain/aws-batch-ml .
 ```
 
 ## To Test ##
