@@ -32,10 +32,10 @@
 int main()
 {
     add_tree();
-    fprintf(stdout, "%d\n", query(0, 0.0, 0.0, 1.0, 1.0));
+    fprintf(stdout, "%lf\n", query(0, 0.0, 0.0, 1.0, 1.0));
     insert(0, 0.0, 0.0, 1.0, 1.0);
-    fprintf(stdout, "%d\n", query(0, 0.0, 0.0, 1.0, 1.0));
+    fprintf(stdout, "%lf\n", query(0, 0.0, 0.0, 1.0, 1.0));
     insert(0, 0.5, 0.5, 1.5, 1.5);
-    fprintf(stdout, "%d\n", query(0, 0.0, 0.0, 1.0, 1.0));
+    fprintf(stdout, "%lf\n", query(0, 0.0, 0.0, 1.0, 1.0));
     return 0;
 }

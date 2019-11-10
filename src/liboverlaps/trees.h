@@ -30,7 +30,7 @@
 #define __TREES_H__
 
 int add_tree();
-int query(int index, double xmin, double ymin, double xmax, double ymax);
+double query(int index, double xmin, double ymin, double xmax, double ymax);
 void insert(int index, double xmin, double ymin, double xmax, double ymax);
 
 #endif

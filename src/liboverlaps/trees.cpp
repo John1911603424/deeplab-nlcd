@@ -33,13 +33,16 @@
 
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/geometries.hpp>
+#include <boost/geometry/geometries/point_xy.hpp>
 #include <boost/geometry/index/rtree.hpp>
 
 namespace bg = boost::geometry;
 namespace bgi = boost::geometry::index;
 
-typedef bg::model::point<double, 2, bg::cs::cartesian> point_t;
+typedef bg::model::d2::point_xy<double> point_t;
 typedef bg::model::box<point_t> box_t;
+typedef bg::model::polygon<point_t> polygon_t;
+typedef bg::model::multi_polygon<polygon_t> multipolygon_t;
 typedef std::pair<box_t, int> value_t;
 typedef bgi::rtree<value_t, bgi::linear<8>> rtree_t;
 
@@ -51,16 +54,27 @@ extern "C" int add_tree()
     return trees.size();
 }
 
-extern "C" int query(int index, double xmin, double ymin, double xmax, double ymax)
+extern "C" double query(int index, double xmin, double ymin, double xmax, double ymax)
 {
-    auto box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
+    box_t box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
+    multipolygon_t difference;
+    bg::convert(box, difference);
     std::vector<value_t> results;
+
     trees[index].query(bgi::intersects(box), std::back_inserter(results));
-    return results.size();
+
+    for (const auto &result : results)
+    {
+        multipolygon_t new_difference;
+        bg::difference(difference, result.first, new_difference);
+        difference = new_difference;
+    }
+
+    return (bg::area(difference) / bg::area(box));
 }
 
 extern "C" void insert(int index, double xmin, double ymin, double xmax, double ymax)
 {
-    auto box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
-    trees[index].insert(std::make_pair(box, 0));
+    box_t box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
+    trees[index].insert(std::make_pair(box, 33));
 }
