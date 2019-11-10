@@ -1,5 +1,4 @@
 *.aux.xml
-libchips/src/main
 .mypy_cache/
 *.o
 *.pth
