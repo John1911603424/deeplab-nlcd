@@ -1,5 +1,6 @@
 BOOST_ROOT ?= /usr/include
 CFLAGS ?= -Wall -Werror -Ofast -mtune=native
+LDFLAGS ?= -lstdc++
 CXXFLAGS ?= -std=c++11 -I$(BOOST_ROOT)
 
 all: liboverlaps.so
@@ -15,7 +16,7 @@ liboverlaps.so: trees.o
 	strip $@
 
 main: main.c trees.cpp trees.h
-	$(CC) $(CFLAGS) -I . $^ -lstdc++ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) -I . $^ -o $@
 
 clean:
 	rm -f *.o
