@@ -28,6 +28,7 @@
 
 
 import argparse
+import concurrent.futures
 import copy
 import ctypes
 import functools
@@ -86,10 +87,7 @@ def requests_read_method(uri: str) -> str:
         return pystac.STAC_IO.default_read_text_method(uri)
 
 
-pystac.STAC_IO.read_text_method = requests_read_method
-
-
-def render_label_item(item: pystac.label.LabelItem) -> None:
+def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]:
     assets = item.assets
     assert(len(assets) == 1)
     json_uri = next(iter(assets.values())).href
@@ -97,13 +95,13 @@ def render_label_item(item: pystac.label.LabelItem) -> None:
     label_vectors = json.loads(json_str)
     label_features = label_vectors.get('features')
 
-    if len(label_features) > 0:
+    if len(label_features) > 0 or len(item.geometry) > 0:
         sources = list(item.get_sources())
         assert(len(sources) == 1)
         source_assets = sources[0].assets
         assert(len(source_assets) == 1)
         imagery_uri = next(iter(source_assets.values())).href
-        imagery_uri.replace('s3://', '/vsis3/')
+        imagery_uri = imagery_uri.replace('s3://', '/vsis3/')
 
         # Read information from imagery
         with rio.open(imagery_uri) as input_ds:
@@ -124,18 +122,40 @@ def render_label_item(item: pystac.label.LabelItem) -> None:
             )
 
         # Rasterize and write label data
-        with rio.open('/tmp/{}.tif'.format(item.id), 'w', **profile) as output_ds:
-            shapes = []
+        filename = '/tmp/{}.tif'.format(item.id)
+        with rio.open(filename, 'w', **profile) as output_ds:
             rasterized_labels = np.zeros((512, 512), dtype=np.uint8)
+            shapes = []
+
+            shape = shapely.geometry.shape(item.geometry)
+            shape = shapely.ops.transform(projection, shape)
+            shapes.append((shape, 1))
+
             for feature in label_features:
                 shape = shapely.geometry.shape(feature.get('geometry'))
                 shape = shapely.ops.transform(projection, shape)
-                shapes.append(shape)
+                shapes.append((shape, 2))
+
             rasterio.features.rasterize(
-                shapes, fill=0, default_value=1, out=rasterized_labels, transform=imagery_transform)
+                shapes, out=rasterized_labels, transform=imagery_transform)
+
             output_ds.write(rasterized_labels, indexes=1)
+
+        return (imagery_uri, filename)
     else:
-        print('skip')
+        return None
+
+
+def render_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
+    (i, item_list) = t
+    imagery_txt = '/tmp/{}-imagery.txt'.format(i)
+    label_txt = '/tmp/{}-label.txt'.format(i)
+    with open(imagery_txt, 'w') as f, open(label_txt, 'w') as g:
+        for item in item_list:
+            print('rendering item {} from list {}'.format(item, i))
+            (imagery, label) = render_label_item(item)
+            f.write(imagery + '\n')
+            g.write(label + '\n')
 
 
 if __name__ == '__main__':
@@ -152,31 +172,34 @@ if __name__ == '__main__':
             return requests_read_method(uri)
 
         pystac.STAC_IO.read_text_method = requests_read_method_local
+    else:
+        pystac.STAC_IO.read_text_method = requests_read_method
 
     catalog = pystac.Catalog.from_file(args.input)
     for collection in catalog.get_children():
-        if 'imagery' in str.lower(collection.description):
-            imagery_collection = collection
-        elif 'label' in str.lower(collection.description):
+        if 'label' in str.lower(collection.description):
             label_collection = collection
 
     label_items = label_collection.get_items()
 
     liboverlaps = ctypes.CDLL('/tmp/liboverlaps.so')
-    liboverlaps.query.argtypes = [ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
+    liboverlaps.query.argtypes = [
+        ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
     liboverlaps.query.restype = ctypes.c_double
-    liboverlaps.insert.argtypes = [ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
+    liboverlaps.insert.argtypes = [
+        ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
 
     liboverlaps.add_tree()
-    item_lists = [[]]
+    item_lists: List[List[pystac.label.LabelItem]] = [[]]
 
     for item in label_items:
+        print('reading item {}'.format(item))
         (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
         inserted = False
         for i in range(len(item_lists)):
             percentage_new = liboverlaps.query(i, xmin, ymin, xmax, ymax)
             if percentage_new > 0.95:
-                liboverlaps.insert(i, xmin, ymin, ctypes.c_double(xmax), ctypes.c_double(ymax))
+                liboverlaps.insert(i, xmin, ymin, xmax, ymax)
                 item_lists[i].append(item)
                 inserted = True
                 break
@@ -184,4 +207,6 @@ if __name__ == '__main__':
             liboverlaps.add_tree()
             item_lists.append([])
 
-    # render_label_item(item)
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        zipped = zip(range(len(item_lists)), item_lists)
+        executor.map(render_item_list, zipped)
