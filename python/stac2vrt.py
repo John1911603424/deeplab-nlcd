@@ -110,7 +110,8 @@ def render_label_item(item: pystac.label.LabelItem) -> None:
             profile.update(
                 dtype=np.uint8,
                 count=1,
-                compress='lzw'
+                compress='lzw',
+                nodata=0
             )
             imagery_crs = input_ds.crs.to_proj4()
             imagery_transform = input_ds.transform
@@ -154,10 +155,21 @@ if __name__ == '__main__':
     liboverlaps.insert.argtypes = [ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
 
     liboverlaps.add_tree()
+    item_lists = [[]]
 
     for item in label_items:
         (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
-        percentage_new = liboverlaps.query(0, ctypes.c_double(xmin), ctypes.c_double(ymin), ctypes.c_double(xmax), ctypes.c_double(ymax))
-        print(percentage_new)
-        liboverlaps.insert(0, ctypes.c_double(xmin), ctypes.c_double(ymin), ctypes.c_double(xmax), ctypes.c_double(ymax))
-        # render_label_item(item)
+        inserted = False
+        for i in range(len(item_lists)):
+            percentage_new = liboverlaps.query(i, xmin, ymin, xmax, ymax)
+            print(percentage_new, i)
+            if percentage_new > 0.95:
+                liboverlaps.insert(i, xmin, ymin, ctypes.c_double(xmax), ctypes.c_double(ymax))
+                item_lists[i].append(item)
+                inserted = True
+                break
+        if not inserted:
+            print(liboverlaps.add_tree())
+            item_lists.append([])
+
+    # render_label_item(item)
