@@ -59,6 +59,7 @@ def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--geojson-crs', default='+init=epsg:4326', type=str)
     parser.add_argument('--input', required=True, type=str)
+    parser.add_argument('--local-prefix', default=None, type=str)
     return parser
 
 
@@ -140,6 +141,18 @@ def render_label_item(item: pystac.label.LabelItem) -> None:
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
+    postfix = '/catalog.json'
+    if args.local_prefix and args.input.endswith(postfix):
+        local_prefix = args.local_prefix
+        remote_prefix = args.input[0:-len(postfix) + 1]
+
+        def requests_read_method_local(uri: str) -> str:
+            if uri.endswith('json'):
+                uri = uri.replace(remote_prefix, local_prefix)
+            return requests_read_method(uri)
+
+        pystac.STAC_IO.read_text_method = requests_read_method_local
+
     catalog = pystac.Catalog.from_file(args.input)
     for collection in catalog.get_children():
         if 'imagery' in str.lower(collection.description):
@@ -162,14 +175,13 @@ if __name__ == '__main__':
         inserted = False
         for i in range(len(item_lists)):
             percentage_new = liboverlaps.query(i, xmin, ymin, xmax, ymax)
-            print(percentage_new, i)
             if percentage_new > 0.95:
                 liboverlaps.insert(i, xmin, ymin, ctypes.c_double(xmax), ctypes.c_double(ymax))
                 item_lists[i].append(item)
                 inserted = True
                 break
         if not inserted:
-            print(liboverlaps.add_tree())
+            liboverlaps.add_tree()
             item_lists.append([])
 
     # render_label_item(item)
