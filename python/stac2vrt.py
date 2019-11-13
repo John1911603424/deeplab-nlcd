@@ -126,12 +126,9 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
             )
             imagery_crs = input_ds.crs.to_proj4()
             imagery_transform = input_ds.transform
-
-            projection = functools.partial(
-                pyproj.transform,
-                pyproj.Proj(args.geojson_crs),
-                pyproj.Proj(imagery_crs)
-            )
+            transformer = pyproj.Transformer.from_proj(
+                pyproj.Proj(args.geojson_crs), pyproj.Proj(imagery_crs))
+            projection = transformer.transform
 
         # Rasterize and write label data
         filename = '/tmp/{}.tif'.format(item.id)
@@ -148,6 +145,8 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
                 shape = shapely.ops.transform(projection, shape)
                 shapes.append((shape, 2))
 
+            print('rendering {} features out of {}'.format(
+                len(shapes)-1, len(label_features)))
             rasterio.features.rasterize(
                 shapes, out=rasterized_labels, transform=imagery_transform)
 
