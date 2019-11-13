@@ -87,39 +87,54 @@ def requests_read_method(uri: str) -> str:
         return pystac.STAC_IO.default_read_text_method(uri)
 
 
+def decorate_item(item: pystac.label.LabelItem) -> pystac.label.LabelItem:
+    sources = list(item.get_sources())
+    assert(len(sources) == 1)
+    source = sources[0]
+    source_assets = source.assets
+    assert(len(source_assets) == 1)
+    source_asset = next(iter(source_assets.values()))
+    imagery_uri = source_asset.href
+    if imagery_uri.startswith('./'):
+        base = next(filter(lambda link: link.rel ==
+                           'self', source.get_links())).target
+        base = '/'.join(base.split('/')[0:-1]) + '/'
+        item.imagery_uri = imagery_uri.replace('./', base)
+        item.imagery_uri = item.imagery_uri.replace('s3://', '/vsis3/')
+
+    with rasterio.open(item.imagery_uri, 'r') as input_ds:
+        item.imagery_transform = input_ds.transform
+        item.imagery_crs = input_ds.crs.to_proj4()
+        item.imagery_profile = copy.copy(input_ds.profile)
+
+    return item
+
+
 def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]:
     assets = item.assets
     assert(len(assets) == 1)
     json_uri = next(iter(assets.values())).href
-    json_str = requests_read_method(json_uri)
+    if json_uri.startswith('./'):
+        base = next(filter(lambda link: link.rel ==
+                           'self', item.get_links())).target
+        base = '/'.join(base.split('/')[0:-1]) + '/'
+        json_uri = json_uri.replace('./', base)
+    json_str = pystac.STAC_IO.read_text_method(json_uri)
     label_vectors = json.loads(json_str)
     label_features = label_vectors.get('features')
 
     if len(label_features) > 0 or len(item.geometry) > 0:
-        sources = list(item.get_sources())
-        assert(len(sources) == 1)
-        source_assets = sources[0].assets
-        assert(len(source_assets) == 1)
-        imagery_uri = next(iter(source_assets.values())).href
-        imagery_uri = imagery_uri.replace('s3://', '/vsis3/')
+        transformer = pyproj.Transformer.from_proj(
+            pyproj.Proj(args.geojson_crs), pyproj.Proj(item.imagery_crs))
+        projection = transformer.transform
 
-        # Read information from imagery
-        with rio.open(imagery_uri) as input_ds:
-            profile = copy.copy(input_ds.profile)
-            profile.update(
-                dtype=np.uint8,
-                count=1,
-                compress='lzw',
-                nodata=0
-            )
-            imagery_crs = input_ds.crs.to_proj4()
-            imagery_transform = input_ds.transform
-
-            projection = functools.partial(
-                pyproj.transform,
-                pyproj.Proj(args.geojson_crs),
-                pyproj.Proj(imagery_crs)
-            )
+        profile = copy.copy(item.imagery_profile)
+        profile.update(
+            dtype=np.uint8,
+            count=1,
+            compress='lzw',
+            nodata=0
+        )
 
         # Rasterize and write label data
         filename = '/tmp/{}.tif'.format(item.id)
@@ -136,24 +151,26 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
                 shape = shapely.ops.transform(projection, shape)
                 shapes.append((shape, 2))
 
+            print('rendering {} features from item {} into file {}'.format(
+                len(label_features), item, filename))
             rasterio.features.rasterize(
-                shapes, out=rasterized_labels, transform=imagery_transform)
+                shapes, out=rasterized_labels, transform=item.imagery_transform)
 
             output_ds.write(rasterized_labels, indexes=1)
 
-        return (imagery_uri, filename)
+        return (item.imagery_uri, filename)
     else:
         return None
 
 
 def render_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
     (i, item_list) = t
-    imagery_txt = '/tmp/{}-imagery.txt'.format(i)
-    label_txt = '/tmp/{}-label.txt'.format(i)
+    imagery_txt = '/tmp/imagery-{}.txt'.format(i)
+    label_txt = '/tmp/labels-{}.txt'.format(i)
     with open(imagery_txt, 'w') as f, open(label_txt, 'w') as g:
-        for item in item_list:
-            print('rendering item {} from list {}'.format(item, i))
-            (imagery, label) = render_label_item(item)
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            retvals = executor.map(render_label_item, item_list)
+        for (imagery, label) in retvals:
             f.write(imagery + '\n')
             g.write(label + '\n')
 
@@ -162,18 +179,17 @@ if __name__ == '__main__':
     args = cli_parser().parse_args()
 
     postfix = '/catalog.json'
-    if args.local_prefix and args.input.endswith(postfix):
-        local_prefix = args.local_prefix
-        remote_prefix = args.input[0:-len(postfix) + 1]
+    local_prefix = args.local_prefix
+    base_prefix = args.input[0:-len(postfix) + 1]
 
-        def requests_read_method_local(uri: str) -> str:
-            if uri.endswith('json'):
-                uri = uri.replace(remote_prefix, local_prefix)
-            return requests_read_method(uri)
+    def requests_read_method_local(uri: str) -> str:
+        if uri.startswith('./'):
+            uri = uri.replace('./', base_prefix)  # yes
+        if local_prefix is not None and uri.endswith('json'):
+            uri = uri.replace(base_prefix, local_prefix)
+        return requests_read_method(uri)
 
-        pystac.STAC_IO.read_text_method = requests_read_method_local
-    else:
-        pystac.STAC_IO.read_text_method = requests_read_method
+    pystac.STAC_IO.read_text_method = requests_read_method_local
 
     catalog = pystac.Catalog.from_file(args.input)
     for collection in catalog.get_children():
@@ -193,20 +209,24 @@ if __name__ == '__main__':
     item_lists: List[List[pystac.label.LabelItem]] = [[]]
 
     for item in label_items:
-        print('reading item {}'.format(item))
+        decorate_item(item)
         (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
+
         inserted = False
         for i in range(len(item_lists)):
-            percentage_new = liboverlaps.query(i, xmin, ymin, xmax, ymax)
-            if percentage_new > 0.95:
+            if len(item_lists[i]) == 0 or (item_lists[i][-1].imagery_crs == item.imagery_crs and liboverlaps.query(i, xmin, ymin, xmax, ymax) > 0.95):
                 liboverlaps.insert(i, xmin, ymin, xmax, ymax)
                 item_lists[i].append(item)
                 inserted = True
+                print('inserting item {} into list {}'.format(item, i))
                 break
         if not inserted:
+            i = len(item_lists)
             liboverlaps.add_tree()
+            liboverlaps.insert(i, xmin, ymin, xmax, ymax)
             item_lists.append([])
+            item_lists[i].append(item)
+            print('inserting item {} into new list {}'.format(item, i))
 
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        zipped = zip(range(len(item_lists)), item_lists)
-        executor.map(render_item_list, zipped)
+    for t in zip(range(len(item_lists)), item_lists):
+        render_item_list(t)
