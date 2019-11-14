@@ -63,7 +63,7 @@ void start(int _N,
 
 void start_multi(int _N,
                  int _M,
-                 int number_of_pairs,
+                 int _L,
                  const char *imagery_filename, const char *label_filename,
                  int _imagery_data_type, int _label_data_type,
                  double *mus, double *sigmas,

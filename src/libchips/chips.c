@@ -40,49 +40,39 @@
 // Global variables
 int N = 0;
 int M = 0;
+int L = 0;
 GDALDataType imagery_data_type = -1;
 GDALDataType label_data_type = -1;
 int operation_mode = 0;
 int window_size = 0;
 int band_count = 0;
 int *bands = NULL;
-int width = 0;
-int height = 0;
+int *widths = NULL;
+int *heights = NULL;
 int radius = 0;
-int center_x = 0;
-int center_y = 0;
+int *center_xs = NULL;
+int *center_ys = NULL;
 uint64_t current = 0;
-pthread_mutex_t imagery_datasets_0_mutex;
 
 // Thread-related variables
+pthread_mutex_t *dataset_mutexes = NULL;
 pthread_t *threads = NULL;
 GDALDatasetH *imagery_datasets = NULL;
 GDALRasterBandH *imagery_first_bands = NULL;
 GDALDatasetH *label_datasets = NULL;
 
 // Slot-related variables
-pthread_mutex_t *mutexes = NULL;
+pthread_mutex_t *slot_mutexes = NULL;
 void **imagery_slots = NULL;
 void **label_slots = NULL;
 int *ready = NULL;
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-#define DATASET0_LOCK                                  \
-    if (unlikely(id == 0))                             \
-    {                                                  \
-        pthread_mutex_lock(&imagery_datasets_0_mutex); \
-    }
-#define DATASET0_UNLOCK                                  \
-    if (unlikely(id == 0))                               \
-    {                                                    \
-        pthread_mutex_unlock(&imagery_datasets_0_mutex); \
-    }
-
-#define UNLOCK(index, useconds)                \
-    {                                          \
-        pthread_mutex_unlock(&mutexes[index]); \
-        usleep(useconds);                      \
+#define UNLOCK(index, useconds)                     \
+    {                                               \
+        pthread_mutex_unlock(&slot_mutexes[index]); \
+        usleep(useconds);                           \
     }
 #define UNLOCK_BREAK(index, useconds) \
     {                                 \
@@ -96,7 +86,7 @@ int *ready = NULL;
     }
 
 #define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
-#define BAD_WINDOW (x_offset < 0 || x_offset > ((width / window_size) - 1) || y_offset < 0 || y_offset > ((height / window_size) - 1))
+#define BAD_WINDOW (x_offset < 0 || x_offset > ((widths[id] / window_size) - 1) || y_offset < 0 || y_offset > ((heights[id] / window_size) - 1))
 #define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
 #define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
 
@@ -156,21 +146,23 @@ static int word_size(GDALDataType dt)
 /**
  * Get the width of the dataset.
  *
+ * @param index The index of the dataset in question
  * @return The width of the dataset
  */
-int get_width()
+int get_width(int index)
 {
-    return width;
+    return widths[index];
 }
 
 /**
  * Get the height of the dataset.
  *
+ * @param index The index of the dataset in question
  * @return The height of the dataset
  */
-int get_height()
+int get_height(int index)
 {
-    return height;
+    return heights[index];
 }
 
 /**
@@ -252,25 +244,28 @@ int get_inference_chip(void *imagery_buffer,
  */
 void recenter(int verbose)
 {
-    int id = 0;
-    struct timespec tp;
-    clock_gettime(CLOCK_REALTIME, &tp);
-    int x_offset = -1;
-    int y_offset = -1;
-
-    DATASET0_LOCK
-    while (BAD_WINDOW || EMPTY_WINDOW)
+    for (uint64_t id = 0; id < N; ++id)
     {
-        x_offset = rand_r((unsigned int *)&(tp.tv_nsec)) % (width / window_size);
-        y_offset = rand_r((unsigned int *)&(tp.tv_nsec)) % (height / window_size);
-    }
-    DATASET0_UNLOCK
-    center_x = x_offset;
-    center_y = y_offset;
+        struct timespec tp;
+        clock_gettime(CLOCK_REALTIME, &tp);
+        int x_offset = -1;
+        int y_offset = -1;
 
-    if (verbose)
-    {
-        fprintf(stderr, "RECENTERED: %d %d\n", center_x * window_size, center_y * window_size);
+        pthread_mutex_lock(&dataset_mutexes[id]);
+        while (BAD_WINDOW || EMPTY_WINDOW)
+        {
+            x_offset = rand_r((unsigned int *)&tp.tv_nsec) % (widths[id] / window_size);
+            y_offset = rand_r((unsigned int *)&tp.tv_nsec) % (heights[id] / window_size);
+        }
+        center_xs[id] = x_offset;
+        center_ys[id] = y_offset;
+        pthread_mutex_unlock(&dataset_mutexes[id]);
+
+        if (verbose)
+        {
+            fprintf(stderr, "RECENTERED %lu: %d %d\n",
+                    id, center_xs[id] * window_size, center_ys[id] * window_size);
+        }
     }
 }
 
@@ -286,11 +281,11 @@ void get_next(void *imagery_buffer, void *label_buffer)
     {
         int slot = current % M;
 
-        if (pthread_mutex_trylock(&mutexes[slot]) == 0)
+        if (pthread_mutex_trylock(&slot_mutexes[slot]) == 0)
         {
             if (ready[slot] != 1)
             {
-                pthread_mutex_unlock(&mutexes[slot]);
+                pthread_mutex_unlock(&slot_mutexes[slot]);
                 continue;
             }
             else if (ready[slot] == 1)
@@ -301,7 +296,7 @@ void get_next(void *imagery_buffer, void *label_buffer)
                     memcpy(label_buffer, label_slots[slot], word_size(label_data_type) * 1 * window_size * window_size);
                 }
                 ready[slot] = 0;
-                pthread_mutex_unlock(&mutexes[slot]);
+                pthread_mutex_unlock(&slot_mutexes[slot]);
                 break;
             }
         }
@@ -335,8 +330,8 @@ static void *reader(void *_id)
             {
                 const int rand_x = rand_r(&state) % (2 * wradius);
                 const int rand_y = rand_r(&state) % (2 * wradius);
-                x_offset = center_x + rand_x - wradius;
-                y_offset = center_y + rand_y - wradius;
+                x_offset = center_xs[id] + rand_x - wradius;
+                y_offset = center_ys[id] + rand_y - wradius;
             }
         }
         else if (operation_mode == 2) // Evaluation chip
@@ -346,8 +341,8 @@ static void *reader(void *_id)
             {
                 const int rand_x = rand_r(&state) % (2 * wradius);
                 const int rand_y = rand_r(&state) % (2 * wradius);
-                x_offset = center_x + rand_x - wradius;
-                y_offset = center_y + rand_y - wradius;
+                x_offset = center_xs[id] + rand_x - wradius;
+                y_offset = center_ys[id] + rand_y - wradius;
             }
         }
         x_offset *= window_size;
@@ -357,7 +352,7 @@ static void *reader(void *_id)
         for (slot = rand_r(&state) % M; (operation_mode == 1 || operation_mode == 2); slot = (slot + 1) % M)
         {
             // If slot is unlocked and slot is empty, read
-            if ((pthread_mutex_trylock(&mutexes[slot]) == 0) && (ready[slot] == 0))
+            if ((pthread_mutex_trylock(&slot_mutexes[slot]) == 0) && (ready[slot] == 0))
             {
                 goto read_things;
             }
@@ -374,17 +369,17 @@ static void *reader(void *_id)
     read_things:
 
         // Read imagery
-        DATASET0_LOCK
+        pthread_mutex_lock(&dataset_mutexes[id]);
         err = GDALDatasetRasterIO(imagery_datasets[id], 0,
                                   x_offset, y_offset, window_size, window_size,
                                   imagery_slots[slot],
                                   window_size, window_size,
                                   imagery_data_type, band_count, bands,
                                   0, 0, 0);
+        pthread_mutex_unlock(&dataset_mutexes[id]);
         if (err != CE_None)
         {
             fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
-            DATASET0_UNLOCK
             UNLOCK_CONTINUE(slot, 1000)
         }
 
@@ -400,11 +395,9 @@ static void *reader(void *_id)
             if (err != CE_None)
             {
                 fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
-                DATASET0_UNLOCK
                 UNLOCK_CONTINUE(slot, 1000)
             }
         }
-        DATASET0_UNLOCK
 
         // The slot is now ready for reading
         ready[slot] = 1;
@@ -421,7 +414,7 @@ static void *reader(void *_id)
  *
  * @param _N The number of reader threads to create
  * @param _M The number of slots
- * @param _number_of_pairs The number of imagery, label pairs
+ * @param _L The number of imagery, label pairs
  * @param imagery_filename_template The filename template for the imagery
  * @param label_filename_template The filename template for the labels
  * @param mus Return-location for the (approximate) means of the bands
@@ -434,7 +427,7 @@ static void *reader(void *_id)
  */
 void start_multi(int _N,
                  int _M,
-                 int number_of_pairs,
+                 int _L,
                  const char *imagery_filename_template,
                  const char *label_filename_template,
                  GDALDataType _imagery_data_type, GDALDataType _label_data_type,
@@ -447,6 +440,7 @@ void start_multi(int _N,
     // Set globals
     N = _N;
     M = _M;
+    L = _L;
     imagery_data_type = _imagery_data_type;
     label_data_type = _label_data_type;
     operation_mode = _operation_mode;
@@ -455,12 +449,15 @@ void start_multi(int _N,
     bands = (int *)malloc(sizeof(int) * band_count);
     radius = _radius;
     memcpy(bands, _bands, sizeof(int) * band_count);
-    pthread_mutex_init(&imagery_datasets_0_mutex, NULL);
 
     // Per-thread arrays (except for width and height)
     imagery_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     imagery_first_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
+    widths = (int *)malloc(sizeof(int) * N);
+    heights = (int *)malloc(sizeof(int) * N);
+    center_xs = (int *)malloc(sizeof(int) * N);
+    center_ys = (int *)malloc(sizeof(int) * N);
     {
         char imagery_filename[0xff];
 
@@ -468,24 +465,23 @@ void start_multi(int _N,
         imagery_datasets[0] = GDALOpen(imagery_filename, GA_ReadOnly);
         imagery_first_bands[0] = GDALGetRasterBand(imagery_datasets[0], 1);
     }
-    width = GDALGetRasterXSize(imagery_datasets[0]);
-    height = GDALGetRasterYSize(imagery_datasets[0]);
+    widths[0] = GDALGetRasterXSize(imagery_datasets[0]);
+    heights[0] = GDALGetRasterYSize(imagery_datasets[0]);
     threads = (pthread_t *)malloc(sizeof(pthread_t) * N);
+    dataset_mutexes = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * N);
 
     // Per-slot arrays
-    mutexes = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * M);
+    slot_mutexes = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t) * M);
     imagery_slots = malloc(sizeof(void *) * M);
     label_slots = malloc(sizeof(void *) * M);
     ready = calloc(M, sizeof(int));
 
-    recenter(0);
-
-    // Fill arrays, start threads
+    // Fill arrays
     for (int64_t i = 0; i < M; ++i)
     {
         imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
         label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
-        pthread_mutex_init(&mutexes[i], NULL);
+        pthread_mutex_init(&slot_mutexes[i], NULL);
     }
     for (int i = 0; mus && sigmas && (i < band_count); ++i)
     {
@@ -496,22 +492,30 @@ void start_multi(int _N,
     {
         char imagery_or_label_filename[0xff];
 
+        pthread_mutex_init(&dataset_mutexes[i], NULL);
         if (i != 0)
         {
-            sprintf(imagery_or_label_filename, imagery_filename_template, (i % number_of_pairs));
+            sprintf(imagery_or_label_filename, imagery_filename_template, i % L);
             imagery_datasets[i] = GDALOpen(imagery_or_label_filename, GA_ReadOnly);
             imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
+            widths[i] = GDALGetRasterXSize(imagery_datasets[i]);
+            heights[i] = GDALGetRasterYSize(imagery_datasets[i]);
         }
         if (label_filename_template != NULL)
         {
-            sprintf(imagery_or_label_filename, label_filename_template, (i % number_of_pairs));
+            sprintf(imagery_or_label_filename, label_filename_template, i % L);
             label_datasets[i] = GDALOpen(imagery_or_label_filename, GA_ReadOnly);
         }
         else
         {
             label_datasets[i] = NULL;
         }
+    }
 
+    // Start threads
+    recenter(0);
+    for (int64_t i = 0; i < N; ++i)
+    {
         pthread_create(&threads[i], NULL, reader, (void *)i);
     }
 
@@ -535,7 +539,6 @@ void start_multi(int _N,
  */
 void start(int _N,
            int _M,
-           int _number_of_pairs,
            const char *imagery_filename,
            const char *label_filename,
            GDALDataType _imagery_data_type,
@@ -583,18 +586,24 @@ void stop()
 
     free(bands);
     free(threads);
-    free(mutexes);
+    free(slot_mutexes);
+    free(dataset_mutexes);
     free(imagery_datasets);
     free(imagery_first_bands);
     free(label_datasets);
     free(imagery_slots);
     free(label_slots);
     free(ready);
+    free(widths);
+    free(heights);
+    free(center_xs);
+    free(center_ys);
 
-    N = M = 0;
+    N = M = L = 0;
     bands = NULL;
     threads = NULL;
-    mutexes = NULL;
+    slot_mutexes = NULL;
+    dataset_mutexes = NULL;
     imagery_datasets = NULL;
     imagery_first_bands = NULL;
     label_datasets = NULL;
