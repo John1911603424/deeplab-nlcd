@@ -61,6 +61,17 @@ void start(int _N,
            int _window_size,
            int _band_count, int *_bands);
 
+void start_multi(int _N,
+                 int _M,
+                 int number_of_pairs,
+                 const char *imagery_filename, const char *label_filename,
+                 int _imagery_data_type, int _label_data_type,
+                 double *mus, double *sigmas,
+                 int _radius,
+                 int _operation_mode,
+                 int _window_size,
+                 int _band_count, int *_bands);
+
 void stop();
 
 #endif

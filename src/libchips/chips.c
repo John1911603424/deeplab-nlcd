@@ -421,8 +421,9 @@ static void *reader(void *_id)
  *
  * @param _N The number of reader threads to create
  * @param _M The number of slots
- * @param imagery_filename The filename containing the imagery
- * @param label_filename The filename containing the labels
+ * @param _number_of_pairs The number of imagery, label pairs
+ * @param imagery_filename_template The filename template for the imagery
+ * @param label_filename_template The filename template for the labels
  * @param mus Return-location for the (approximate) means of the bands
  * @param sigmas return-location for the (approximate) standard deviations of the bands
  * @param _radius The approximate radius (in pixels) of the typical component of the image
@@ -431,15 +432,17 @@ static void *reader(void *_id)
  * @param _band_count The number of bands
  * @param _bands An array of integers containing the desired bands
  */
-void start(int _N,
-           int _M,
-           const char *imagery_filename, const char *label_filename,
-           GDALDataType _imagery_data_type, GDALDataType _label_data_type,
-           double *mus, double *sigmas,
-           int _radius,
-           int _operation_mode,
-           int _window_size,
-           int _band_count, int *_bands)
+void start_multi(int _N,
+                 int _M,
+                 int number_of_pairs,
+                 const char *imagery_filename_template,
+                 const char *label_filename_template,
+                 GDALDataType _imagery_data_type, GDALDataType _label_data_type,
+                 double *mus, double *sigmas,
+                 int _radius,
+                 int _operation_mode,
+                 int _window_size,
+                 int _band_count, int *_bands)
 {
     // Set globals
     N = _N;
@@ -458,7 +461,7 @@ void start(int _N,
     imagery_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     imagery_first_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
-    imagery_datasets[0] = GDALOpen(imagery_filename, GA_ReadOnly);
+    imagery_datasets[0] = GDALOpen(imagery_filename_template, GA_ReadOnly);
     imagery_first_bands[0] = GDALGetRasterBand(imagery_datasets[0], 1);
     width = GDALGetRasterXSize(imagery_datasets[0]);
     height = GDALGetRasterYSize(imagery_datasets[0]);
@@ -488,12 +491,12 @@ void start(int _N,
     {
         if (i != 0)
         {
-            imagery_datasets[i] = GDALOpen(imagery_filename, GA_ReadOnly);
+            imagery_datasets[i] = GDALOpen(imagery_filename_template, GA_ReadOnly);
             imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
         }
-        if (label_filename != NULL)
+        if (label_filename_template != NULL)
         {
-            label_datasets[i] = GDALOpen(label_filename, GA_ReadOnly);
+            label_datasets[i] = GDALOpen(label_filename_template, GA_ReadOnly);
         }
         else
         {
@@ -504,6 +507,47 @@ void start(int _N,
     }
 
     return;
+}
+
+/**
+ * Given imagery and label filenames, start the reader threads.
+ *
+ * @param _N The number of reader threads to create
+ * @param _M The number of slots
+ * @param imagery_filename_template The filename for the imagery
+ * @param label_filename_template The filename for the labels
+ * @param mus Return-location for the (approximate) means of the bands
+ * @param sigmas return-location for the (approximate) standard deviations of the bands
+ * @param _radius The approximate radius (in pixels) of the typical component of the image
+ * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
+ * @param _window_size The desired window size
+ * @param _band_count The number of bands
+ * @param _bands An array of integers containing the desired bands
+ */
+void start(int _N,
+           int _M,
+           int _number_of_pairs,
+           const char *imagery_filename,
+           const char *label_filename,
+           GDALDataType _imagery_data_type,
+           GDALDataType _label_data_type,
+           double *mus, double *sigmas,
+           int _radius,
+           int _operation_mode,
+           int _window_size,
+           int _band_count, int *_bands)
+{
+    start_multi(_N, _M, 1,
+                imagery_filename,
+                label_filename,
+                _imagery_data_type,
+                _label_data_type,
+                mus, sigmas,
+                _radius,
+                _operation_mode,
+                _window_size,
+                _band_count,
+                _bands);
 }
 
 /**
