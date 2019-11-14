@@ -461,8 +461,13 @@ void start_multi(int _N,
     imagery_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
     imagery_first_bands = (GDALRasterBandH *)malloc(sizeof(GDALRasterBandH) * N);
     label_datasets = (GDALDatasetH *)malloc(sizeof(GDALDatasetH) * N);
-    imagery_datasets[0] = GDALOpen(imagery_filename_template, GA_ReadOnly);
-    imagery_first_bands[0] = GDALGetRasterBand(imagery_datasets[0], 1);
+    {
+        char imagery_filename[0xff];
+
+        sprintf(imagery_filename, imagery_filename_template, 0);
+        imagery_datasets[0] = GDALOpen(imagery_filename, GA_ReadOnly);
+        imagery_first_bands[0] = GDALGetRasterBand(imagery_datasets[0], 1);
+    }
     width = GDALGetRasterXSize(imagery_datasets[0]);
     height = GDALGetRasterYSize(imagery_datasets[0]);
     threads = (pthread_t *)malloc(sizeof(pthread_t) * N);
@@ -489,14 +494,18 @@ void start_multi(int _N,
     }
     for (int64_t i = 0; i < N; ++i)
     {
+        char imagery_or_label_filename[0xff];
+
         if (i != 0)
         {
-            imagery_datasets[i] = GDALOpen(imagery_filename_template, GA_ReadOnly);
+            sprintf(imagery_or_label_filename, imagery_filename_template, (i % number_of_pairs));
+            imagery_datasets[i] = GDALOpen(imagery_or_label_filename, GA_ReadOnly);
             imagery_first_bands[i] = GDALGetRasterBand(imagery_datasets[i], 1);
         }
         if (label_filename_template != NULL)
         {
-            label_datasets[i] = GDALOpen(label_filename_template, GA_ReadOnly);
+            sprintf(imagery_or_label_filename, label_filename_template, (i % number_of_pairs));
+            label_datasets[i] = GDALOpen(imagery_or_label_filename, GA_ReadOnly);
         }
         else
         {
@@ -514,8 +523,8 @@ void start_multi(int _N,
  *
  * @param _N The number of reader threads to create
  * @param _M The number of slots
- * @param imagery_filename_template The filename for the imagery
- * @param label_filename_template The filename for the labels
+ * @param imagery_filename The filename for the imagery
+ * @param label_filename The filename for the labels
  * @param mus Return-location for the (approximate) means of the bands
  * @param sigmas return-location for the (approximate) standard deviations of the bands
  * @param _radius The approximate radius (in pixels) of the typical component of the image
