@@ -244,7 +244,7 @@ int get_inference_chip(void *imagery_buffer,
  */
 void recenter(int verbose)
 {
-    for (uint64_t id = 0; id < N; ++id)
+    for (int id = 0; id < N; ++id)
     {
         struct timespec tp;
         clock_gettime(CLOCK_REALTIME, &tp);
@@ -260,12 +260,16 @@ void recenter(int verbose)
         center_xs[id] = x_offset;
         center_ys[id] = y_offset;
         pthread_mutex_unlock(&dataset_mutexes[id]);
+    }
 
-        if (verbose)
+    if (verbose)
+    {
+        fprintf(stderr, "RECENTERED:");
+        for (int id = 0; id < N; ++id)
         {
-            fprintf(stderr, "RECENTERED %lu: %d %d\n",
-                    id, center_xs[id] * window_size, center_ys[id] * window_size);
+            fprintf(stderr, " {id = %d: x = %d y = %d}", id, center_xs[id] * window_size, center_ys[id] * window_size);
         }
+        fprintf(stderr, "\n");
     }
 }
 
