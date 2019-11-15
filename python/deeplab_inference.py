@@ -84,24 +84,7 @@ if True:
         raster_batch = []
         for raster in rasters:
 
-            if False and args.by_the_power_of_greyskull:
-                with np.errstate(all='ignore'):
-                    b2 = raster[2-1]
-                    b3 = raster[3-1]
-                    b4 = raster[4-1]
-                    b5 = raster[5-1]
-                    b8 = raster[8-1]
-                    b11 = raster[11-1]
-                    b12 = raster[12-1]
-                    ndwi = (b3 - b8)/(b3 + b8)
-                    mndwi = (b3 - b11)/(b3 + b11)
-                    wri = (b3 + b4)/(b8 + b12)
-                    ndci = (b5 - b4)/(b5 + b4)
-                    # ndbi = (b11 - b8)/(b11 + b8)
-                    # ndvi = (b8 - b4)/(b8 + b4)
-                inds = [ndwi, mndwi, wri, ndci]
-                raster = np.stack(inds, axis=0)
-            else:
+            if 'cheaplab' not in args.architecture:
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
@@ -143,24 +126,7 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if False and args.by_the_power_of_greyskull:
-                with np.errstate(all='ignore'):
-                    b2 = image[2-1]
-                    b3 = image[3-1]
-                    b4 = image[4-1]
-                    b5 = image[5-1]
-                    b8 = image[8-1]
-                    b11 = image[11-1]
-                    b12 = image[12-1]
-                    ndwi = (b3 - b8)/(b3 + b8)
-                    mndwi = (b3 - b11)/(b3 + b11)
-                    wri = (b3 + b4)/(b8 + b12)
-                    ndci = (b5 - b4)/(b5 + b4)
-                    # ndbi = (b11 - b8)/(b11 + b8)
-                    # ndvi = (b8 - b4)/(b8 + b4)
-                inds = [ndwi, mndwi, wri, ndci]
-                image = np.stack(inds, axis=0)
-            else:
+            if 'cheaplab' not in args.architecture:
                 for i in range(len(image)):
                     image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image_nds = np.isnan(image).sum(axis=0)
@@ -200,7 +166,6 @@ if True:
         parser.add_argument('--bands',
                             required=True, nargs='+', type=int,
                             help='list of bands to train on (1 indexed)')
-        # parser.add_argument('--by-the-power-of-greyskull', action='store_true')
         parser.add_argument('--classes',
                             required=True, type=int,
                             help='The number of prediction classes')
@@ -472,10 +437,7 @@ if __name__ == '__main__':
     mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    if False and args.by_the_power_of_greyskull:
-        args.band_count = 4
-    else:
-        args.band_count = len(args.bands)
+    args.band_count = len(args.bands)
 
     # ---------------------------------
     print('DATA')
