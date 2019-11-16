@@ -204,30 +204,24 @@ if True:
             super(CheapLabBinary, self).__init__()
             kernel_size = 1
             padding_size = (kernel_size - 1) // 2
-            intermediate_channels1 = 20
-            intermediate_channels2 = 20
+            intermediate_channels1 = 64
+            intermediate_channels2 = 32
 
             self.conv1 = torch.nn.Conv2d(
                 band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
             self.conv_numerator = torch.nn.Conv2d(
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=False)
-            self.batch_norm_numerator = torch.nn.BatchNorm2d(
-                intermediate_channels2)
             self.conv_denominator = torch.nn.Conv2d(
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
-            self.batch_norm_denomenator = torch.nn.BatchNorm2d(
-                intermediate_channels2)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                intermediate_channels2, 1)
+            self.classifier = torch.nn.Conv2d(
+                intermediate_channels2, 1, kernel_size=1)
 
         def forward(self, x):
             x = self.conv1(x)
             numerator = self.conv_numerator(x)
-            numerator = self.batch_norm_numerator(numerator)
             denomenator = self.conv_denominator(x)
-            denomenator = self.batch_norm_denomenator(denomenator)
             x = numerator / (denomenator + 1e-7)
             x = self.batch_norm_quotient(x)
             x = self.classifier(x)
@@ -442,11 +436,12 @@ if __name__ == '__main__':
     # ---------------------------------
     print('DATA')
 
-    if not os.path.exists('/tmp/mul.tif'):
+    mul = '/tmp/mul.tif'
+    if not os.path.exists(mul):
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.inference_img)
         print('Inference image bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/mul.tif')
+        s3.download_file(bucket, prefix, mul)
         del s3
 
     # ---------------------------------
@@ -526,11 +521,11 @@ if __name__ == '__main__':
             16,  # Number of threads
             256,  # Number of slots
             b'/tmp/mul.tif',  # Image data
-            ctypes.c_void_p(0),  # Label data
+            None,  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
-            ctypes.c_void_p(0),  # means
-            ctypes.c_void_p(0),  # standard deviations
+            None,  # means
+            None,  # standard deviations
             args.radius,  # typical radius of a component
             1,  # Training mode
             args.warmup_window_size,
@@ -550,11 +545,11 @@ if __name__ == '__main__':
         1,  # Number of threads
         0,  # Number of slots
         b'/tmp/mul.tif',  # Image data
-        ctypes.c_void_p(0),  # Label data
+        None,  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
-        ctypes.c_void_p(0),  # means
-        ctypes.c_void_p(0),  # standard deviations
+        None,  # means
+        None,  # standard deviations
         args.radius,  # typical radius of component
         3,  # Inference mode
         args.window_size,
@@ -578,8 +573,8 @@ if __name__ == '__main__':
     deeplab.eval()
     with torch.no_grad():
         with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw:
-            width = libchips.get_width()
-            height = libchips.get_height()
+            width = libchips.get_width(0)
+            height = libchips.get_height(0)
             print('{} {}'.format(width, height))
             for x_offset in range(0, width, args.window_size):
                 if x_offset + args.window_size > width:

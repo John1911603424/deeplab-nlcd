@@ -694,7 +694,7 @@ if True:
                             default=2, type=int,
                             help='consult this: https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md')
         parser.add_argument('--label-img',
-                            required=True,
+                            required=True, nargs='+', type=str,
                             help='labels to train')
         parser.add_argument('--label-map',
                             help='comma separated list of mappings to apply to training labels',
@@ -740,7 +740,7 @@ if True:
         parser.add_argument('--start-from',
                             help='The saved model to start the fourth phase from')
         parser.add_argument('--training-img',
-                            required=True,
+                            required=True, nargs='+', type=str,
                             help='the input that you are training to produce labels for')
         parser.add_argument('--watchdog-seconds',
                             default=0, type=int,
@@ -767,7 +767,8 @@ if True:
                 intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
             self.batch_norm_quotient = torch.nn.BatchNorm2d(
                 intermediate_channels2)
-            self.classifier = torch.nn.Conv2d(intermediate_channels2, 1, kernel_size=1)
+            self.classifier = torch.nn.Conv2d(
+                intermediate_channels2, 1, kernel_size=1)
 
         def forward(self, x):
             x = self.conv1(x)
@@ -998,23 +999,22 @@ if __name__ == '__main__':
     # ---------------------------------
     print('DATA')
 
-    if not os.path.exists('/tmp/mul.tif'):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.training_img)
-        print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/mul.tif')
-        try:
-            s3.download_file(bucket, '{}.aux.xml'.format(
-                prefix), '/tmp/mul.tif.aux.xml')
-        except:
-            pass
-        del s3
-    if not os.path.exists('/tmp/mask.tif'):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.label_img)
-        print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/mask.tif')
-        del s3
+    args.pairs = list(zip(args.training_img, args.label_img))
+    for (i, (training_img, label_img)) in zip(range(len(args.pairs)), args.pairs):
+        mul = '/tmp/mul{}.tif'.format(i)
+        mask = '/tmp/mask{}.tif'.format(i)
+        if not os.path.exists(mul):
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(training_img)
+            print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, mul)
+            del s3
+        if not os.path.exists(mask):
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(label_img)
+            print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, mask)
+            del s3
 
     # ---------------------------------
     print('NATIVE CODE')
@@ -1027,12 +1027,28 @@ if __name__ == '__main__':
         del s3
 
     libchips = ctypes.CDLL('/tmp/libchips.so')
+    libchips.recenter.argtypes = [ctypes.c_int]
+    libchips.get_next.argtypes = [
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_int)
+    ]
+    libchips.start_multi.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.c_int, ctypes.c_int,
+        ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+
     libchips.init()
-    libchips.start(
+    libchips.start_multi(
         args.read_threads,  # Number of threads
         max(args.read_threads, args.batch_size * 8),  # Number of slots
-        b'/tmp/mul.tif',  # Image data
-        b'/tmp/mask.tif',  # Label data
+        len(args.pairs),  # The number of pairs
+        b'/tmp/mul%d.tif',  # Image data
+        b'/tmp/mask%d.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
         mus_ptr,  # means
@@ -1122,8 +1138,12 @@ if __name__ == '__main__':
     else:
         raise Exception
 
-    args.max_epoch_size = min(args.max_epoch_size, int((libchips.get_width() * libchips.get_height() * 6.0) /
-                                                       (args.window_size * args.window_size * 7.0 * args.batch_size)))
+    natural_epoch_size = 0.0
+    for i in range(len(args.pairs)):
+        natural_epoch_size = natural_epoch_size + (libchips.get_width(i) * libchips.get_height(i))
+    natural_epoch_size = (6.0 * natural_epoch_size) / (7.0 * args.window_size * args.window_size)
+    natural_epoch_size = int(natural_epoch_size)
+    args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
 
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
     if 'binary' in args.architecture:
@@ -1445,15 +1465,16 @@ if __name__ == '__main__':
 
     if not args.no_eval:
         print('\t EVALUATING')
-        libchips.start(
+        libchips.start_multi(
             args.read_threads,  # Number of threads
             args.read_threads,  # The number of read slots
-            b'/tmp/mul.tif',  # Image data
-            b'/tmp/mask.tif',  # Label data
+            len(args.pairs),  # The number of pairs
+            b'/tmp/mul%d.tif',  # Image data
+            b'/tmp/mask%d.tif',  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
-            ctypes.c_void_p(0),  # means
-            ctypes.c_void_p(0),  # standard deviations
+            None,  # means
+            None,  # standard deviations
             args.radius,  # typical radius of a component
             2,  # Evaluation mode
             args.window_size,

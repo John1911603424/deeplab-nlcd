@@ -32,27 +32,36 @@
 #include <unistd.h>
 #include "chips.h"
 
-#define BAND_COUNT (12)
+#define BAND_COUNT (13)
 
 int main(int argc, char **argv)
 {
+    const int N = 16;
+    const int M = 256;
+    int L = 1;
+
     const int window_size = 256;
-    int bands[BAND_COUNT] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    int bands[BAND_COUNT] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
     double mus[BAND_COUNT];
     double sigmas[BAND_COUNT];
     float *imagery_buffer = (float *)malloc(window_size * window_size * BAND_COUNT * sizeof(float));
     int32_t *label_buffer = (int32_t *)malloc(window_size * window_size * BAND_COUNT * sizeof(int32_t));
 
-    init();
-    start(16, 256,
-          "../../mul.tif", "../../mask.tif",
-          6, 5,
-          mus, sigmas,
-          10000,
-          1, window_size, BAND_COUNT, bands);
-    fprintf(stderr, "%d %d\n", get_width(), get_height());
+    if (argc > 1)
+    {
+        sscanf(argv[1], "%d", &L);
+    }
 
-    get_statistics("../../mul.tif", BAND_COUNT, bands, mus, sigmas);
+    init();
+    start_multi(N, M, L,
+                "/tmp/mul%d.tif", "/tmp/mask%d.tif",
+                6, 5,
+                mus, sigmas,
+                10000,
+                1, window_size, BAND_COUNT, bands);
+    fprintf(stderr, "%d %d\n", get_width(0), get_height(0));
+
+    get_statistics("/tmp/mul0.tif", BAND_COUNT, bands, mus, sigmas);
     for (int i = 0; i < BAND_COUNT; ++i)
     {
         fprintf(stderr, "%lf %lf\n", mus[i], sigmas[i]);
