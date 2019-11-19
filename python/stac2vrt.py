@@ -59,6 +59,7 @@ def cli_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--geojson-crs', default='+init=epsg:4326', type=str)
+    parser.add_argument('--imagery-only', action='store_true')
     parser.add_argument('--input', required=True, type=str)
     parser.add_argument('--local-prefix', default=None, type=str)
     return parser
@@ -87,19 +88,32 @@ def requests_read_method(uri: str) -> str:
         return pystac.STAC_IO.default_read_text_method(uri)
 
 
-def decorate_item(item: pystac.label.LabelItem) -> pystac.label.LabelItem:
-    sources = list(item.get_sources())
-    assert(len(sources) == 1)
-    source = sources[0]
-    source_assets = source.assets
-    assert(len(source_assets) == 1)
+def decorate_item(item: Union[pystac.item.Item, pystac.label.LabelItem]) -> Union[pystac.item.Item, pystac.label.LabelItem]:
+    """Decorate a label item or an imagery item with data for later use
+
+    Arguments:
+        item {Union[pystac.item.Item, pystac.label.LabelItem]} -- The item to decorate
+
+    Returns:
+        Union[pystac.item.Item, pystac.label.LabelItem] -- The decorated item
+    """
+    if isinstance(item, pystac.label.LabelItem):
+        sources = list(item.get_sources())
+        assert(len(sources) == 1)
+        source = sources[0]
+        source_assets = source.assets
+        assert(len(source_assets) == 1)
+    elif isinstance(item, pystac.item.Item):
+        source = item
+        source_assets = item.assets
+        assert(len(source_assets) == 1)
     source_asset = next(iter(source_assets.values()))
     imagery_uri = source_asset.href
     if imagery_uri.startswith('./'):
         base = next(filter(lambda link: link.rel ==
                            'self', source.get_links())).target
         base = '/'.join(base.split('/')[0:-1]) + '/'
-        item.imagery_uri = imagery_uri.replace('./', base)
+        item.imagery_uri = base + imagery_uri[2:len(imagery_uri)]
         item.imagery_uri = item.imagery_uri.replace('s3://', '/vsis3/')
 
     with rasterio.open(item.imagery_uri, 'r') as input_ds:
@@ -111,6 +125,14 @@ def decorate_item(item: pystac.label.LabelItem) -> pystac.label.LabelItem:
 
 
 def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]:
+    """Render a vector label item to a GeoTiff
+
+    Arguments:
+        item {pystac.label.LabelItem} -- The label item to render
+
+    Returns:
+        Optional[Tuple[str, str]] -- The uri of the associated imagery and the new label raster
+    """
     assets = item.assets
     assert(len(assets) == 1)
     json_uri = next(iter(assets.values())).href
@@ -118,7 +140,7 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
         base = next(filter(lambda link: link.rel ==
                            'self', item.get_links())).target
         base = '/'.join(base.split('/')[0:-1]) + '/'
-        json_uri = json_uri.replace('./', base)
+        json_uri = base + json_uri[2:len(json_uri)]
     json_str = pystac.STAC_IO.read_text_method(json_uri)
     label_vectors = json.loads(json_str)
     label_features = label_vectors.get('features')
@@ -163,7 +185,14 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
         return None
 
 
-def render_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
+def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
+    """Render a list of label items
+
+    Lists of imagery and label rasters are written which are suitable as input to gdalbuildvrt
+
+    Arguments:
+        t {Tuple[int, List[pystac.label.LabelItem]]} -- A list of label items along with the list number
+    """
     (i, item_list) = t
     imagery_txt = '/tmp/imagery-{}.txt'.format(i)
     label_txt = '/tmp/labels-{}.txt'.format(i)
@@ -175,6 +204,21 @@ def render_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
             g.write(label + '\n')
 
 
+def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
+    """Render a list of imagery items
+
+    A list of imagery is written which is suitable as input to gdalbuildvrt
+
+    Arguments:
+        t {Tuple[int, List[pystac.item.Item]]} -- A list of label items along with a list number
+    """
+    (i, item_list) = t
+    imagery_txt = '/tmp/imagery-{}.txt'.format(i)
+    with open(imagery_txt, 'w') as f:
+        for item in item_list:
+            f.write(item.imagery_uri + '\n')
+
+
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
@@ -184,8 +228,8 @@ if __name__ == '__main__':
 
     def requests_read_method_local(uri: str) -> str:
         if uri.startswith('./'):
-            uri = uri.replace('./', base_prefix)  # yes
-        if local_prefix is not None and uri.endswith('json'):
+            uri = base_prefix + uri[2:len(uri)]
+        if local_prefix is not None and (uri.endswith('.json') or uri.endswith('.geojson')):
             uri = uri.replace(base_prefix, local_prefix)
         return requests_read_method(uri)
 
@@ -193,10 +237,14 @@ if __name__ == '__main__':
 
     catalog = pystac.Catalog.from_file(args.input)
     for collection in catalog.get_children():
-        if 'label' in str.lower(collection.description):
-            label_collection = collection
+        if args.imagery_only:
+            if 'imagery' in str.lower(collection.description):
+                interesting_collection = collection
+        else:
+            if 'label' in str.lower(collection.description):
+                interesting_collection = collection
 
-    label_items = label_collection.get_items()
+    interesting_items = interesting_collection.get_items()
 
     liboverlaps = ctypes.CDLL('/tmp/liboverlaps.so')
     liboverlaps.query.argtypes = [
@@ -208,7 +256,7 @@ if __name__ == '__main__':
     liboverlaps.add_tree()
     item_lists: List[List[pystac.label.LabelItem]] = [[]]
 
-    for item in label_items:
+    for item in interesting_items:
         decorate_item(item)
         (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
 
@@ -229,4 +277,7 @@ if __name__ == '__main__':
             print('inserting item {} into new list {}'.format(item, i))
 
     for t in zip(range(len(item_lists)), item_lists):
-        render_item_list(t)
+        if args.imagery_only:
+            render_imagery_item_list(t)
+        else:
+            render_label_item_list(t)
