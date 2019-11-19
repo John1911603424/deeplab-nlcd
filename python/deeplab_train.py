@@ -437,7 +437,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            if 'cheaplab' not in args.architecture:
+            if 'binary' not in args.architecture:
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
@@ -534,10 +534,10 @@ if True:
 
             if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
                 if not args.no_upload:
-                    torch.save(model.state_dict(), 'deeplab.pth')
+                    torch.save(model.state_dict(), 'weights.pth')
                     s3 = boto3.client('s3')
-                    s3.upload_file('deeplab.pth', args.s3_bucket,
-                                   '{}/{}/deeplab_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
+                    s3.upload_file('weights.pth', args.s3_bucket,
+                                   '{}/{}/weights_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
                     del s3
 
 # Evaluation
@@ -1107,7 +1107,7 @@ if __name__ == '__main__':
     if not args.no_upload:
         s3 = boto3.client('s3')
         s3.upload_file('/tmp/args.txt', args.s3_bucket,
-                       '{}/{}/deeplab_training_args.txt'.format(args.s3_prefix, arg_hash))
+                       '{}/{}/training_args.txt'.format(args.s3_prefix, arg_hash))
         del s3
 
     # ---------------------------------
@@ -1116,14 +1116,15 @@ if __name__ == '__main__':
     complete_thru = -1
     current_epoch = 0
     current_pth = None
+
     if args.start_from is None:
         if not args.no_upload:
             for pth in get_matching_s3_keys(
                     bucket=args.s3_bucket,
                     prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
                     suffix='pth'):
-                m1 = re.match('.*deeplab_(\d+).pth$', pth)
-                m2 = re.match('.*deeplab_checkpoint_(\d+).pth', pth)
+                m1 = re.match('.*weights_(\d+).pth$', pth)
+                m2 = re.match('.*weights_checkpoint_(\d+).pth', pth)
                 if m1:
                     phase = int(m1.group(1))
                     if phase > complete_thru:
@@ -1211,9 +1212,10 @@ if __name__ == '__main__':
             pretrained=True
         ).to(device)
 
+    # Phase 1
     if complete_thru == 0:
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
@@ -1221,17 +1223,17 @@ if __name__ == '__main__':
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
-        model.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 0:
-        print('\t TRAINING FIRST AND LAST LAYERS')
+        print('\t TRAINING FIRST AND LAST LAYERS (1/2)')
 
         for p in model.parameters():
             p.requires_grad = False
         for layer in model.input_layers + model.output_layers:
             for p in layer.parameters():
-                p.required_grad = True
+                p.requires_grad = True
 
         ps = []
         for n, p in model.named_parameters():
@@ -1257,17 +1259,10 @@ if __name__ == '__main__':
               copy.copy(args),
               arg_hash)
 
-        if not args.no_upload:
-            print('\t UPLOADING')
-            torch.save(model.state_dict(), 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
-            del s3
-
+    # Phase 2
     if complete_thru == 1:
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
@@ -1275,17 +1270,17 @@ if __name__ == '__main__':
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
-        model.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 1:
-        print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
+        print('\t TRAINING FIRST AND LAST LAYERS (2/2)')
 
         for p in model.parameters():
             p.requires_grad = False
         for layer in model.input_layers + model.output_layers:
             for p in layer.parameters():
-                p.required_grad = True
+                p.requires_grad = True
 
         ps = []
         for n, p in model.named_parameters():
@@ -1314,26 +1309,27 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(model.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'weights.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
+            s3.upload_file('weights.pth', args.s3_bucket,
+                           '{}/{}/weights_1.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
+    # Phase 3
     if complete_thru == 2:
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        model.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 2:
-        print('\t TRAINING ALL LAYERS')
+        print('\t TRAINING ALL LAYERS (1/2)')
 
         for p in model.parameters():
             p.requires_grad = True
@@ -1361,28 +1357,21 @@ if __name__ == '__main__':
               copy.copy(args),
               arg_hash)
 
-        if not args.no_upload:
-            print('\t UPLOADING')
-            torch.save(model.state_dict(), 'deeplab.pth')
-            s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
-            del s3
-
+    # Phase 4
     if complete_thru == 3:
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        model.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 3:
-        print('\t TRAINING ALL LAYERS AGAIN')
+        print('\t TRAINING ALL LAYERS (2/2)')
 
         for p in model.parameters():
             p.requires_grad = True
@@ -1415,24 +1404,25 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(model.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'weights.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+            s3.upload_file('weights.pth', args.s3_bucket,
+                           '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
+    # Restart in Phase 4
     if complete_thru == 4:
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        model.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
         del s3
 
         for p in model.parameters():
@@ -1452,6 +1442,8 @@ if __name__ == '__main__':
             opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
         sched = OneCycleLR(opt, max_lr=args.learning_rate4,
                            epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+        for _ in range(current_epoch):
+            sched.step()
 
         train(model,
               opt,
@@ -1467,10 +1459,10 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(model.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'weights.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('deeplab.pth', args.s3_bucket,
-                           '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
+            s3.upload_file('weights.pth', args.s3_bucket,
+                           '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
             del s3
 
     libchips.stop()
