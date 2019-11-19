@@ -751,24 +751,23 @@ if True:
 
 # Architectures
 if True:
-    class CheapLabBinary(torch.nn.Module):
+    class LearnedIndices(torch.nn.Module):
+
+        output_channels = 32
+
         def __init__(self, band_count):
-            super(CheapLabBinary, self).__init__()
+            super(LearnedIndices, self).__init__()
+            intermediate_channels1 = 64
             kernel_size = 1
             padding_size = (kernel_size - 1) // 2
-            intermediate_channels1 = 64
-            intermediate_channels2 = 32
 
             self.conv1 = torch.nn.Conv2d(
                 band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
             self.conv_numerator = torch.nn.Conv2d(
-                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=False)
+                intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=False)
             self.conv_denominator = torch.nn.Conv2d(
-                intermediate_channels1, intermediate_channels2, kernel_size=1, padding=0, bias=True)
-            self.batch_norm_quotient = torch.nn.BatchNorm2d(
-                intermediate_channels2)
-            self.classifier = torch.nn.Conv2d(
-                intermediate_channels2, 1, kernel_size=1)
+                intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=True)
+            self.batch_norm_quotient = torch.nn.BatchNorm2d(self.output_channels)
 
         def forward(self, x):
             x = self.conv1(x)
@@ -776,24 +775,36 @@ if True:
             denomenator = self.conv_denominator(x)
             x = numerator / (denomenator + 1e-7)
             x = self.batch_norm_quotient(x)
+            return x
+
+    class CheapLabBinary(torch.nn.Module):
+        def __init__(self, band_count):
+            super(CheapLabBinary, self).__init__()
+            self.indices = LearnedIndices(band_count)
+            self.classifier = torch.nn.Conv2d(
+                self.indices.output_channels, 1, kernel_size=1)
+
+        def forward(self, x):
+            x = self.indices(x)
             x = self.classifier(x)
             return x
 
-    def make_model_cheaplab_binary(band_count, input_stride=1, class_count=1, divisor=1):
+    def make_model_cheaplab_binary(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
         cheaplab = CheapLabBinary(band_count)
         return cheaplab
 
     class DeepLabResnet18Binary(torch.nn.Module):
-        def __init__(self, band_count, input_stride, divisor):
+        def __init__(self, band_count, input_stride, divisor, pretrained):
             super(DeepLabResnet18Binary, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
+            self.indices = LearnedIndices(band_count)
+            resnet18 = torchvision.models.resnet.resnet18(pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet18, return_layers={'layer4': 'out'})
             inplanes = 512
             self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
                 inplanes, 1)
             self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+                self.indices.output_channels, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
             if input_stride == 1:
                 self.factor = 16 // divisor
@@ -803,6 +814,7 @@ if True:
         def forward(self, x):
             [w, h] = x.shape[-2:]
 
+            x = self.indices(x)
             features = self.backbone(torch.nn.functional.interpolate(
                 x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
@@ -815,14 +827,14 @@ if True:
 
             return x
 
-    def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1):
-        deeplab = DeepLabResnet18Binary(band_count, input_stride, divisor)
+    def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
+        deeplab = DeepLabResnet18Binary(band_count, input_stride, divisor, pretrained)
         return deeplab
 
     class DeepLabResnet18(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor):
+        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
             super(DeepLabResnet18, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet18(pretrained=True)
+            resnet18 = torchvision.models.resnet.resnet18(pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 512
@@ -861,15 +873,15 @@ if True:
 
             return result
 
-    def make_model_resnet18(band_count, input_stride=1, class_count=2, divisor=1):
+    def make_model_resnet18(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
         deeplab = DeepLabResnet18(
-            band_count, input_stride, class_count, divisor)
+            band_count, input_stride, class_count, divisor, pretrained)
         return deeplab
 
     class DeepLabResnet34(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor):
+        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
             super(DeepLabResnet34, self).__init__()
-            resnet34 = torchvision.models.resnet.resnet34(pretrained=True)
+            resnet34 = torchvision.models.resnet.resnet34(pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 512
@@ -908,16 +920,16 @@ if True:
 
             return result
 
-    def make_model_resnet34(band_count, input_stride=1, class_count=2, divisor=1):
+    def make_model_resnet34(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
         deeplab = DeepLabResnet34(
-            band_count, input_stride, class_count, divisor)
+            band_count, input_stride, class_count, divisor, pretrained)
         return deeplab
 
     class DeepLabResnet101(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor):
+        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
             super(DeepLabResnet101, self).__init__()
             resnet101 = torchvision.models.resnet.resnet101(
-                pretrained=True, replace_stride_with_dilation=[False, True, True])
+                pretrained=pretrained, replace_stride_with_dilation=[False, True, True])
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet101, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 2048
@@ -956,14 +968,14 @@ if True:
 
             return result
 
-    def make_model_resnet101(band_count, input_stride=1, class_count=2, divisor=1):
+    def make_model_resnet101(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
         deeplab = DeepLabResnet101(
-            band_count, input_stride, class_count, divisor)
+            band_count, input_stride, class_count, divisor, pretrained=pretrained)
         return deeplab
 
-    def make_model_stock(band_count, input_stride=1, class_count=2, divisor=1):
+    def make_model_stock(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
         deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=True)
+            pretrained=pretrained)
         last_class = deeplab.classifier[4] = torch.nn.Conv2d(
             256, class_count, kernel_size=7, stride=1, dilation=1)
         last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
