@@ -783,6 +783,8 @@ if True:
             self.indices = LearnedIndices(band_count)
             self.classifier = torch.nn.Conv2d(
                 self.indices.output_channels, 1, kernel_size=1)
+            self.input_layers = [self.indices]
+            self.output_layers = [self.classifier]
 
         def forward(self, x):
             x = self.indices(x)
@@ -797,7 +799,8 @@ if True:
         def __init__(self, band_count, input_stride, divisor, pretrained):
             super(DeepLabResnet18Binary, self).__init__()
             self.indices = LearnedIndices(band_count)
-            resnet18 = torchvision.models.resnet.resnet18(pretrained=pretrained)
+            resnet18 = torchvision.models.resnet.resnet18(
+                pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet18, return_layers={'layer4': 'out'})
             inplanes = 512
@@ -810,6 +813,9 @@ if True:
                 self.factor = 16 // divisor
             else:
                 self.factor = 32 // divisor
+
+            self.input_layers = [self.indices, self.backbone.conv1]
+            self.output_layers = [self.classifier[4]]
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -828,13 +834,15 @@ if True:
             return x
 
     def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-        deeplab = DeepLabResnet18Binary(band_count, input_stride, divisor, pretrained)
+        deeplab = DeepLabResnet18Binary(
+            band_count, input_stride, divisor, pretrained)
         return deeplab
 
     class DeepLabResnet18(torch.nn.Module):
         def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
             super(DeepLabResnet18, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet18(pretrained=pretrained)
+            resnet18 = torchvision.models.resnet.resnet18(
+                pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 512
@@ -850,6 +858,9 @@ if True:
                 self.factor = 16 // divisor
             else:
                 self.factor = 32 // divisor
+
+            self.input_layers = [self.backbone.conv1]
+            self.output_layers = [self.classifier[4]]
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -881,7 +892,8 @@ if True:
     class DeepLabResnet34(torch.nn.Module):
         def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
             super(DeepLabResnet34, self).__init__()
-            resnet34 = torchvision.models.resnet.resnet34(pretrained=pretrained)
+            resnet34 = torchvision.models.resnet.resnet34(
+                pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
                 resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
             inplanes = 512
@@ -897,6 +909,9 @@ if True:
                 self.factor = 16 // divisor
             else:
                 self.factor = 32 // divisor
+
+            self.input_layers = [self.backbone.conv1]
+            self.output_layers = [self.classifier[4]]
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
@@ -946,6 +961,9 @@ if True:
             else:
                 self.factor = 8 // divisor
 
+            self.input_layers = [self.backbone.conv1]
+            self.output_layers = [self.classifier[4]]
+
         def forward(self, x):
             [w, h] = x.shape[-2:]
 
@@ -982,6 +1000,8 @@ if True:
             256, class_count, kernel_size=7, stride=1, dilation=1)
         input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
             band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
+        deeplab.input_layers = [deeplab.backbone.conv1]
+        deeplab.output_layers = [deeplab.classifier[4]]
         return deeplab
 
 
@@ -1012,7 +1032,8 @@ if __name__ == '__main__':
     print('DATA')
 
     args.pairs = list(zip(args.training_img, args.label_img))
-    for (i, (training_img, label_img)) in zip(range(len(args.pairs)), args.pairs):
+    indexed_pairs = zip(range(len(args.pairs)), args.pairs)
+    for (i, (training_img, label_img)) in indexed_pairs:
         mul = '/tmp/mul{}.tif'.format(i)
         mask = '/tmp/mask{}.tif'.format(i)
         if not os.path.exists(mul):
@@ -1152,8 +1173,10 @@ if __name__ == '__main__':
 
     natural_epoch_size = 0.0
     for i in range(len(args.pairs)):
-        natural_epoch_size = natural_epoch_size + (libchips.get_width(i) * libchips.get_height(i))
-    natural_epoch_size = (6.0 * natural_epoch_size) / (7.0 * args.window_size * args.window_size)
+        natural_epoch_size = natural_epoch_size + \
+            (libchips.get_width(i) * libchips.get_height(i))
+    natural_epoch_size = (6.0 * natural_epoch_size) / \
+        (7.0 * args.window_size * args.window_size)
     natural_epoch_size = int(natural_epoch_size)
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
 
@@ -1180,49 +1203,38 @@ if __name__ == '__main__':
     print('TRAINING')
 
     if complete_thru == -1:
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
-            divisor=args.resolution_divisor
+            divisor=args.resolution_divisor,
+            pretrained=True
         ).to(device)
 
     if complete_thru == 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
-            divisor=args.resolution_divisor
+            divisor=args.resolution_divisor,
+            pretrained=True
         ).to(device)
-        deeplab.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 0:
         print('\t TRAINING FIRST AND LAST LAYERS')
 
-        for p in deeplab.parameters():
+        for p in model.parameters():
             p.requires_grad = False
-        if 'binary' not in args.architecture:
-            last_class = deeplab.classifier[4]
-        else:
-            last_class = deeplab.classifier
-        for p in last_class.parameters():
-            p.requires_grad = True
-        if 'binary' not in args.architecture:
-            last_class_aux = deeplab.aux_classifier[4]
-            for p in last_class_aux.parameters():
-                p.requires_grad = True
-        if hasattr(deeplab, 'backbone'):
-            input_filters = deeplab.backbone.conv1
-        else:
-            input_filters = deeplab.conv1
-        for p in input_filters.parameters():
-            p.requires_grad = True
+        for layer in model.input_layers + model.output_layers:
+            for p in layer.parameters():
+                p.required_grad = True
 
         ps = []
-        for n, p in deeplab.named_parameters():
+        for n, p in model.named_parameters():
             if p.requires_grad == True:
                 ps.append(p)
             else:
@@ -1235,7 +1247,7 @@ if __name__ == '__main__':
         elif args.optimizer == 'adamw':
             opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
 
-        train(deeplab,
+        train(model,
               opt,
               None,
               obj,
@@ -1247,7 +1259,7 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
                            '{}/{}/deeplab_0.pth'.format(args.s3_prefix, arg_hash))
@@ -1256,39 +1268,27 @@ if __name__ == '__main__':
     if complete_thru == 1:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
-            divisor=args.resolution_divisor
+            divisor=args.resolution_divisor,
+            pretrained=True
         ).to(device)
-        deeplab.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 1:
         print('\t TRAINING FIRST AND LAST LAYERS AGAIN')
 
-        for p in deeplab.parameters():
+        for p in model.parameters():
             p.requires_grad = False
-        if 'binary' not in args.architecture:
-            last_class = deeplab.classifier[4]
-        else:
-            last_class = deeplab.classifier
-        for p in last_class.parameters():
-            p.requires_grad = True
-        if 'binary' not in args.architecture:
-            last_class_aux = deeplab.aux_classifier[4]
-            for p in last_class_aux.parameters():
-                p.requires_grad = True
-        if hasattr(deeplab, 'backbone'):
-            input_filters = deeplab.backbone.conv1
-        else:
-            input_filters = deeplab.conv1
-        for p in input_filters.parameters():
-            p.requires_grad = True
+        for layer in model.input_layers + model.output_layers:
+            for p in layer.parameters():
+                p.required_grad = True
 
         ps = []
-        for n, p in deeplab.named_parameters():
+        for n, p in model.named_parameters():
             if p.requires_grad == True:
                 ps.append(p)
             else:
@@ -1302,7 +1302,7 @@ if __name__ == '__main__':
         sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
                                   epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
 
-        train(deeplab,
+        train(model,
               opt,
               sched,
               obj,
@@ -1314,7 +1314,7 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
                            '{}/{}/deeplab_1.pth'.format(args.s3_prefix, arg_hash))
@@ -1323,23 +1323,23 @@ if __name__ == '__main__':
     if complete_thru == 2:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        deeplab.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 2:
         print('\t TRAINING ALL LAYERS')
 
-        for p in deeplab.parameters():
+        for p in model.parameters():
             p.requires_grad = True
 
         ps = []
-        for n, p in deeplab.named_parameters():
+        for n, p in model.named_parameters():
             if p.requires_grad == True:
                 ps.append(p)
             else:
@@ -1351,7 +1351,7 @@ if __name__ == '__main__':
         elif args.optimizer == 'adamw':
             opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
 
-        train(deeplab,
+        train(model,
               opt,
               None,
               obj,
@@ -1363,7 +1363,7 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
                            '{}/{}/deeplab_2.pth'.format(args.s3_prefix, arg_hash))
@@ -1372,23 +1372,23 @@ if __name__ == '__main__':
     if complete_thru == 3:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        deeplab.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('deeplab.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
     elif complete_thru < 3:
         print('\t TRAINING ALL LAYERS AGAIN')
 
-        for p in deeplab.parameters():
+        for p in model.parameters():
             p.requires_grad = True
 
         ps = []
-        for n, p in deeplab.named_parameters():
+        for n, p in model.named_parameters():
             if p.requires_grad == True:
                 ps.append(p)
             else:
@@ -1402,7 +1402,7 @@ if __name__ == '__main__':
         sched = OneCycleLR(opt, max_lr=args.learning_rate4,
                            epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
 
-        train(deeplab,
+        train(model,
               opt,
               sched,
               obj,
@@ -1415,7 +1415,7 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
                            '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
@@ -1426,20 +1426,20 @@ if __name__ == '__main__':
 
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'deeplab.pth')
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=len(args.weights),
             divisor=args.resolution_divisor
         ).to(device)
-        deeplab.load_state_dict(torch.load('deeplab.pth'))
+        model.load_state_dict(torch.load('deeplab.pth'))
         del s3
 
-        for p in deeplab.parameters():
+        for p in model.parameters():
             p.requires_grad = True
 
         ps = []
-        for n, p in deeplab.named_parameters():
+        for n, p in model.named_parameters():
             if p.requires_grad == True:
                 ps.append(p)
             else:
@@ -1453,7 +1453,7 @@ if __name__ == '__main__':
         sched = OneCycleLR(opt, max_lr=args.learning_rate4,
                            epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
 
-        train(deeplab,
+        train(model,
               opt,
               sched,
               obj,
@@ -1467,7 +1467,7 @@ if __name__ == '__main__':
 
         if not args.no_upload:
             print('\t UPLOADING')
-            torch.save(deeplab.state_dict(), 'deeplab.pth')
+            torch.save(model.state_dict(), 'deeplab.pth')
             s3 = boto3.client('s3')
             s3.upload_file('deeplab.pth', args.s3_bucket,
                            '{}/{}/deeplab.pth'.format(args.s3_prefix, arg_hash))
@@ -1492,7 +1492,7 @@ if __name__ == '__main__':
             args.window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
-        evaluate(deeplab,
+        evaluate(model,
                  libchips,
                  device,
                  copy.copy(args),
