@@ -395,7 +395,8 @@ if True:
 
     def get_batch(libchips: ctypes.CDLL,
                   args: argparse.Namespace,
-                  batch_multiplier: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+                  batch_multiplier: int = 1,
+                  should_jitter: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read the data specified in the given plan
 
         Arguments:
@@ -420,7 +421,12 @@ if True:
         labels = []
         for _ in range(args.batch_size * batch_multiplier):
             libchips.get_next(temp1_ptr, temp2_ptr)
-            rasters.append(temp1.copy())
+            if should_jitter:
+                jitter = np.random.rand(
+                    len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
+                rasters.append(temp1.copy() * jitter)
+            else:
+                rasters.append(temp1.copy())
             labels.append(temp2.copy())
 
         raster_batch = []
@@ -490,9 +496,9 @@ if True:
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
-                batch = get_batch(libchips, args)
+                batch = get_batch(libchips, args, should_jitter=args.color_jitter)
                 while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args)
+                    batch = get_batch(libchips, args, should_jitter=args.color_jitter)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
@@ -564,9 +570,9 @@ if True:
             fns = [0.0 for x in range(num_classes)]
             tns = [0.0 for x in range(num_classes)]
 
-            batch_mult = 4
+            batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
-                batch = get_batch(libchips, args, batch_mult)
+                batch = get_batch(libchips, args, batch_multiplier=batch_mult)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     out = out['out']
@@ -683,6 +689,7 @@ if True:
                             required=True,
                             help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
+        parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
@@ -767,7 +774,8 @@ if True:
                 intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=False)
             self.conv_denominator = torch.nn.Conv2d(
                 intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=True)
-            self.batch_norm_quotient = torch.nn.BatchNorm2d(self.output_channels)
+            self.batch_norm_quotient = torch.nn.BatchNorm2d(
+                self.output_channels)
 
         def forward(self, x):
             x = self.conv1(x)
@@ -1179,6 +1187,7 @@ if __name__ == '__main__':
     natural_epoch_size = (6.0 * natural_epoch_size) / \
         (7.0 * args.window_size * args.window_size)
     natural_epoch_size = int(natural_epoch_size)
+    print('\t NATURAL EPOCH SIZE={}'.format(natural_epoch_size))
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
 
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
