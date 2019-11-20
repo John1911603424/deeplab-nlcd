@@ -806,7 +806,6 @@ if True:
     class DeepLabResnet18Binary(torch.nn.Module):
         def __init__(self, band_count, input_stride, divisor, pretrained):
             super(DeepLabResnet18Binary, self).__init__()
-            self.indices = LearnedIndices(band_count)
             resnet18 = torchvision.models.resnet.resnet18(
                 pretrained=pretrained)
             self.backbone = torchvision.models._utils.IntermediateLayerGetter(
@@ -815,20 +814,19 @@ if True:
             self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
                 inplanes, 1)
             self.backbone.conv1 = torch.nn.Conv2d(
-                self.indices.output_channels, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
             if input_stride == 1:
                 self.factor = 16 // divisor
             else:
                 self.factor = 32 // divisor
 
-            self.input_layers = [self.indices, self.backbone.conv1]
+            self.input_layers = [self.backbone.conv1]
             self.output_layers = [self.classifier[4]]
 
         def forward(self, x):
             [w, h] = x.shape[-2:]
 
-            x = self.indices(x)
             features = self.backbone(torch.nn.functional.interpolate(
                 x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
