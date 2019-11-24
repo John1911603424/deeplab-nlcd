@@ -236,15 +236,28 @@ if __name__ == '__main__':
     pystac.STAC_IO.read_text_method = requests_read_method_local
 
     catalog = pystac.Catalog.from_file(args.input)
+    interesting_collections = []
     for collection in catalog.get_children():
         if args.imagery_only:
             if 'imagery' in str.lower(collection.description):
-                interesting_collection = collection
+                print('imagery collection {} ({}) found'.format(
+                    collection, collection.description))
+                interesting_collections.append(collection)
+            else:
+                print('collection {} ({}) rejected'.format(
+                    collection, collection.description))
         else:
             if 'label' in str.lower(collection.description):
-                interesting_collection = collection
+                print('label collection {} ({}) found'.format(
+                    collection, collection.description))
+                interesting_collections.append(collection)
+            else:
+                print('collection {} ({}) rejected'.format(
+                    collection, collection.description))
 
-    interesting_items = interesting_collection.get_items()
+    interesting_itemss = []
+    for interesting_collection in interesting_collections:
+        interesting_itemss.append(interesting_collection.get_items())
 
     liboverlaps = ctypes.CDLL('/tmp/liboverlaps.so')
     liboverlaps.query.argtypes = [
@@ -256,25 +269,26 @@ if __name__ == '__main__':
     liboverlaps.add_tree()
     item_lists: List[List[pystac.label.LabelItem]] = [[]]
 
-    for item in interesting_items:
-        decorate_item(item)
-        (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
+    for interesting_items in interesting_itemss:
+        for item in interesting_items:
+            decorate_item(item)
+            (xmin, ymin, xmax, ymax) = shapely.geometry.shape(item.geometry).bounds
 
-        inserted = False
-        for i in range(len(item_lists)):
-            if len(item_lists[i]) == 0 or (item_lists[i][-1].imagery_crs == item.imagery_crs and liboverlaps.query(i, xmin, ymin, xmax, ymax) > 0.95):
+            inserted = False
+            for i in range(len(item_lists)):
+                if len(item_lists[i]) == 0 or (item_lists[i][-1].imagery_crs == item.imagery_crs and liboverlaps.query(i, xmin, ymin, xmax, ymax) > 0.95):
+                    liboverlaps.insert(i, xmin, ymin, xmax, ymax)
+                    item_lists[i].append(item)
+                    inserted = True
+                    print('inserting item {} into list {}'.format(item, i))
+                    break
+            if not inserted:
+                i = len(item_lists)
+                liboverlaps.add_tree()
                 liboverlaps.insert(i, xmin, ymin, xmax, ymax)
+                item_lists.append([])
                 item_lists[i].append(item)
-                inserted = True
-                print('inserting item {} into list {}'.format(item, i))
-                break
-        if not inserted:
-            i = len(item_lists)
-            liboverlaps.add_tree()
-            liboverlaps.insert(i, xmin, ymin, xmax, ymax)
-            item_lists.append([])
-            item_lists[i].append(item)
-            print('inserting item {} into new list {}'.format(item, i))
+                print('inserting item {} into new list {}'.format(item, i))
 
     for t in zip(range(len(item_lists)), item_lists):
         if args.imagery_only:
