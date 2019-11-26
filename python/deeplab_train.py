@@ -45,6 +45,7 @@ from urllib.parse import urlparse
 
 import boto3  # type: ignore
 import numpy as np  # type: ignore
+import requests
 
 import torch
 import torchvision  # type: ignore
@@ -298,6 +299,29 @@ SCHED = Optional[OneCycleLR]
 
 # S3
 if True:
+    def read_text(uri: str) -> str:
+        """A reader function that supports http, s3, and local files
+
+        Arguments:
+            uri {str} -- The URI
+
+        Returns:
+            str -- The string found at that URI
+        """
+        parsed = urlparse(uri)
+        if parsed.scheme.startswith('http'):
+            return requests.get(uri).text
+        elif parsed.scheme.startswith('s3'):
+            parsed2 = urlparse(uri, allow_fragments=False)
+            bucket = parsed2.netloc
+            prefix = parsed2.path.lstrip('/')
+            s3 = boto3.resource('s3')
+            obj = s3.Object(bucket, prefix)
+            return obj.get()['Body'].read().decode('utf-8')
+        else:
+            with open(uri, 'r') as f:
+                return f.read()
+
     def parse_s3_url(url: str) -> Tuple[str, str]:
         """Given an S3 URI, return the bucket and prefix
 
@@ -1011,7 +1035,6 @@ if True:
         deeplab.output_layers = [deeplab.classifier[4]]
         return deeplab
 
-
 if __name__ == '__main__':
 
     parser = training_cli_parser()
@@ -1037,6 +1060,16 @@ if __name__ == '__main__':
 
     # ---------------------------------
     print('DATA')
+
+    # Look for newline-delimited lists of files
+    if len(args.training_img) == 1 and args.training_img[0].endswith('.list'):
+        text = read_text(args.training_img[0])
+        args.training_img = list(
+            filter(lambda line: len(line) > 0, text.split('\n')))
+    if len(args.label_img) == 1 and args.label_img[0].endswith('.list'):
+        text = read_text(args.label_img[0])
+        args.label_img = list(
+            filter(lambda line: len(line) > 0, text.split('\n')))
 
     args.pairs = list(zip(args.training_img, args.label_img))
     indexed_pairs = zip(range(len(args.pairs)), args.pairs)
