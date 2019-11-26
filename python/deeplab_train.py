@@ -759,7 +759,7 @@ if True:
         parser.add_argument('--optimizer', default='adam',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
-        parser.add_argument('--read-threads', default=16, type=int)
+        parser.add_argument('--read-threads', type=int)
         parser.add_argument('--reroll', default=0.90, type=float)
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--s3-bucket',
@@ -846,6 +846,9 @@ if __name__ == '__main__':
             print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
             s3.download_file(bucket, prefix, mask)
             del s3
+
+    if not args.read_threads:
+        args.read_threads = len(args.pairs)
 
     # ---------------------------------
     print('NATIVE CODE')
