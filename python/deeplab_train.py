@@ -43,9 +43,9 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
+import boto3  # type: ignore
 import numpy as np  # type: ignore
 
-import boto3  # type: ignore
 import torch
 import torchvision  # type: ignore
 
@@ -496,9 +496,11 @@ if True:
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
-                batch = get_batch(libchips, args, should_jitter=args.color_jitter)
+                batch = get_batch(
+                    libchips, args, should_jitter=args.color_jitter)
                 while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args, should_jitter=args.color_jitter)
+                    batch = get_batch(
+                        libchips, args, should_jitter=args.color_jitter)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
@@ -564,11 +566,11 @@ if True:
         """
         model.eval()
         with torch.no_grad():
-            num_classes = len(args.weights)
-            tps = [0.0 for x in range(num_classes)]
-            fps = [0.0 for x in range(num_classes)]
-            fns = [0.0 for x in range(num_classes)]
-            tns = [0.0 for x in range(num_classes)]
+            class_count = len(args.weights)
+            tps = [0.0 for x in range(class_count)]
+            fps = [0.0 for x in range(class_count)]
+            fns = [0.0 for x in range(class_count)]
+            tns = [0.0 for x in range(class_count)]
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
@@ -591,9 +593,9 @@ if True:
                     dont_care = (labels == args.label_nd)
                 else:
                     dont_care = np.zeros(labels.shape)
-                out = out + len(args.weights)*dont_care
+                out = out + class_count*dont_care
 
-                for j in range(len(args.weights)):
+                for j in range(class_count):
                     tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
                     fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
                     fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
@@ -615,7 +617,7 @@ if True:
 
         recalls = []
         precisions = []
-        for j in range(len(args.weights)):
+        for j in range(class_count):
             recall = tps[j] / (tps[j] + fns[j])
             recalls.append(recall)
             precision = tps[j] / (tps[j] + fps[j])
@@ -625,7 +627,7 @@ if True:
         print('Precisions {}'.format(precisions))
 
         f1s = []
-        for j in range(len(args.weights)):
+        for j in range(class_count):
             f1 = 2 * (precisions[j] * recalls[j]) / \
                 (precisions[j] + recalls[j])
             f1s.append(f1)
@@ -686,8 +688,7 @@ if True:
                             help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands',
-                            required=True,
-                            help='list of bands to train on (1 indexed)', nargs='+', type=int)
+                            required=True, help='list of bands to train on (1 indexed)', nargs='+', type=int)
         parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
@@ -704,7 +705,7 @@ if True:
                             required=True, nargs='+', type=str,
                             help='labels to train')
         parser.add_argument('--label-map',
-                            help='comma separated list of mappings to apply to training labels',
+                            required=True, help='comma separated list of mappings to apply to training labels',
                             action=StoreDictKeyPair, default=None)
         parser.add_argument('--label-nd',
                             default=None, type=int,
@@ -752,7 +753,7 @@ if True:
         parser.add_argument('--watchdog-seconds',
                             default=0, type=int,
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
-        parser.add_argument('--weights', nargs='+', required=True, type=float)
+        parser.add_argument('--weights', nargs='+', type=float)
         parser.add_argument('--window-size', default=32, type=int)
         return parser
 
@@ -1149,8 +1150,12 @@ if __name__ == '__main__':
 
     device = torch.device(args.backend)
 
+    if not args.weights:
+        args.weights = [1.0, 1.0]
+    class_count = len(args.weights)
+
     if args.label_nd is None:
-        args.label_nd = len(args.weights)
+        args.label_nd = class_count
         print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
 
     if args.image_nd is None:
@@ -1214,7 +1219,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1226,7 +1231,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1273,7 +1278,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1329,7 +1334,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
@@ -1371,7 +1376,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
@@ -1426,7 +1431,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
