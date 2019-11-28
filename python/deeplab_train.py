@@ -787,7 +787,7 @@ if True:
 
     def load_architectures(uri: str) -> None:
         arch_str = read_text(uri)
-        arch_code = compile(arch_str, '/dev/null', 'exec')
+        arch_code = compile(arch_str, uri, 'exec')
         exec(arch_code, globals())
 
 
