@@ -642,13 +642,12 @@ if True:
                     dont_care = (labels == args.label_nd)
                 else:
                     dont_care = np.zeros(labels.shape)
-                out = out + class_count*dont_care
 
                 for j in range(class_count):
-                    tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
-                    fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
-                    fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
-                    tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
+                    tps[j] = tps[j] + ((out == j)*(labels == j)*(dont_care != 1)).sum()
+                    fps[j] = fps[j] + ((out == j)*(labels != j)*(dont_care != 1)).sum()
+                    fns[j] = fns[j] + ((out != j)*(labels == j)*(dont_care != 1)).sum()
+                    tns[j] = tns[j] + ((out != j)*(labels != j)*(dont_care != 1)).sum()
 
                 if random.randint(0, args.batch_size * 4) == 0:
                     libchips.recenter(1)
