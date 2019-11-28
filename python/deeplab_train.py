@@ -530,10 +530,34 @@ if True:
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
                     if args.architecture.endswith('-binary.py'):
-                        label_float = (batch[1] == 1).to(
-                            device, dtype=torch.float)
-                        pred_sliced = pred[:, 0, :, :]
-                        loss = obj(pred_sliced, label_float)
+                        if '-regression' in args.architecture:
+                            pred_out: torch.Tensor = pred.get('out')
+                            pred_pcts: torch.Tensor = pred.get('pct')
+
+                            # segmentation
+                            label_float = (batch[1] == 1).to(
+                                device, dtype=torch.float)
+                            pred_sliced = pred_out[:, 0, :, :]
+                            seg_loss = obj.get('obj1')(
+                                pred_sliced, label_float)
+
+                            # regression
+                            pcts = []
+                            # XXX assumes that background and target are 0 and 1, respectively
+                            for label in batch[1].cpu().numpy():
+                                ones = float((label == 1).sum())
+                                zeros = float((label == 0).sum())
+                                pcts.append([(ones/(ones + zeros))])
+                            pcts = torch.FloatTensor(pcts).to(device)
+                            reg_loss = obj.get('obj2')(pred_pcts, pcts)
+                            reg_loss = reg_loss
+
+                            loss = seg_loss + reg_loss
+                        else:
+                            label_float = (batch[1] == 1).to(
+                                device, dtype=torch.float)
+                            pred_sliced = pred[:, 0, :, :]
+                            loss = obj(pred_sliced, label_float)
                     else:
                         label_long = batch[1].to(device)
                         if isinstance(pred, dict):
@@ -968,15 +992,18 @@ if __name__ == '__main__':
     natural_epoch_size = int(natural_epoch_size)
     print('\t NATURAL EPOCH SIZE={}'.format(natural_epoch_size))
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
-
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
+
     if args.architecture.endswith('-binary.py'):
-        obj = torch.nn.BCEWithLogitsLoss(reduction='sum').to(device)
+        obj = torch.nn.BCEWithLogitsLoss().to(device)
     else:
         obj = torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
             weight=torch.FloatTensor(args.weights).to(device)
         ).to(device)
+
+    if '-regression' in args.architecture:
+        obj = {'obj1': obj, 'obj2': torch.nn.MSELoss()}
 
     # ---------------------------------
     if args.watchdog_seconds > 0:
