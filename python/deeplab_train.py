@@ -620,12 +620,15 @@ if True:
             fps = [0.0 for x in range(class_count)]
             fns = [0.0 for x in range(class_count)]
             tns = [0.0 for x in range(class_count)]
+            percents = []
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
+                    if 'pct' in out:
+                        percents.append(out.get('pct').cpu().numpy())
                     out = out['out']
                 out = out.data.cpu().numpy()
                 if args.architecture.endswith('-binary.py'):
@@ -644,10 +647,14 @@ if True:
                     dont_care = np.zeros(labels.shape)
 
                 for j in range(class_count):
-                    tps[j] = tps[j] + ((out == j)*(labels == j)*(dont_care != 1)).sum()
-                    fps[j] = fps[j] + ((out == j)*(labels != j)*(dont_care != 1)).sum()
-                    fns[j] = fns[j] + ((out != j)*(labels == j)*(dont_care != 1)).sum()
-                    tns[j] = tns[j] + ((out != j)*(labels != j)*(dont_care != 1)).sum()
+                    tps[j] = tps[j] + ((out == j)*(labels == j)
+                                       * (dont_care != 1)).sum()
+                    fps[j] = fps[j] + ((out == j)*(labels != j)
+                                       * (dont_care != 1)).sum()
+                    fns[j] = fns[j] + ((out != j)*(labels == j)
+                                       * (dont_care != 1)).sum()
+                    tns[j] = tns[j] + ((out != j)*(labels != j)
+                                       * (dont_care != 1)).sum()
 
                 if random.randint(0, args.batch_size * 4) == 0:
                     libchips.recenter(1)
@@ -657,6 +664,11 @@ if True:
                 with WATCHDOG_MUTEX:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
+
+        if '-regression' in args.architecture and len(percents) > 0:
+            pred_percentage = np.stack(percents).mean()
+        else:
+            pred_percentage = None
 
         print('True Positives  {}'.format(tps))
         print('False Positives {}'.format(fps))
@@ -680,6 +692,10 @@ if True:
                 (precisions[j] + recalls[j])
             f1s.append(f1)
         print('f1 {}'.format(f1s))
+        if '-regression' in args.architecture:
+            # XXX assumes that background and target are 0 and 1, respectively
+            print('predicted percentage = {}, actual percentage = {}'.format(
+                pred_percentage, (tps[1] + fns[1])/(tps[1] + fns[1] + tns[1] + fps[1])))
 
         with open('/tmp/evaluations.txt', 'w') as evaluations:
             evaluations.write('True positives: {}\n'.format(tps))
@@ -689,6 +705,10 @@ if True:
             evaluations.write('Recalls: {}\n'.format(recalls))
             evaluations.write('Precisions: {}\n'.format(precisions))
             evaluations.write('f1 scores: {}\n'.format(f1s))
+            if '-regression' in args.architecture:
+                # XXX assumes that background and target are 0 and 1, respectively
+                evaluations.write('predicted percentage = {}, actual percentage = {}'.format(
+                    pred_percentage, (tps[1] + fns[1])/(tps[1] + fns[1] + tns[1] + fps[1])))
 
         if not args.no_upload:
             s3 = boto3.client('s3')
