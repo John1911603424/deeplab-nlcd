@@ -33,10 +33,11 @@ if False:
 
 
 class Nugget(torch.nn.Module):
-    def __init__(self, kernel_size):
+    def __init__(self, kernel_size, in_channels, out_channels):
         super(Nugget, self).__init__()
-        self.conv2d = torch.nn.Conv2d(1, 1, kernel_size=kernel_size)
-        self.batch_norm = torch.nn.BatchNorm2d(1)
+        self.conv2d = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=kernel_size)
+        self.batch_norm = torch.nn.BatchNorm2d(out_channels)
         self.relu = torch.nn.ReLU()
 
     def forward(self, x):
@@ -68,15 +69,15 @@ class DeepLabResnet18Binary(torch.nn.Module):
             self.factor = 32 // divisor
 
         self.downsample = torch.nn.Sequential(
-            Nugget(16+1),
-            Nugget(8+1),
-            Nugget(4+1),
-            Nugget(2+1),
-            Nugget(1+1)
+            Nugget(16+1, inplanes, 16),
+            Nugget(8+1, 16, 8),
+            Nugget(4+1, 8, 4),
+            Nugget(2+1, 4, 2),
+            Nugget(1+1, 2, 1)
         )
 
         self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.classifier[4], self.downsample]
+        self.output_layers = [self.classifier[4]]
 
     def forward(self, x):
         [w, h] = x.shape[-2:]
@@ -84,14 +85,14 @@ class DeepLabResnet18Binary(torch.nn.Module):
         features = self.backbone(torch.nn.functional.interpolate(
             x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-        x = features['out']
-        x = self.classifier(x)
-        pct = torch.nn.functional.interpolate(
-            x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = self.downsample(pct)
-        pct = pct.reshape(-1, 1)
+        x = self.classifier(features['out'])
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
+
+        pct = torch.nn.functional.interpolate(
+            features['out'], size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
+        pct = self.downsample(pct)
+        pct = pct.reshape(-1, 1)
 
         return {'out': x, 'pct': pct}
 
