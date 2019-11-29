@@ -60,6 +60,20 @@ class LearnedIndices(torch.nn.Module):
         return x
 
 
+class Nugget(torch.nn.Module):
+    def __init__(self, kernel_size):
+        super(Nugget, self).__init__()
+        self.conv2d = torch.nn.Conv2d(1, 1, kernel_size=kernel_size)
+        self.batch_norm = torch.nn.BatchNorm2d(1)
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.batch_norm(x)
+        x = self.relu(x)
+        return x
+
+
 class CheapLabRegressionBinary(torch.nn.Module):
 
     patch_size = 32
@@ -67,24 +81,26 @@ class CheapLabRegressionBinary(torch.nn.Module):
     def __init__(self, band_count):
         super(CheapLabRegressionBinary, self).__init__()
 
-
         self.indices = LearnedIndices(band_count)
         self.classifier = torch.nn.Conv2d(
             self.indices.output_channels, 1, kernel_size=1)
-        self.fc = torch.nn.Linear(
-            self.patch_size * self.patch_size, 1, bias=True)
-        self.sigmoid = torch.nn.Sigmoid()
+        self.downsample = torch.nn.Sequential(
+            Nugget(16+1),
+            Nugget(8+1),
+            Nugget(4+1),
+            Nugget(2+1),
+            Nugget(1+1)
+        )
         self.input_layers = [self.indices]
-        self.output_layers = [self.classifier, self.fc]
+        self.output_layers = [self.classifier, self.downsample]
 
     def forward(self, x):
         x = self.indices(x)
         x = self.classifier(x)
         pct = torch.nn.functional.interpolate(
             x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = pct.reshape(-1, self.patch_size * self.patch_size)
-        pct = self.sigmoid(pct)
-        pct = self.fc(pct)
+        pct = self.downsample(pct)
+        pct = pct.reshape(-1, 1)
         return {'out': x, 'pct': pct}
 
 

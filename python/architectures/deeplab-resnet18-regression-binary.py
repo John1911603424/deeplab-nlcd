@@ -32,6 +32,20 @@ if False:
     import torchvision
 
 
+class Nugget(torch.nn.Module):
+    def __init__(self, kernel_size):
+        super(Nugget, self).__init__()
+        self.conv2d = torch.nn.Conv2d(1, 1, kernel_size=kernel_size)
+        self.batch_norm = torch.nn.BatchNorm2d(1)
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.batch_norm(x)
+        x = self.relu(x)
+        return x
+
+
 class DeepLabResnet18Binary(torch.nn.Module):
 
     patch_size = 32
@@ -53,12 +67,16 @@ class DeepLabResnet18Binary(torch.nn.Module):
         else:
             self.factor = 32 // divisor
 
-        self.fc = torch.nn.Linear(
-            self.patch_size * self.patch_size, 1, bias=True)
-        self.sigmoid = torch.nn.Sigmoid()
+        self.downsample = torch.nn.Sequential(
+            Nugget(16+1),
+            Nugget(8+1),
+            Nugget(4+1),
+            Nugget(2+1),
+            Nugget(1+1)
+        )
 
         self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.classifier[4], self.fc]
+        self.output_layers = [self.classifier[4], self.downsample]
 
     def forward(self, x):
         [w, h] = x.shape[-2:]
@@ -70,9 +88,8 @@ class DeepLabResnet18Binary(torch.nn.Module):
         x = self.classifier(x)
         pct = torch.nn.functional.interpolate(
             x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = pct.reshape(-1, self.patch_size * self.patch_size)
-        pct = self.sigmoid(pct)
-        pct = self.fc(pct)
+        pct = self.downsample(pct)
+        pct = pct.reshape(-1, 1)
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
 
