@@ -547,7 +547,7 @@ if True:
                             for label in batch[1].cpu().numpy():
                                 ones = float((label == 1).sum())
                                 zeros = float((label == 0).sum())
-                                pcts.append([(ones/(ones + zeros))])
+                                pcts.append([(ones/(ones + zeros + 1e-6))])
                             pcts = torch.FloatTensor(pcts).to(device)
                             reg_loss = obj.get('obj2')(pred_pcts, pcts)
                             reg_loss = reg_loss
