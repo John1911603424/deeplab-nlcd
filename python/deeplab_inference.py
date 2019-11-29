@@ -214,6 +214,7 @@ if True:
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
+        parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--statistics-img-uri',
                             help='The image from which to obtain statistics for normalization')
         parser.add_argument('--warmup-batch-size', default=16, type=int)
@@ -273,6 +274,7 @@ if __name__ == '__main__':
         args.band_count,
         input_stride=args.input_stride,
         class_count=args.classes,
+        divisor=args.resolution_divisor,
         pretrained=False,
     ).to(device)
     deeplab.load_state_dict(torch.load(
