@@ -83,6 +83,7 @@ class CheapLabRegressionBinary(torch.nn.Module):
         pct = torch.nn.functional.interpolate(
             x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
         pct = pct.reshape(-1, self.patch_size * self.patch_size)
+        pct = self.sigmoid(pct)
         pct = self.fc(pct)
         return {'out': x, 'pct': pct}
 
