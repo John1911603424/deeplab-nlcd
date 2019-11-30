@@ -422,7 +422,7 @@ if True:
                   args: argparse.Namespace,
                   batch_multiplier: int = 1,
                   should_jitter: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Read the data specified in the given plan
+        """Read a batch of imagery and labels
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
@@ -430,6 +430,7 @@ if True:
 
         Keyword Arguments:
             batch_multiplier {int} -- How many base batches to fetch at once
+            should_jitter {bool} -- Whether to apply color jitter
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
@@ -446,6 +447,15 @@ if True:
         labels = []
         for _ in range(args.batch_size * batch_multiplier):
             libchips.get_next(temp1_ptr, temp2_ptr)
+            if args.forbidden_imagery_value is not None and args.forbidden_label_value is None:
+                while np.any(temp1 == args.forbidden_imagery_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
+            elif args.forbidden_label_value is not None and args.forbidden_imagery_value is None:
+                while np.any(temp2 == args.forbidden_label_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
+            elif args.forbidden_imagery_value is not None and args.forbidden_label_value is not None:
+                while np.any(temp1 == args.forbidden_imagery_value) or np.any(temp2 == args.forbidden_label_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
             if should_jitter:
                 jitter = np.random.rand(
                     len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
@@ -550,7 +560,6 @@ if True:
                                 pcts.append([(ones/(ones + zeros + 1e-6))])
                             pcts = torch.FloatTensor(pcts).to(device)
                             reg_loss = obj.get('obj2')(pred_pcts, pcts)
-                            reg_loss = reg_loss
 
                             loss = seg_loss + reg_loss
                         else:
@@ -620,7 +629,7 @@ if True:
             fps = [0.0 for x in range(class_count)]
             fns = [0.0 for x in range(class_count)]
             tns = [0.0 for x in range(class_count)]
-            percents = []
+            pred_percentages = []
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
@@ -628,9 +637,10 @@ if True:
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     if 'pct' in out:
-                        percents.append(out.get('pct').cpu().numpy())
+                        pred_percentages.append(out.get('pct').cpu().numpy())
                     out = out['out']
                 out = out.data.cpu().numpy()
+
                 if args.architecture.endswith('-binary.py'):
                     out = np.array(out > 0.5, dtype=np.long)
                     out = out[:, 0, :, :]
@@ -665,8 +675,8 @@ if True:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
 
-        if '-regression' in args.architecture and len(percents) > 0:
-            pred_percentage = np.stack(percents).mean()
+        if '-regression' in args.architecture and len(pred_percentages) > 0:
+            pred_percentage = np.stack(pred_percentages).mean()
         else:
             pred_percentage = None
 
@@ -748,19 +758,21 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture', required=True,
-                            help='The desired model architecture')
+        parser.add_argument('--architecture', required=True)
         parser.add_argument('--backend',
-                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
-        parser.add_argument('--bands',
-                            required=True, help='list of bands to train on (1 indexed)', nargs='+', type=int)
+        parser.add_argument('--bands', required=True, nargs='+', type=int,
+                            help='list of bands to train on (1 indexed)')
         parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
         parser.add_argument('--epochs4', default=33, type=int)
+        parser.add_argument('--forbidden-imagery-value',
+                            default=None, type=float)
+        parser.add_argument('--forbidden-label-value',
+                            default=None, type=int)
         parser.add_argument('--image-nd',
                             default=None, type=float,
                             help='image value to ignore - must be on the first band')
@@ -858,6 +870,22 @@ if __name__ == '__main__':
     args.band_count = len(args.bands)
 
     load_architectures(args.architecture)
+
+    # ---------------------------------
+    if '-regression' in args.architecture and args.forbidden_imagery_value is None and args.image_nd is not None:
+        print('WARNING: FORBIDDEN IMAGERY VALUE NOT SET, SETTING TO {}'.format(
+            args.image_nd))
+        args.forbidden_imagery_value = args.image_nd
+    if '-regression' in args.architecture and args.forbidden_label_value is None and args.label_nd is not None:
+        for k, v in args.label_map.items():
+            if v == args.label_nd:
+                print('WARNING: FORBIDDEN LABEL VALUE NOT SET, SETTING TO {}'.format(k))
+                args.forbidden_label_value = k
+
+    if '-regression' in args.architecture and args.forbidden_imagery_value is None:
+        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN IMAGERY VALUE\n')
+    if '-regression' in args.architecture and args.forbidden_label_value is None:
+        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE\n')
 
     # ---------------------------------
     print('DATA')
