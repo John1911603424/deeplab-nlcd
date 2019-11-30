@@ -1047,7 +1047,7 @@ if __name__ == '__main__':
         ).to(device)
 
     if '-regression' in args.architecture:
-        obj = {'obj1': obj, 'obj2': torch.nn.MSELoss()}
+        obj = {'obj1': obj, 'obj2': torch.nn.L1Loss()}
 
     # ---------------------------------
     if args.watchdog_seconds > 0:
