@@ -400,6 +400,10 @@ if __name__ == '__main__':
                             out = np.array(out, dtype=np.uint8)
                             out = out * (0xff // (args.classes-1))
                             ds_final.write(out[0], window=window, indexes=1)
+                        else:
+                            out = np.array(out > 0.0, dtype=np.uint8)
+                            out = out * 0xff
+                            ds_final.write(out[0], window=window, indexes=1)
                 print('{}% complete'.format(
                     (int)(100.0 * x_offset / width)))
 
