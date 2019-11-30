@@ -420,8 +420,7 @@ if True:
 
     def get_batch(libchips: ctypes.CDLL,
                   args: argparse.Namespace,
-                  batch_multiplier: int = 1,
-                  should_jitter: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+                  batch_multiplier: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
         """Read a batch of imagery and labels
 
         Arguments:
@@ -456,7 +455,7 @@ if True:
             elif args.forbidden_imagery_value is not None and args.forbidden_label_value is not None:
                 while np.any(temp1 == args.forbidden_imagery_value) or np.any(temp2 == args.forbidden_label_value):
                     libchips.get_next(temp1_ptr, temp2_ptr)
-            if should_jitter:
+            if args.color_jitter:
                 jitter = np.random.rand(
                     len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
                 rasters.append(temp1.copy() * jitter)
@@ -531,11 +530,9 @@ if True:
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
-                batch = get_batch(
-                    libchips, args, should_jitter=args.color_jitter)
+                batch = get_batch(libchips, args)
                 while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(
-                        libchips, args, should_jitter=args.color_jitter)
+                    batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
