@@ -626,7 +626,8 @@ if True:
             fps = [0.0 for x in range(class_count)]
             fns = [0.0 for x in range(class_count)]
             tns = [0.0 for x in range(class_count)]
-            pred_percentages = []
+            preds = []
+            actuals = []
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
@@ -634,7 +635,15 @@ if True:
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
                     if 'pct' in out:
-                        pred_percentages.append(out.get('pct').cpu().numpy())
+                        # XXX assumes that background and target are 0 and 1, respectively
+                        for (pred, actual) in zip(out.get('pct').cpu().numpy(), batch[1].cpu().numpy()):
+                            pred = float(pred)
+                            preds.append(pred)
+
+                            yes = float((actual == 1).sum())
+                            no = float((actual == 0).sum())
+                            actual = yes/(yes + no)
+                            actuals.append(actual)
                     out = out['out']
                 out = out.data.cpu().numpy()
 
@@ -672,11 +681,6 @@ if True:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
 
-        if '-regression' in args.architecture and len(pred_percentages) > 0:
-            pred_percentage = np.stack(pred_percentages).mean()
-        else:
-            pred_percentage = None
-
         print('True Positives  {}'.format(tps))
         print('False Positives {}'.format(fps))
         print('False Negatives {}'.format(fns))
@@ -699,10 +703,6 @@ if True:
                 (precisions[j] + recalls[j])
             f1s.append(f1)
         print('f1 {}'.format(f1s))
-        if '-regression' in args.architecture:
-            # XXX assumes that background and target are 0 and 1, respectively
-            print('predicted percentage = {}, actual percentage = {}'.format(
-                pred_percentage, (tps[1] + fns[1])/(tps[1] + fns[1] + tns[1] + fps[1])))
 
         with open('/tmp/evaluations.txt', 'w') as evaluations:
             evaluations.write('True positives: {}\n'.format(tps))
@@ -713,9 +713,19 @@ if True:
             evaluations.write('Precisions: {}\n'.format(precisions))
             evaluations.write('f1 scores: {}\n'.format(f1s))
             if '-regression' in args.architecture:
-                # XXX assumes that background and target are 0 and 1, respectively
-                evaluations.write('predicted percentage = {}, actual percentage = {}'.format(
-                    pred_percentage, (tps[1] + fns[1])/(tps[1] + fns[1] + tns[1] + fps[1])))
+                preds = np.array(preds)
+                actuals = np.array(actuals)
+                errors = preds - actuals
+                relative_errors = (preds - actuals) / (actuals + 1e-8)
+                print('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
+                    np.abs(errors).mean(), (errors**2).mean(),
+                    relative_errors.mean(), np.abs(relative_errors).mean()))
+                print('mean prediction = {}, mean actual = {}'.format(preds.mean(), actuals.mean()))
+                evaluations.write('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
+                    np.abs(errors).mean(), (errors**2).mean(),
+                    relative_errors.mean(), np.abs(relative_errors).mean()))
+                evaluations.write('mean prediction = {}, mean actual = {}'.format(
+                    preds.mean(), actuals.mean()))
 
         if not args.no_upload:
             s3 = boto3.client('s3')
