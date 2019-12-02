@@ -151,7 +151,7 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if not args.architecutre.endswith('-binary.py'):
+            if not args.architecture.endswith('-binary.py'):
                 for i in range(len(image)):
                     image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image_nds = np.isnan(image).sum(axis=0)
@@ -403,7 +403,7 @@ if __name__ == '__main__':
                         else:
                             out = np.array(out > 0.0, dtype=np.uint8)
                             out = out * 0xff
-                            ds_final.write(out[0], window=window, indexes=1)
+                            ds_final.write(out[0][0], window=window, indexes=1)
                 print('{}% complete'.format(
                     (int)(100.0 * x_offset / width)))
 
