@@ -30,6 +30,7 @@
 # indicted.
 
 import argparse
+import codecs
 import copy
 import ctypes
 import hashlib
@@ -43,9 +44,10 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
-import numpy as np  # type: ignore
-
 import boto3  # type: ignore
+import numpy as np  # type: ignore
+import requests
+
 import torch
 import torchvision  # type: ignore
 
@@ -298,6 +300,29 @@ SCHED = Optional[OneCycleLR]
 
 # S3
 if True:
+    def read_text(uri: str) -> str:
+        """A reader function that supports http, s3, and local files
+
+        Arguments:
+            uri {str} -- The URI
+
+        Returns:
+            str -- The string found at that URI
+        """
+        parsed = urlparse(uri)
+        if parsed.scheme.startswith('http'):
+            return requests.get(uri).text
+        elif parsed.scheme.startswith('s3'):
+            parsed2 = urlparse(uri, allow_fragments=False)
+            bucket = parsed2.netloc
+            prefix = parsed2.path.lstrip('/')
+            s3 = boto3.resource('s3')
+            obj = s3.Object(bucket, prefix)
+            return obj.get()['Body'].read().decode('utf-8')
+        else:
+            with codecs.open(uri, encoding='utf-8', mode='r') as f:
+                return f.read()
+
     def parse_s3_url(url: str) -> Tuple[str, str]:
         """Given an S3 URI, return the bucket and prefix
 
@@ -395,9 +420,8 @@ if True:
 
     def get_batch(libchips: ctypes.CDLL,
                   args: argparse.Namespace,
-                  batch_multiplier: int = 1,
-                  should_jitter: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Read the data specified in the given plan
+                  batch_multiplier: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Read a batch of imagery and labels
 
         Arguments:
             libchips {ctypes.CDLL} -- A shared library handle used for reading data
@@ -405,6 +429,7 @@ if True:
 
         Keyword Arguments:
             batch_multiplier {int} -- How many base batches to fetch at once
+            should_jitter {bool} -- Whether to apply color jitter
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
@@ -421,7 +446,16 @@ if True:
         labels = []
         for _ in range(args.batch_size * batch_multiplier):
             libchips.get_next(temp1_ptr, temp2_ptr)
-            if should_jitter:
+            if args.forbidden_imagery_value is not None and args.forbidden_label_value is None:
+                while np.any(temp1 == args.forbidden_imagery_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
+            elif args.forbidden_label_value is not None and args.forbidden_imagery_value is None:
+                while np.any(temp2 == args.forbidden_label_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
+            elif args.forbidden_imagery_value is not None and args.forbidden_label_value is not None:
+                while np.any(temp1 == args.forbidden_imagery_value) or np.any(temp2 == args.forbidden_label_value):
+                    libchips.get_next(temp1_ptr, temp2_ptr)
+            if args.color_jitter:
                 jitter = np.random.rand(
                     len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
                 rasters.append(temp1.copy() * jitter)
@@ -443,7 +477,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            if 'binary' not in args.architecture:
+            if not args.architecture.endswith('-binary.py'):
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
@@ -496,17 +530,40 @@ if True:
         for i in range(starting_epoch, epochs):
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
-                batch = get_batch(libchips, args, should_jitter=args.color_jitter)
+                batch = get_batch(libchips, args)
                 while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args, should_jitter=args.color_jitter)
+                    batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 with torch.autograd.detect_anomaly():
-                    if 'binary' in args.architecture:
-                        label_float = (batch[1] == 1).to(
-                            device, dtype=torch.float)
-                        pred_sliced = pred[:, 0, :, :]
-                        loss = obj(pred_sliced, label_float)
+                    if args.architecture.endswith('-binary.py'):
+                        if '-regression' in args.architecture:
+                            pred_out: torch.Tensor = pred.get('out')
+                            pred_pcts: torch.Tensor = pred.get('pct')
+
+                            # segmentation
+                            label_float = (batch[1] == 1).to(
+                                device, dtype=torch.float)
+                            pred_sliced = pred_out[:, 0, :, :]
+                            seg_loss = obj.get('obj1')(
+                                pred_sliced, label_float)
+
+                            # regression
+                            pcts = []
+                            # XXX assumes that background and target are 0 and 1, respectively
+                            for label in batch[1].cpu().numpy():
+                                ones = float((label == 1).sum())
+                                zeros = float((label == 0).sum())
+                                pcts.append([(ones/(ones + zeros + 1e-6))])
+                            pcts = torch.FloatTensor(pcts).to(device)
+                            reg_loss = obj.get('obj2')(pred_pcts, pcts)
+
+                            loss = seg_loss + reg_loss
+                        else:
+                            label_float = (batch[1] == 1).to(
+                                device, dtype=torch.float)
+                            pred_sliced = pred[:, 0, :, :]
+                            loss = obj(pred_sliced, label_float)
                     else:
                         label_long = batch[1].to(device)
                         if isinstance(pred, dict):
@@ -564,20 +621,33 @@ if True:
         """
         model.eval()
         with torch.no_grad():
-            num_classes = len(args.weights)
-            tps = [0.0 for x in range(num_classes)]
-            fps = [0.0 for x in range(num_classes)]
-            fns = [0.0 for x in range(num_classes)]
-            tns = [0.0 for x in range(num_classes)]
+            class_count = len(args.weights)
+            tps = [0.0 for x in range(class_count)]
+            fps = [0.0 for x in range(class_count)]
+            fns = [0.0 for x in range(class_count)]
+            tns = [0.0 for x in range(class_count)]
+            preds = []
+            actuals = []
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
                 out = model(batch[0].to(device))
                 if isinstance(out, dict):
+                    if 'pct' in out:
+                        # XXX assumes that background and target are 0 and 1, respectively
+                        for (pred, actual) in zip(out.get('pct').cpu().numpy(), batch[1].cpu().numpy()):
+                            pred = float(pred)
+                            preds.append(pred)
+
+                            yes = float((actual == 1).sum())
+                            no = float((actual == 0).sum())
+                            actual = yes/(yes + no)
+                            actuals.append(actual)
                     out = out['out']
                 out = out.data.cpu().numpy()
-                if 'binary' in args.architecture:
+
+                if args.architecture.endswith('-binary.py'):
                     out = np.array(out > 0.5, dtype=np.long)
                     out = out[:, 0, :, :]
                 else:
@@ -591,13 +661,16 @@ if True:
                     dont_care = (labels == args.label_nd)
                 else:
                     dont_care = np.zeros(labels.shape)
-                out = out + len(args.weights)*dont_care
 
-                for j in range(len(args.weights)):
-                    tps[j] = tps[j] + ((out == j)*(labels == j)).sum()
-                    fps[j] = fps[j] + ((out == j)*(labels != j)).sum()
-                    fns[j] = fns[j] + ((out != j)*(labels == j)).sum()
-                    tns[j] = tns[j] + ((out != j)*(labels != j)).sum()
+                for j in range(class_count):
+                    tps[j] = tps[j] + ((out == j)*(labels == j)
+                                       * (dont_care != 1)).sum()
+                    fps[j] = fps[j] + ((out == j)*(labels != j)
+                                       * (dont_care != 1)).sum()
+                    fns[j] = fns[j] + ((out != j)*(labels == j)
+                                       * (dont_care != 1)).sum()
+                    tns[j] = tns[j] + ((out != j)*(labels != j)
+                                       * (dont_care != 1)).sum()
 
                 if random.randint(0, args.batch_size * 4) == 0:
                     libchips.recenter(1)
@@ -615,7 +688,7 @@ if True:
 
         recalls = []
         precisions = []
-        for j in range(len(args.weights)):
+        for j in range(class_count):
             recall = tps[j] / (tps[j] + fns[j])
             recalls.append(recall)
             precision = tps[j] / (tps[j] + fps[j])
@@ -625,7 +698,7 @@ if True:
         print('Precisions {}'.format(precisions))
 
         f1s = []
-        for j in range(len(args.weights)):
+        for j in range(class_count):
             f1 = 2 * (precisions[j] * recalls[j]) / \
                 (precisions[j] + recalls[j])
             f1s.append(f1)
@@ -639,6 +712,20 @@ if True:
             evaluations.write('Recalls: {}\n'.format(recalls))
             evaluations.write('Precisions: {}\n'.format(precisions))
             evaluations.write('f1 scores: {}\n'.format(f1s))
+            if '-regression' in args.architecture:
+                preds = np.array(preds)
+                actuals = np.array(actuals)
+                errors = preds - actuals
+                relative_errors = (preds - actuals) / (actuals + 1e-8)
+                print('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
+                    np.abs(errors).mean(), (errors**2).mean(),
+                    relative_errors.mean(), np.abs(relative_errors).mean()))
+                print('mean prediction = {}, mean actual = {}'.format(preds.mean(), actuals.mean()))
+                evaluations.write('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
+                    np.abs(errors).mean(), (errors**2).mean(),
+                    relative_errors.mean(), np.abs(relative_errors).mean()))
+                evaluations.write('mean prediction = {}, mean actual = {}'.format(
+                    preds.mean(), actuals.mean()))
 
         if not args.no_upload:
             s3 = boto3.client('s3')
@@ -678,22 +765,21 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture',
-                            required=True,
-                            help='The desired model architecture',
-                            choices=['cheaplab-binary', 'resnet18-binary', 'resnet18', 'resnet34', 'resnet101', 'stock'])
+        parser.add_argument('--architecture', required=True)
         parser.add_argument('--backend',
-                            help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
                             choices=['cpu', 'cuda'], default='cuda')
-        parser.add_argument('--bands',
-                            required=True,
-                            help='list of bands to train on (1 indexed)', nargs='+', type=int)
+        parser.add_argument('--bands', required=True, nargs='+', type=int,
+                            help='list of bands to train on (1 indexed)')
         parser.add_argument('--batch-size', default=16, type=int)
         parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
         parser.add_argument('--epochs4', default=33, type=int)
+        parser.add_argument('--forbidden-imagery-value',
+                            default=None, type=float)
+        parser.add_argument('--forbidden-label-value',
+                            default=None, type=int)
         parser.add_argument('--image-nd',
                             default=None, type=float,
                             help='image value to ignore - must be on the first band')
@@ -704,7 +790,7 @@ if True:
                             required=True, nargs='+', type=str,
                             help='labels to train')
         parser.add_argument('--label-map',
-                            help='comma separated list of mappings to apply to training labels',
+                            required=True, help='comma separated list of mappings to apply to training labels',
                             action=StoreDictKeyPair, default=None)
         parser.add_argument('--label-nd',
                             default=None, type=int,
@@ -735,7 +821,7 @@ if True:
         parser.add_argument('--optimizer', default='adam',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
-        parser.add_argument('--read-threads', default=16, type=int)
+        parser.add_argument('--read-threads', type=int)
         parser.add_argument('--reroll', default=0.90, type=float)
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--s3-bucket',
@@ -752,263 +838,19 @@ if True:
         parser.add_argument('--watchdog-seconds',
                             default=0, type=int,
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
-        parser.add_argument('--weights', nargs='+', required=True, type=float)
+        parser.add_argument('--weights', nargs='+', type=float)
         parser.add_argument('--window-size', default=32, type=int)
         return parser
 
 # Architectures
 if True:
-    class LearnedIndices(torch.nn.Module):
+    def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
+        raise Exception()
 
-        output_channels = 32
-
-        def __init__(self, band_count):
-            super(LearnedIndices, self).__init__()
-            intermediate_channels1 = 64
-            kernel_size = 1
-            padding_size = (kernel_size - 1) // 2
-
-            self.conv1 = torch.nn.Conv2d(
-                band_count, intermediate_channels1, kernel_size=kernel_size, padding=padding_size, bias=False)
-            self.conv_numerator = torch.nn.Conv2d(
-                intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=False)
-            self.conv_denominator = torch.nn.Conv2d(
-                intermediate_channels1, self.output_channels, kernel_size=1, padding=0, bias=True)
-            self.batch_norm_quotient = torch.nn.BatchNorm2d(
-                self.output_channels)
-
-        def forward(self, x):
-            x = self.conv1(x)
-            numerator = self.conv_numerator(x)
-            denomenator = self.conv_denominator(x)
-            x = numerator / (denomenator + 1e-7)
-            x = self.batch_norm_quotient(x)
-            return x
-
-    class CheapLabBinary(torch.nn.Module):
-        def __init__(self, band_count):
-            super(CheapLabBinary, self).__init__()
-            self.indices = LearnedIndices(band_count)
-            self.classifier = torch.nn.Conv2d(
-                self.indices.output_channels, 1, kernel_size=1)
-            self.input_layers = [self.indices]
-            self.output_layers = [self.classifier]
-
-        def forward(self, x):
-            x = self.indices(x)
-            x = self.classifier(x)
-            return x
-
-    def make_model_cheaplab_binary(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-        cheaplab = CheapLabBinary(band_count)
-        return cheaplab
-
-    class DeepLabResnet18Binary(torch.nn.Module):
-        def __init__(self, band_count, input_stride, divisor, pretrained):
-            super(DeepLabResnet18Binary, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet18(
-                pretrained=pretrained)
-            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet18, return_layers={'layer4': 'out'})
-            inplanes = 512
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                inplanes, 1)
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-            if input_stride == 1:
-                self.factor = 16 // divisor
-            else:
-                self.factor = 32 // divisor
-
-            self.input_layers = [self.backbone.conv1]
-            self.output_layers = [self.classifier[4]]
-
-        def forward(self, x):
-            [w, h] = x.shape[-2:]
-
-            features = self.backbone(torch.nn.functional.interpolate(
-                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-            result = {}
-
-            x = features['out']
-            x = self.classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-
-            return x
-
-    def make_model_resnet18_binary(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-        deeplab = DeepLabResnet18Binary(
-            band_count, input_stride, divisor, pretrained)
-        return deeplab
-
-    class DeepLabResnet18(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
-            super(DeepLabResnet18, self).__init__()
-            resnet18 = torchvision.models.resnet.resnet18(
-                pretrained=pretrained)
-            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet18, return_layers={'layer4': 'out', 'layer3': 'aux'})
-            inplanes = 512
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                inplanes, class_count)
-            inplanes = 256
-            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-                inplanes, class_count)
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-            if input_stride == 1:
-                self.factor = 16 // divisor
-            else:
-                self.factor = 32 // divisor
-
-            self.input_layers = [self.backbone.conv1]
-            self.output_layers = [self.classifier[4]]
-
-        def forward(self, x):
-            [w, h] = x.shape[-2:]
-
-            features = self.backbone(torch.nn.functional.interpolate(
-                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-            result = {}
-
-            x = features['out']
-            x = self.classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['out'] = x
-
-            x = features['aux']
-            x = self.aux_classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['aux'] = x
-
-            return result
-
-    def make_model_resnet18(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
-        deeplab = DeepLabResnet18(
-            band_count, input_stride, class_count, divisor, pretrained)
-        return deeplab
-
-    class DeepLabResnet34(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
-            super(DeepLabResnet34, self).__init__()
-            resnet34 = torchvision.models.resnet.resnet34(
-                pretrained=pretrained)
-            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
-            inplanes = 512
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                inplanes, class_count)
-            inplanes = 256
-            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-                inplanes, class_count)
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-            if input_stride == 1:
-                self.factor = 16 // divisor
-            else:
-                self.factor = 32 // divisor
-
-            self.input_layers = [self.backbone.conv1]
-            self.output_layers = [self.classifier[4]]
-
-        def forward(self, x):
-            [w, h] = x.shape[-2:]
-
-            features = self.backbone(torch.nn.functional.interpolate(
-                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-            result = {}
-
-            x = features['out']
-            x = self.classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['out'] = x
-
-            x = features['aux']
-            x = self.aux_classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['aux'] = x
-
-            return result
-
-    def make_model_resnet34(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
-        deeplab = DeepLabResnet34(
-            band_count, input_stride, class_count, divisor, pretrained)
-        return deeplab
-
-    class DeepLabResnet101(torch.nn.Module):
-        def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
-            super(DeepLabResnet101, self).__init__()
-            resnet101 = torchvision.models.resnet.resnet101(
-                pretrained=pretrained, replace_stride_with_dilation=[False, True, True])
-            self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-                resnet101, return_layers={'layer4': 'out', 'layer3': 'aux'})
-            inplanes = 2048
-            self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-                inplanes, class_count)
-            inplanes = 1024
-            self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-                inplanes, class_count)
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-
-            if input_stride == 1:
-                self.factor = 4 // divisor
-            else:
-                self.factor = 8 // divisor
-
-            self.input_layers = [self.backbone.conv1]
-            self.output_layers = [self.classifier[4]]
-
-        def forward(self, x):
-            [w, h] = x.shape[-2:]
-
-            features = self.backbone(torch.nn.functional.interpolate(
-                x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
-
-            result = {}
-
-            x = features['out']
-            x = self.classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['out'] = x
-
-            x = features['aux']
-            x = self.aux_classifier(x)
-            x = torch.nn.functional.interpolate(
-                x, size=[w, h], mode='bilinear', align_corners=False)
-            result['aux'] = x
-
-            return result
-
-    def make_model_resnet101(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
-        deeplab = DeepLabResnet101(
-            band_count, input_stride, class_count, divisor, pretrained=pretrained)
-        return deeplab
-
-    def make_model_stock(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
-        deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
-            pretrained=pretrained)
-        last_class = deeplab.classifier[4] = torch.nn.Conv2d(
-            256, class_count, kernel_size=7, stride=1, dilation=1)
-        last_class_aux = deeplab.aux_classifier[4] = torch.nn.Conv2d(
-            256, class_count, kernel_size=7, stride=1, dilation=1)
-        input_filters = deeplab.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, dilation=1, padding=(3, 3), bias=False)
-        deeplab.input_layers = [deeplab.backbone.conv1]
-        deeplab.output_layers = [deeplab.classifier[4]]
-        return deeplab
+    def load_architectures(uri: str) -> None:
+        arch_str = read_text(uri)
+        arch_code = compile(arch_str, uri, 'exec')
+        exec(arch_code, globals())
 
 
 if __name__ == '__main__':
@@ -1034,8 +876,36 @@ if __name__ == '__main__':
 
     args.band_count = len(args.bands)
 
+    load_architectures(args.architecture)
+
+    # ---------------------------------
+    if '-regression' in args.architecture and args.forbidden_imagery_value is None and args.image_nd is not None:
+        print('WARNING: FORBIDDEN IMAGERY VALUE NOT SET, SETTING TO {}'.format(
+            args.image_nd))
+        args.forbidden_imagery_value = args.image_nd
+    if '-regression' in args.architecture and args.forbidden_label_value is None and args.label_nd is not None:
+        for k, v in args.label_map.items():
+            if v == args.label_nd:
+                print('WARNING: FORBIDDEN LABEL VALUE NOT SET, SETTING TO {}'.format(k))
+                args.forbidden_label_value = k
+
+    if '-regression' in args.architecture and args.forbidden_imagery_value is None:
+        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN IMAGERY VALUE\n')
+    if '-regression' in args.architecture and args.forbidden_label_value is None:
+        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE\n')
+
     # ---------------------------------
     print('DATA')
+
+    # Look for newline-delimited lists of files
+    if len(args.training_img) == 1 and args.training_img[0].endswith('.list'):
+        text = read_text(args.training_img[0])
+        args.training_img = list(
+            filter(lambda line: len(line) > 0, text.split('\n')))
+    if len(args.label_img) == 1 and args.label_img[0].endswith('.list'):
+        text = read_text(args.label_img[0])
+        args.label_img = list(
+            filter(lambda line: len(line) > 0, text.split('\n')))
 
     args.pairs = list(zip(args.training_img, args.label_img))
     indexed_pairs = zip(range(len(args.pairs)), args.pairs)
@@ -1054,6 +924,9 @@ if __name__ == '__main__':
             print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
             s3.download_file(bucket, prefix, mask)
             del s3
+
+    if not args.read_threads:
+        args.read_threads = len(args.pairs)
 
     # ---------------------------------
     print('NATIVE CODE')
@@ -1149,8 +1022,12 @@ if __name__ == '__main__':
 
     device = torch.device(args.backend)
 
+    if not args.weights:
+        args.weights = [1.0, 1.0]
+    class_count = len(args.weights)
+
     if args.label_nd is None:
-        args.label_nd = len(args.weights)
+        args.label_nd = class_count
         print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
 
     if args.image_nd is None:
@@ -1159,24 +1036,6 @@ if __name__ == '__main__':
     if args.batch_size < 2:
         args.batch_size = 2
         print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
-
-    if args.architecture == 'cheaplab-binary':
-        make_model = make_model_cheaplab_binary
-    elif args.architecture == 'resnet18-binary':
-        make_model = make_model_resnet18_binary
-    elif args.architecture == 'resnet18':
-        make_model = make_model_resnet18
-    elif args.architecture == 'resnet34':
-        make_model = make_model_resnet34
-    elif args.architecture == 'resnet101':
-        make_model = make_model_resnet101
-    elif args.architecture == 'stock':
-        make_model = make_model_stock
-        if args.window_size < 224:
-            print('\t WARNING: WINDOWS SIZE {} IS PROBABLY TOO SMALL'.format(
-                args.window_size))
-    else:
-        raise Exception
 
     natural_epoch_size = 0.0
     for i in range(len(args.pairs)):
@@ -1187,15 +1046,18 @@ if __name__ == '__main__':
     natural_epoch_size = int(natural_epoch_size)
     print('\t NATURAL EPOCH SIZE={}'.format(natural_epoch_size))
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
-
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
-    if 'binary' in args.architecture:
-        obj = torch.nn.BCEWithLogitsLoss(reduction='sum').to(device)
+
+    if args.architecture.endswith('-binary.py'):
+        obj = torch.nn.BCEWithLogitsLoss().to(device)
     else:
         obj = torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
             weight=torch.FloatTensor(args.weights).to(device)
         ).to(device)
+
+    if '-regression' in args.architecture:
+        obj = {'obj1': obj, 'obj2': torch.nn.L1Loss()}
 
     # ---------------------------------
     if args.watchdog_seconds > 0:
@@ -1214,7 +1076,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1226,7 +1088,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1273,7 +1135,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
@@ -1329,7 +1191,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
@@ -1371,7 +1233,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
@@ -1426,7 +1288,7 @@ if __name__ == '__main__':
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
-            class_count=len(args.weights),
+            class_count=class_count,
             divisor=args.resolution_divisor
         ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
