@@ -716,11 +716,12 @@ if True:
                 preds = np.array(preds)
                 actuals = np.array(actuals)
                 errors = preds - actuals
-                relative_errors = (preds - actuals) / (actuals + 1e-8)
+                relative_errors = errors / (actuals + 1e-8)
                 print('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
                     np.abs(errors).mean(), (errors**2).mean(),
                     relative_errors.mean(), np.abs(relative_errors).mean()))
-                print('mean prediction = {}, mean actual = {}'.format(preds.mean(), actuals.mean()))
+                print('mean prediction = {}, mean actual = {}'.format(
+                    preds.mean(), actuals.mean()))
                 evaluations.write('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
                     np.abs(errors).mean(), (errors**2).mean(),
                     relative_errors.mean(), np.abs(relative_errors).mean()))
