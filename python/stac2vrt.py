@@ -60,7 +60,7 @@ def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--geojson-crs', default='+init=epsg:4326', type=str)
     parser.add_argument('--imagery-only', action='store_true')
-    parser.add_argument('--input', required=True, type=str)
+    parser.add_argument('--input', required=True, nargs='+', type=str)
     parser.add_argument('--local-prefix', default=None, type=str)
     return parser
 
@@ -235,25 +235,26 @@ if __name__ == '__main__':
 
     pystac.STAC_IO.read_text_method = requests_read_method_local
 
-    catalog = pystac.Catalog.from_file(args.input)
     interesting_collections = []
-    for collection in catalog.get_children():
-        if args.imagery_only:
-            if 'imagery' in str.lower(collection.description):
-                print('imagery collection {} ({}) found'.format(
-                    collection, collection.description))
-                interesting_collections.append(collection)
+    for arg in args.input:
+        catalog = pystac.Catalog.from_file(arg)
+        for collection in catalog.get_children():
+            if args.imagery_only:
+                if 'imagery' in str.lower(collection.description):
+                    print('imagery collection {} ({}) accepted'.format(
+                        collection, collection.description))
+                    interesting_collections.append(collection)
+                else:
+                    print('collection {} ({}) rejected'.format(
+                        collection, collection.description))
             else:
-                print('collection {} ({}) rejected'.format(
-                    collection, collection.description))
-        else:
-            if 'label' in str.lower(collection.description):
-                print('label collection {} ({}) found'.format(
-                    collection, collection.description))
-                interesting_collections.append(collection)
-            else:
-                print('collection {} ({}) rejected'.format(
-                    collection, collection.description))
+                if 'label' in str.lower(collection.description):
+                    print('label collection {} ({}) accepted'.format(
+                        collection, collection.description))
+                    interesting_collections.append(collection)
+                else:
+                    print('collection {} ({}) rejected'.format(
+                        collection, collection.description))
 
     interesting_itemss = []
     for interesting_collection in interesting_collections:
@@ -267,7 +268,7 @@ if __name__ == '__main__':
         ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
 
     liboverlaps.add_tree()
-    item_lists: List[List[pystac.label.LabelItem]] = [[]]
+    item_lists: List[Optional[List[pystac.label.LabelItem]]] = [[]]
 
     for interesting_items in interesting_itemss:
         for item in interesting_items:
