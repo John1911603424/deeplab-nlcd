@@ -195,13 +195,21 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
     """
     (i, item_list) = t
     imagery_txt = '/tmp/imagery-{}.txt'.format(i)
+    imagery_vrt = imagery_txt.replace('.txt', '.vrt')
+    imagery_tif = imagery_txt.replace('.txt', '.tif')
     label_txt = '/tmp/labels-{}.txt'.format(i)
+    label_vrt = label_txt.replace('.txt', '.vrt')
+    label_tif = label_txt.replace('.txt', '.tif')
     with open(imagery_txt, 'w') as f, open(label_txt, 'w') as g:
         with concurrent.futures.ProcessPoolExecutor() as executor:
             retvals = executor.map(render_label_item, item_list)
         for (imagery, label) in retvals:
             f.write(imagery + '\n')
             g.write(label + '\n')
+    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
+    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
+    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
 def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
@@ -214,10 +222,13 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
     """
     (i, item_list) = t
     imagery_txt = '/tmp/imagery-{}.txt'.format(i)
+    imagery_vrt = imagery_txt.replace('.txt', '.vrt')
+    imagery_tif = imagery_txt.replace('.txt', '.tif')
     with open(imagery_txt, 'w') as f:
         for item in item_list:
             f.write(item.imagery_uri + '\n')
-
+    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 if __name__ == '__main__':
     args = cli_parser().parse_args()
