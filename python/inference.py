@@ -151,7 +151,7 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if not args.architecutre.endswith('-binary.py'):
+            if not args.architecture.endswith('-binary.py'):
                 for i in range(len(image)):
                     image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image_nds = np.isnan(image).sum(axis=0)
@@ -214,6 +214,8 @@ if True:
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
+        parser.add_argument('--regression-prediction-img',
+                            help='The location where the regression prediction image should be stored')
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--statistics-img-uri',
                             help='The image from which to obtain statistics for normalization')
@@ -362,18 +364,28 @@ if __name__ == '__main__':
         profile_final.update(
             dtype=rio.uint8,
             count=1,
-            compress='lzw'
+            compress='lzw',
+            nodata=None
         )
         profile_raw = copy.copy(ds.profile)
         profile_raw.update(
             dtype=rio.float32,
             count=args.classes,
-            compress='lzw'
+            compress='lzw',
+            nodata=None
         )
-
+        profile_reg = copy.copy(ds.profile)
+        profile_reg.update(
+            dtype=rio.float32,
+            count=1,
+            compress='lzw',
+            nodata=None
+        )
     deeplab.eval()
     with torch.no_grad():
-        with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw:
+        with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, \
+                rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw, \
+                rio.open('/tmp/pred-reg.tif', 'w', **profile_reg) as ds_reg:
             width = libchips.get_width(0)
             height = libchips.get_height(0)
             print('{} {}'.format(width, height))
@@ -390,6 +402,11 @@ if __name__ == '__main__':
                     if tensor is not None:
                         tensor = tensor.to(device)
                         out = deeplab(tensor)
+                        if '-regression' in args.architecture and isinstance(out, dict) and 'pct' in out:
+                            reg_window = np.ones((window.width, window.height), dtype=np.float32)
+                            pct = out['pct'].item()
+                            reg_window = reg_window * pct
+                            ds_reg.write(reg_window, window=window, indexes=1)
                         if isinstance(out, dict):
                             out = out['out']
                         out = out.data.cpu().numpy()
@@ -403,7 +420,7 @@ if __name__ == '__main__':
                         else:
                             out = np.array(out > 0.0, dtype=np.uint8)
                             out = out * 0xff
-                            ds_final.write(out[0], window=window, indexes=1)
+                            ds_final.write(out[0][0], window=window, indexes=1)
                 print('{}% complete'.format(
                     (int)(100.0 * x_offset / width)))
 
@@ -418,6 +435,12 @@ if __name__ == '__main__':
         bucket, prefix = parse_s3_url(args.raw_prediction_img)
         prefix = prefix.replace('*', args.inference_img.split('/')[-1])
         s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
+        del s3
+    if args.regression_prediction_img is not None:
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.regression_prediction_img)
+        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
+        s3.upload_file('/tmp/pred-reg.tif', bucket, prefix)
         del s3
 
     libchips.stop()
