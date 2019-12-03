@@ -176,7 +176,7 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
             print('rendering {} features from item {} into file {}'.format(
                 len(label_features), item, filename))
             rasterio.features.rasterize(
-                shapes, out=rasterized_labels, transform=item.imagery_transform)
+                shapes, out=rasterized_labels, transform=item.imagery_transform, all_touched=True)
 
             output_ds.write(rasterized_labels, indexes=1)
 
