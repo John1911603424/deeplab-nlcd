@@ -194,22 +194,42 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
         t {Tuple[int, List[pystac.label.LabelItem]]} -- A list of label items along with the list number
     """
     (i, item_list) = t
-    imagery_txt = '/tmp/imagery-{}.txt'.format(i)
-    imagery_vrt = imagery_txt.replace('.txt', '.vrt')
-    imagery_tif = imagery_txt.replace('.txt', '.tif')
-    label_txt = '/tmp/labels-{}.txt'.format(i)
-    label_vrt = label_txt.replace('.txt', '.vrt')
-    label_tif = label_txt.replace('.txt', '.tif')
+    imagery_template = '/tmp/imagery-{}.{}'
+    label_template = '/tmp/label-{}.{}'
+
+    imagery_txt = imagery_template.format(i, 'txt')
+    imagery_vrt = imagery_template.format(i, 'vrt')
+    imagery_tif = imagery_template.format(i, 'tif')
+    imagery_map = imagery_template.format(i, 'geojson')
+    label_txt = label_template.format(i, 'txt')
+    label_vrt = label_template.format(i, 'vrt')
+    label_tif = label_template.format(i, 'tif')
+    feature_collection = {'type': 'FeatureCollection', 'features': []}
+    for item in item_list:
+        feature = {
+            'type': 'Feature',
+            'geometry': copy.copy(item.geometry),
+            'properties': {
+                'timestamp': copy.copy(item.properties['datetime'])
+            }
+        }
+        feature_collection['features'].append(feature)
+    with open(imagery_map, 'w') as f:
+        f.write(json.dumps(feature_collection) + '\n')
     with open(imagery_txt, 'w') as f, open(label_txt, 'w') as g:
         with concurrent.futures.ProcessPoolExecutor() as executor:
             retvals = executor.map(render_label_item, item_list)
         for (imagery, label) in retvals:
             f.write(imagery + '\n')
             g.write(label + '\n')
-    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
-    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
-    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
-    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+    os.system(
+        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
+    os.system(
+        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
+    os.system(
+        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+    os.system(
+        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
 def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
@@ -221,14 +241,30 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
         t {Tuple[int, List[pystac.item.Item]]} -- A list of label items along with a list number
     """
     (i, item_list) = t
-    imagery_txt = '/tmp/imagery-{}.txt'.format(i)
-    imagery_vrt = imagery_txt.replace('.txt', '.vrt')
-    imagery_tif = imagery_txt.replace('.txt', '.tif')
+    template = '/tmp/imagery-{}.{}'
+    imagery_txt = template.format(i, 'txt')
+    imagery_vrt = template.format(i, 'vrt')
+    imagery_tif = template.format(i, 'tif')
+    imagery_map = template.format(i, 'geojson')
+    feature_collection = {'type': 'FeatureCollection', 'features': []}
     with open(imagery_txt, 'w') as f:
         for item in item_list:
+            feature = {
+                'type': 'Feature',
+                'geometry': copy.copy(item.geometry),
+                'properties': {
+                    'timestamp': copy.copy(item.properties['datetime'])
+                }
+            }
+            feature_collection['features'].append(feature)
             f.write(item.imagery_uri + '\n')
-    os.system('gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
-    os.system('gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+    with open(imagery_map, 'w') as f:
+        f.write(json.dumps(feature_collection) + '\n')
+    os.system(
+        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+    os.system(
+        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+
 
 if __name__ == '__main__':
     args = cli_parser().parse_args()
