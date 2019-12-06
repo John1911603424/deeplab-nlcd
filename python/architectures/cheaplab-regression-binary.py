@@ -103,11 +103,11 @@ class CheapLabRegressionBinary(torch.nn.Module):
     def forward(self, x):
         _x = self.indices(x)
         x = self.classifier(_x)
-        pct = torch.nn.functional.interpolate(
+        regression = torch.nn.functional.interpolate(
             _x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = self.downsample(pct)
-        pct = pct.reshape(-1, 1)
-        return {'out': x, 'pct': pct}
+        regression = self.downsample(regression)
+        regression = regression.reshape(-1, 1)
+        return {'seg': x, 'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):

@@ -538,8 +538,8 @@ if True:
                 with torch.autograd.detect_anomaly():
                     if args.architecture.endswith('-binary.py'):
                         if '-regression' in args.architecture:
-                            pred_out: torch.Tensor = pred.get('out')
-                            pred_pcts: torch.Tensor = pred.get('pct')
+                            pred_out: torch.Tensor = pred.get('out', pred.get('seg'))
+                            pred_pcts: torch.Tensor = pred.get('pct', pred.get('reg'))
 
                             # segmentation
                             label_float = (batch[1] == 1).to(
@@ -568,7 +568,7 @@ if True:
                         label_long = batch[1].to(device)
                         if isinstance(pred, dict):
                             pred_out: torch.Tensor = \
-                                pred.get('out')  # type: ignore
+                                pred.get('out', pred.get('seg'))  # type: ignore
                             out_loss = obj(pred_out, label_long)
                             pred_aux: torch.Tensor = \
                                 pred.get('aux')  # type: ignore
@@ -632,11 +632,11 @@ if True:
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
-                out = model(batch[0].to(device))
-                if isinstance(out, dict):
-                    if 'pct' in out:
+                pred = model(batch[0].to(device))
+                if isinstance(pred, dict):
+                    if ('pct' in pred) or ('reg' in pred):
                         # XXX assumes that background and target are 0 and 1, respectively
-                        for (pred, actual) in zip(out.get('pct').cpu().numpy(), batch[1].cpu().numpy()):
+                        for (pred, actual) in zip(pred.get('pct', pred.get('reg')).cpu().numpy(), batch[1].cpu().numpy()):
                             pred = float(pred)
                             preds.append(pred)
 
@@ -644,14 +644,14 @@ if True:
                             no = float((actual == 0).sum())
                             actual = yes/(yes + no)
                             actuals.append(actual)
-                    out = out['out']
-                out = out.data.cpu().numpy()
+                    pred = pred.get('out', pred.get('seg'))
+                pred = pred.data.cpu().numpy()
 
                 if args.architecture.endswith('-binary.py'):
-                    out = np.array(out > 0.5, dtype=np.long)
-                    out = out[:, 0, :, :]
+                    pred = np.array(pred > 0.5, dtype=np.long)
+                    pred = pred[:, 0, :, :]
                 else:
-                    out = np.apply_along_axis(np.argmax, 1, out)
+                    pred = np.apply_along_axis(np.argmax, 1, pred)
 
                 labels = batch[1].cpu().numpy()
                 del batch
@@ -663,13 +663,13 @@ if True:
                     dont_care = np.zeros(labels.shape)
 
                 for j in range(class_count):
-                    tps[j] = tps[j] + ((out == j)*(labels == j)
+                    tps[j] = tps[j] + ((pred == j)*(labels == j)
                                        * (dont_care != 1)).sum()
-                    fps[j] = fps[j] + ((out == j)*(labels != j)
+                    fps[j] = fps[j] + ((pred == j)*(labels != j)
                                        * (dont_care != 1)).sum()
-                    fns[j] = fns[j] + ((out != j)*(labels == j)
+                    fns[j] = fns[j] + ((pred != j)*(labels == j)
                                        * (dont_care != 1)).sum()
-                    tns[j] = tns[j] + ((out != j)*(labels != j)
+                    tns[j] = tns[j] + ((pred != j)*(labels != j)
                                        * (dont_care != 1)).sum()
 
                 if random.randint(0, args.batch_size * 4) == 0:

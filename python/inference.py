@@ -402,13 +402,14 @@ if __name__ == '__main__':
                     if tensor is not None:
                         tensor = tensor.to(device)
                         out = deeplab(tensor)
-                        if '-regression' in args.architecture and isinstance(out, dict) and 'pct' in out:
-                            reg_window = np.ones((window.width, window.height), dtype=np.float32)
-                            pct = out['pct'].item()
-                            reg_window = reg_window * pct
+                        if '-regression' in args.architecture and isinstance(out, dict) and (('pct' in out) or ('reg' in out)):
+                            reg_window = np.ones(
+                                (window.width, window.height), dtype=np.float32)
+                            reg = out.get('pct', out.get('reg'))
+                            reg_window = reg_window * reg.item()
                             ds_reg.write(reg_window, window=window, indexes=1)
                         if isinstance(out, dict):
-                            out = out['out']
+                            out = out.get('out', out.get('seg'))
                         out = out.data.cpu().numpy()
                         for i in range(0, args.classes):
                             ds_raw.write(out[0, i], window=window, indexes=i+1)

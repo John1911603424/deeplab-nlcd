@@ -89,12 +89,12 @@ class DeepLabResnet18Binary(torch.nn.Module):
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
 
-        pct = torch.nn.functional.interpolate(
+        regression = torch.nn.functional.interpolate(
             features['out'], size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = self.downsample(pct)
-        pct = pct.reshape(-1, 1)
+        regression = self.downsample(regression)
+        regression = regression.reshape(-1, 1)
 
-        return {'out': x, 'pct': pct}
+        return {'seg': x, 'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):

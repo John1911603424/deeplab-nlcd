@@ -68,7 +68,7 @@ class DeepLabResnet34(torch.nn.Module):
         x = self.classifier(x)
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
-        result['out'] = x
+        result['seg'] = x
 
         x = features['aux']
         x = self.aux_classifier(x)
