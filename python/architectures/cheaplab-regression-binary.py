@@ -83,8 +83,13 @@ class CheapLabRegressionBinary(torch.nn.Module):
         super(CheapLabRegressionBinary, self).__init__()
 
         self.indices = LearnedIndices(band_count)
-        self.classifier = torch.nn.Conv2d(
-            self.indices.output_channels, 1, kernel_size=1)
+        self.classifier = torch.nn.Sequential(
+            Nugget(1, self.indices.output_channels, 16),
+            Nugget(1, 16, 8),
+            Nugget(1, 8, 4),
+            Nugget(1, 4, 2),
+            torch.nn.Conv2d(2, 1, kernel_size=1)
+        )
         self.downsample = torch.nn.Sequential(
             Nugget(16+1, self.indices.output_channels, 16),
             Nugget(8+1, 16, 8),
