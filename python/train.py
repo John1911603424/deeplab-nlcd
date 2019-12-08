@@ -56,7 +56,7 @@ WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
 INT2INT = Dict[int, int]
-OBJ = Union[torch.nn.CrossEntropyLoss, torch.nn.BCEWithLogitsLoss]
+OBJ = Dict[str, Any]
 OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
 PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
 SCALER = Union[int, float]
@@ -572,12 +572,12 @@ if True:
                         pcts.append([(ones/(ones + zeros + 1e-8))])
                     pcts = torch.FloatTensor(pcts).to(device)
                     loss = obj.get('2seg')(pred_2seg, labels) + \
-                        obj.get('reg')(pred_reg, pcts)
+                        obj.get('l1')(pred_reg, pcts)
                 elif pred_seg is None and pred_aux is None and pred_2seg is None and pred_reg is not None:
                     # regression only
                     labels = batch[1].to(device, dtype=torch.float)
                     pred_reg = pred_reg[:, 0, :, :]
-                    loss = obj.get('reg')(pred_reg, labels)
+                    loss = obj.get('l2')(pred_reg, labels)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
@@ -670,8 +670,8 @@ if True:
                     else:
                         for (pred, actual) in zip(pred_reg, labels_reg):
                             diff = pred - actual
-                            l1s.append(np.abs(diff))
-                            l2s.append(diff * diff)
+                            l1s.append(diff)
+                            l2s.append(diff**2)
                         pred_seg_mask = pred_reg.astype(np.long)
 
                 # segmentation labels
@@ -721,9 +721,9 @@ if True:
                 precisions = []
                 f1s = []
                 for j in range(class_count):
-                    recall = tps[j] / (tps[j] + fns[j])
+                    recall = tps[j] / (tps[j] + fns[j] + 1e-8)
                     recalls.append(recall)
-                    precision = tps[j] / (tps[j] + fps[j])
+                    precision = tps[j] / (tps[j] + fps[j] + 1e-8)
                     precisions.append(precision)
                 for j in range(class_count):
                     f1 = 2 * (precisions[j] * recalls[j]) / \
@@ -1095,7 +1095,8 @@ if __name__ == '__main__':
             weight=torch.FloatTensor(args.weights).to(device)
         ).to(device),
         '2seg': torch.nn.BCEWithLogitsLoss().to(device),
-        'reg':  torch.nn.L1Loss().to(device)
+        'l1':  torch.nn.L1Loss().to(device),
+        'l2': torch.nn.MSELoss().to(device)
     }
 
     # ---------------------------------
