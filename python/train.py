@@ -477,7 +477,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            if not args.architecture.endswith('-binary.py'):
+            if False or not args.architecture.endswith('-binary.py'):  # XXX
                 for i in range(len(raster)):
                     raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
 
