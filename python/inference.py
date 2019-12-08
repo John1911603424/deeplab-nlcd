@@ -151,7 +151,7 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if not args.architecture.endswith('-binary.py'):
+            if False and not args.architecture.endswith('-binary.py'):
                 for i in range(len(image)):
                     image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image_nds = np.isnan(image).sum(axis=0)
@@ -191,7 +191,7 @@ if True:
                             required=True, nargs='+', type=int,
                             help='list of bands to train on (1 indexed)')
         parser.add_argument('--classes',
-                            required=True, type=int,
+                            required=False, type=int, default=1,
                             help='The number of prediction classes')
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
@@ -199,7 +199,7 @@ if True:
                             default=None, type=float,
                             help='image value to ignore - must be on the first band')
         parser.add_argument('--inference-img',
-                            required=True,
+                            required=True, nargs='+', type=str,
                             help='The location of the image on which to predict')
         parser.add_argument('--input-stride',
                             default=2, type=int,
@@ -210,7 +210,7 @@ if True:
         parser.add_argument('--model',
                             required=True,
                             help='The model to use for preditions')
-        parser.add_argument('--no-warmup', action='store_true')
+        parser.add_argument('--no-warmup', type=bool, default=True)
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
@@ -252,197 +252,202 @@ if __name__ == '__main__':
     # ---------------------------------
     print('DATA')
 
-    mul = '/tmp/mul.tif'
-    if not os.path.exists(mul):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.inference_img)
-        print('Inference image bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, mul)
-        del s3
+    for inference_img in args.inference_img:
 
-    # ---------------------------------
-    print('MODEL')
+        mul = '/tmp/mul.tif'
+        if not os.path.exists(mul) or len(args.inference_img) > 1:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(inference_img)
+            print('Inference image bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, mul)
+            del s3
 
-    if not os.path.exists('/tmp/weights.pth'):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.model)
-        print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/weights.pth')
-        del s3
+        # ---------------------------------
+        print('MODEL')
 
-    device = torch.device(args.backend)
+        if not os.path.exists('/tmp/weights.pth'):
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.model)
+            print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, '/tmp/weights.pth')
+            del s3
 
-    deeplab = make_model(
-        args.band_count,
-        input_stride=args.input_stride,
-        class_count=args.classes,
-        divisor=args.resolution_divisor,
-        pretrained=False,
-    ).to(device)
-    deeplab.load_state_dict(torch.load(
-        '/tmp/weights.pth', map_location=device))
+        device = torch.device(args.backend)
 
-    # ---------------------------------
-    print('NATIVE CODE')
+        deeplab = make_model(
+            args.band_count,
+            input_stride=args.input_stride,
+            class_count=args.classes,
+            divisor=args.resolution_divisor,
+            pretrained=False,
+        ).to(device)
+        deeplab.load_state_dict(torch.load(
+            '/tmp/weights.pth', map_location=device))
 
-    if not os.path.exists('/tmp/libchips.so'):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.libchips)
-        print('Shared library bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/libchips.so')
-        del s3
+        # ---------------------------------
+        print('NATIVE CODE')
 
-    libchips = ctypes.CDLL('/tmp/libchips.so')
-    libchips.init()
+        if not os.path.exists('/tmp/libchips.so'):
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.libchips)
+            print('Shared library bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, '/tmp/libchips.so')
+            del s3
 
-    # ---------------------------------
-    print('STATISTICS')
-    if args.statistics_img_uri is None:
-        args.statistics_img_uri = '/tmp/mul.tif'
-    libchips.get_statistics(
-        args.statistics_img_uri.encode('utf-8'),
-        len(args.bands),
-        np.array(args.bands, dtype=np.int32).ctypes.data_as(
-            ctypes.POINTER(ctypes.c_int32)),
-        mus_ptr,
-        sigmas_ptr
-    )
-    print('MEANS={}'.format(args.mus))
-    print('SIGMAS={}'.format(args.sigmas))
+        libchips = ctypes.CDLL('/tmp/libchips.so')
+        libchips.init()
 
-    # ---------------------------------
-    print('WARMUP')
-    # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
-    # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
-    if not args.no_warmup:
-        def momentum_fn(m):
-            if isinstance(m, torch.nn.BatchNorm2d):
-                m.momentum = 0.9
-        deeplab.apply(momentum_fn)
-        deeplab.train()
+        # ---------------------------------
+        print('STATISTICS')
+
+        if args.statistics_img_uri is None:
+            args.statistics_img_uri = '/tmp/mul.tif'
+        libchips.get_statistics(
+            args.statistics_img_uri.encode('utf-8'),
+            len(args.bands),
+            np.array(args.bands, dtype=np.int32).ctypes.data_as(
+                ctypes.POINTER(ctypes.c_int32)),
+            mus_ptr,
+            sigmas_ptr
+        )
+        print('MEANS={}'.format(args.mus))
+        print('SIGMAS={}'.format(args.sigmas))
+
+        # ---------------------------------
+
+        if not args.no_warmup:
+            # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
+            # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
+            print('WARMUP')
+
+            def momentum_fn(m):
+                if isinstance(m, torch.nn.BatchNorm2d):
+                    m.momentum = 0.9
+            deeplab.apply(momentum_fn)
+            deeplab.train()
+            libchips.start(
+                16,  # Number of threads
+                256,  # Number of slots
+                b'/tmp/mul.tif',  # Image data
+                None,  # Label data
+                6,  # Make all rasters float32
+                5,  # Make all labels int32
+                None,  # means
+                None,  # standard deviations
+                args.radius,  # typical radius of a component
+                1,  # Training mode
+                args.warmup_window_size,
+                len(args.bands),
+                np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+            with torch.no_grad():
+                for i in range(107):
+                    batch = get_warmup_batch(libchips, copy.copy(args))
+                    out = deeplab(batch.to(device))
+                    del out
+            libchips.stop()
+
+        # ---------------------------------
+        print('INFERENCE')
+
         libchips.start(
-            16,  # Number of threads
-            256,  # Number of slots
+            1,  # Number of threads
+            0,  # Number of slots
             b'/tmp/mul.tif',  # Image data
             None,  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
             None,  # means
             None,  # standard deviations
-            args.radius,  # typical radius of a component
-            1,  # Training mode
-            args.warmup_window_size,
+            args.radius,  # typical radius of component
+            3,  # Inference mode
+            args.window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
+
+        with rio.open('/tmp/mul.tif') as ds:
+            profile_final = copy.copy(ds.profile)
+            profile_final.update(
+                dtype=rio.uint8,
+                count=1,
+                compress='lzw',
+                nodata=None
+            )
+            profile_raw = copy.copy(ds.profile)
+            profile_raw.update(
+                dtype=rio.float32,
+                count=args.classes,
+                compress='lzw',
+                nodata=None
+            )
+            profile_reg = copy.copy(ds.profile)
+            profile_reg.update(
+                dtype=rio.float32,
+                count=1,
+                compress='lzw',
+                nodata=None
+            )
+        deeplab.eval()
         with torch.no_grad():
-            for i in range(107):
-                batch = get_warmup_batch(libchips, copy.copy(args))
-                out = deeplab(batch.to(device))
-                del out
-        libchips.stop()
+            with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, \
+                    rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw, \
+                    rio.open('/tmp/pred-reg.tif', 'w', **profile_reg) as ds_reg:
+                width = libchips.get_width(0)
+                height = libchips.get_height(0)
+                print('{} {}'.format(width, height))
+                for x_offset in range(0, width, args.window_size):
+                    if x_offset + args.window_size > width:
+                        x_offset = width - args.window_size - 1
+                    for y_offset in range(0, height, args.window_size):
+                        if y_offset + args.window_size > height:
+                            y_offset = height - args.window_size - 1
+                        window = rio.windows.Window(
+                            x_offset, y_offset, args.window_size, args.window_size)
+                        tensor = get_inference_window(
+                            libchips, x_offset, y_offset, copy.copy(args))
+                        if tensor is not None:
+                            tensor = tensor.to(device)
+                            out = deeplab(tensor)
+                            if isinstance(out, dict):
+                                if 'reg' in out:
+                                    reg_window = np.ones(
+                                        (window.width, window.height), dtype=np.float32)
+                                    reg = out.get('reg')
+                                    reg_window = reg_window * reg.item()
+                                    ds_reg.write(reg_window, window=window, indexes=1)
+                                out = out.get('out', out.get('seg', out.get('2seg')))
+                            out = out.cpu().numpy()
+                            for i in range(0, args.classes):
+                                ds_raw.write(out[0, i], window=window, indexes=i+1)
+                            if args.classes > 1:
+                                out = np.apply_along_axis(np.argmax, 1, out)
+                                out = np.array(out, dtype=np.uint8)
+                                out = out * (0xff // (args.classes-1))
+                                ds_final.write(out[0], window=window, indexes=1)
+                            else:
+                                out = np.array(out > 0.0, dtype=np.uint8)
+                                out = out * 0xff
+                                ds_final.write(out[0][0], window=window, indexes=1)
+                    print('{}% complete'.format(
+                        (int)(100.0 * x_offset / width)))
 
-    # ---------------------------------
-    print('INFERENCE')
-
-    libchips.start(
-        1,  # Number of threads
-        0,  # Number of slots
-        b'/tmp/mul.tif',  # Image data
-        None,  # Label data
-        6,  # Make all rasters float32
-        5,  # Make all labels int32
-        None,  # means
-        None,  # standard deviations
-        args.radius,  # typical radius of component
-        3,  # Inference mode
-        args.window_size,
-        len(args.bands),
-        np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
-
-    with rio.open('/tmp/mul.tif') as ds:
-        profile_final = copy.copy(ds.profile)
-        profile_final.update(
-            dtype=rio.uint8,
-            count=1,
-            compress='lzw',
-            nodata=None
-        )
-        profile_raw = copy.copy(ds.profile)
-        profile_raw.update(
-            dtype=rio.float32,
-            count=args.classes,
-            compress='lzw',
-            nodata=None
-        )
-        profile_reg = copy.copy(ds.profile)
-        profile_reg.update(
-            dtype=rio.float32,
-            count=1,
-            compress='lzw',
-            nodata=None
-        )
-    deeplab.eval()
-    with torch.no_grad():
-        with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, \
-                rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw, \
-                rio.open('/tmp/pred-reg.tif', 'w', **profile_reg) as ds_reg:
-            width = libchips.get_width(0)
-            height = libchips.get_height(0)
-            print('{} {}'.format(width, height))
-            for x_offset in range(0, width, args.window_size):
-                if x_offset + args.window_size > width:
-                    x_offset = width - args.window_size - 1
-                for y_offset in range(0, height, args.window_size):
-                    if y_offset + args.window_size > height:
-                        y_offset = height - args.window_size - 1
-                    window = rio.windows.Window(
-                        x_offset, y_offset, args.window_size, args.window_size)
-                    tensor = get_inference_window(
-                        libchips, x_offset, y_offset, copy.copy(args))
-                    if tensor is not None:
-                        tensor = tensor.to(device)
-                        out = deeplab(tensor)
-                        if '-regression' in args.architecture and isinstance(out, dict) and (('pct' in out) or ('reg' in out)):
-                            reg_window = np.ones(
-                                (window.width, window.height), dtype=np.float32)
-                            reg = out.get('pct', out.get('reg'))
-                            reg_window = reg_window * reg.item()
-                            ds_reg.write(reg_window, window=window, indexes=1)
-                        if isinstance(out, dict):
-                            out = out.get('out', out.get('seg'))
-                        out = out.data.cpu().numpy()
-                        for i in range(0, args.classes):
-                            ds_raw.write(out[0, i], window=window, indexes=i+1)
-                        if args.classes > 1:
-                            out = np.apply_along_axis(np.argmax, 1, out)
-                            out = np.array(out, dtype=np.uint8)
-                            out = out * (0xff // (args.classes-1))
-                            ds_final.write(out[0], window=window, indexes=1)
-                        else:
-                            out = np.array(out > 0.0, dtype=np.uint8)
-                            out = out * 0xff
-                            ds_final.write(out[0][0], window=window, indexes=1)
-                print('{}% complete'.format(
-                    (int)(100.0 * x_offset / width)))
-
-    if args.final_prediction_img is not None:
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.final_prediction_img)
-        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
-        s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
-        del s3
-    if args.raw_prediction_img is not None:
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.raw_prediction_img)
-        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
-        s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
-        del s3
-    if args.regression_prediction_img is not None:
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.regression_prediction_img)
-        prefix = prefix.replace('*', args.inference_img.split('/')[-1])
-        s3.upload_file('/tmp/pred-reg.tif', bucket, prefix)
-        del s3
+        if args.final_prediction_img is not None:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.final_prediction_img)
+            prefix = prefix.replace('*', inference_img.split('/')[-1])
+            s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
+            del s3
+        if args.raw_prediction_img is not None:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.raw_prediction_img)
+            prefix = prefix.replace('*', inference_img.split('/')[-1])
+            s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
+            del s3
+        if args.regression_prediction_img is not None:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.regression_prediction_img)
+            prefix = prefix.replace('*', inference_img.split('/')[-1])
+            s3.upload_file('/tmp/pred-reg.tif', bucket, prefix)
+            del s3
 
     libchips.stop()
     libchips.deinit()
