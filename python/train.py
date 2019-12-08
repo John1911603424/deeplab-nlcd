@@ -535,53 +535,56 @@ if True:
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
-                with torch.autograd.detect_anomaly():
-                    if args.architecture.endswith('-binary.py'):
-                        if '-regression' in args.architecture:
-                            pred_out: torch.Tensor = pred.get('out', pred.get('seg'))
-                            pred_pcts: torch.Tensor = pred.get('pct', pred.get('reg'))
+                loss = None
 
-                            # segmentation
-                            label_float = (batch[1] == 1).to(
-                                device, dtype=torch.float)
-                            pred_sliced = pred_out[:, 0, :, :]
-                            seg_loss = obj.get('obj1')(
-                                pred_sliced, label_float)
+                if isinstance(pred, dict):
+                    pred_seg = pred.get('seg', pred.get('out', None))
+                    pred_aux = pred.get('aux', None)
+                    pred_2seg = pred.get('2seg', None)
+                    pred_reg = pred.get('reg', None)
+                else:
+                    pred_seg = pred
+                    pred_aux = pred_2seg = pred_reg = None
 
-                            # regression
-                            pcts = []
-                            # XXX assumes that background and target are 0 and 1, respectively
-                            for label in batch[1].cpu().numpy():
-                                ones = float((label == 1).sum())
-                                zeros = float((label == 0).sum())
-                                pcts.append([(ones/(ones + zeros + 1e-6))])
-                            pcts = torch.FloatTensor(pcts).to(device)
-                            reg_loss = obj.get('obj2')(pred_pcts, pcts)
+                if pred_seg is not None and pred_aux is None:
+                    # segmentation only
+                    labels = batch[1].to(device)
+                    loss = obj.get('seg')(pred_seg, labels)
+                elif pred_seg is not None and pred_aux is not None:
+                    # segmentation with auxiliary output
+                    labels = batch[1].to(device)
+                    loss = obj.get('seg')(pred_seg, labels) + \
+                        0.4 * obj.get('seg')(pred_aux, labels)
+                elif pred_2seg is not None and pred_reg is None:
+                    # binary segmentation only
+                    labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    pred_2seg = pred_2seg[:, 0, :, :]
+                    loss = obj.get('2seg')(pred_2seg, labels)
+                elif pred_2seg is not None and pred_reg is not None:
+                    # binary segmentation with percent regression
+                    labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    pred_2seg = pred_2seg[:, 0, :, :]
+                    pcts = []
+                    for label in batch[1].cpu().numpy():
+                        # XXX assumes that background and target are 0 and 1, respectively
+                        ones = float((label == 1).sum())
+                        zeros = float((label == 0).sum())
+                        pcts.append([(ones/(ones + zeros + 1e-8))])
+                    pcts = torch.FloatTensor(pcts).to(device)
+                    loss = obj.get('2seg')(pred_2seg, labels) + \
+                        obj.get('reg')(pred_reg, pcts)
+                elif pred_seg is None and pred_aux is None and pred_2seg is None and pred_reg is not None:
+                    # regression only
+                    labels = batch[1].to(device, dtype=torch.float)
+                    pred_reg = pred_reg[:, 0, :, :]
+                    loss = obj.get('reg')(pred_reg, labels)
 
-                            loss = seg_loss + reg_loss
-                        else:
-                            label_float = (batch[1] == 1).to(
-                                device, dtype=torch.float)
-                            pred_sliced = pred[:, 0, :, :]
-                            loss = obj(pred_sliced, label_float)
-                    else:
-                        label_long = batch[1].to(device)
-                        if isinstance(pred, dict):
-                            pred_out: torch.Tensor = \
-                                pred.get('out', pred.get('seg'))  # type: ignore
-                            out_loss = obj(pred_out, label_long)
-                            pred_aux: torch.Tensor = \
-                                pred.get('aux')  # type: ignore
-                            aux_loss = obj(pred_aux, label_long)
-                            loss = 1.0*out_loss + 0.4*aux_loss
-                        else:
-                            loss = obj(pred, label_long)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
-                    opt.step()
-                    if sched is not None:
-                        sched.step()
-                    avg_loss = avg_loss + loss.item()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
+                opt.step()
+                if sched is not None:
+                    sched.step()
+                avg_loss = avg_loss + loss.item()
 
             avg_loss = avg_loss / args.max_epoch_size
             libchips.recenter(1)
@@ -595,7 +598,7 @@ if True:
                 global WATCHDOG_TIME
                 WATCHDOG_TIME = time.time()
 
-            if ((i == epochs - 1) or ((i > 0) and (i % 5 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
+            if ((i == epochs - 1) or ((i > 0) and (i % 13 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
                 if not args.no_upload:
                     torch.save(model.state_dict(), 'weights.pth')
                     s3 = boto3.client('s3')
@@ -626,51 +629,82 @@ if True:
             fps = [0.0 for x in range(class_count)]
             fns = [0.0 for x in range(class_count)]
             tns = [0.0 for x in range(class_count)]
-            preds = []
-            actuals = []
+            pred_pcts = []
+            gt_pcts = []
+            l1s = []
+            l2s = []
 
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
                 pred = model(batch[0].to(device))
-                if isinstance(pred, dict):
-                    if ('pct' in pred) or ('reg' in pred):
-                        # XXX assumes that background and target are 0 and 1, respectively
-                        for (pred, actual) in zip(pred.get('pct', pred.get('reg')).cpu().numpy(), batch[1].cpu().numpy()):
-                            pred = float(pred)
-                            preds.append(pred)
 
+                if isinstance(pred, dict):
+                    pred_seg = pred.get('seg', pred.get('out', None))
+                    pred_2seg = pred.get('2seg', None)
+                    pred_reg = pred.get('reg', None)
+                else:
+                    pred_seg = pred
+
+                # segmentation predictions
+                pred_seg_mask = None
+                if pred_seg is not None:
+                    pred_seg = pred_seg.cpu().numpy()
+                    pred_seg = np.apply_along_axis(np.argmax, 1, pred_seg)
+                    pred_seg_mask = pred_seg
+                if pred_2seg is not None:
+                    pred_2seg = pred_2seg.cpu().numpy()
+                    pred_2seg = np.array(pred_2seg > 0.5, dtype=np.long)
+                    pred_2seg = pred_2seg[:, 0, :, :]
+                    pred_seg_mask = pred_2seg
+                if pred_reg is not None:
+                    pred_reg = pred_reg.cpu().numpy()
+                    labels_reg = batch[1].cpu().numpy()
+                    if pred_reg.shape[-1] == 1:
+                        for (pred, actual) in zip(pred_reg, labels_reg):
+                            pred_pcts.append(float(pred))
                             yes = float((actual == 1).sum())
                             no = float((actual == 0).sum())
-                            actual = yes/(yes + no)
-                            actuals.append(actual)
-                    pred = pred.get('out', pred.get('seg'))
-                pred = pred.data.cpu().numpy()
+                            gt_pct = yes/(yes + no + 1e-8)
+                            gt_pcts.append(gt_pct)
+                    else:
+                        for (pred, actual) in zip(pred_reg, labels_reg):
+                            diff = pred - actual
+                            l1s.append(np.abs(diff))
+                            l2s.append(diff * diff)
+                        pred_seg_mask = pred_reg.astype(np.long)
 
-                if args.architecture.endswith('-binary.py'):
-                    pred = np.array(pred > 0.5, dtype=np.long)
-                    pred = pred[:, 0, :, :]
-                else:
-                    pred = np.apply_along_axis(np.argmax, 1, pred)
+                # segmentation labels
+                labels_seg = batch[1].cpu().numpy()
 
-                labels = batch[1].cpu().numpy()
-                del batch
-
-                # Make sure output reflects don't care values
+                # don't care values
                 if args.label_nd is not None:
-                    dont_care = (labels == args.label_nd)
+                    dont_care = (labels_seg == args.label_nd)
                 else:
-                    dont_care = np.zeros(labels.shape)
+                    dont_care = np.zeros(labels_seg.shape)
 
-                for j in range(class_count):
-                    tps[j] = tps[j] + ((pred == j)*(labels == j)
-                                       * (dont_care != 1)).sum()
-                    fps[j] = fps[j] + ((pred == j)*(labels != j)
-                                       * (dont_care != 1)).sum()
-                    fns[j] = fns[j] + ((pred != j)*(labels == j)
-                                       * (dont_care != 1)).sum()
-                    tns[j] = tns[j] + ((pred != j)*(labels != j)
-                                       * (dont_care != 1)).sum()
+                if pred_seg_mask is not None:
+                    for j in range(class_count):
+                        tps[j] = tps[j] + (
+                            (pred_seg_mask == j) *
+                            (labels_seg == j) *
+                            (dont_care != 1)
+                        ).sum()
+                        fps[j] = fps[j] + (
+                            (pred_seg_mask == j) *
+                            (labels_seg != j) *
+                            (dont_care != 1)
+                        ).sum()
+                        fns[j] = fns[j] + (
+                            (pred_seg_mask != j) *
+                            (labels_seg == j) *
+                            (dont_care != 1)
+                        ).sum()
+                        tns[j] = tns[j] + (
+                            (pred_seg_mask != j) *
+                            (labels_seg != j) *
+                            (dont_care != 1)
+                        ).sum()
 
                 if random.randint(0, args.batch_size * 4) == 0:
                     libchips.recenter(1)
@@ -681,52 +715,55 @@ if True:
                     global WATCHDOG_TIME
                     WATCHDOG_TIME = time.time()
 
-        print('True Positives  {}'.format(tps))
-        print('False Positives {}'.format(fps))
-        print('False Negatives {}'.format(fns))
-        print('True Negatives  {}'.format(tns))
-
-        recalls = []
-        precisions = []
-        for j in range(class_count):
-            recall = tps[j] / (tps[j] + fns[j])
-            recalls.append(recall)
-            precision = tps[j] / (tps[j] + fps[j])
-            precisions.append(precision)
-
-        print('Recalls    {}'.format(recalls))
-        print('Precisions {}'.format(precisions))
-
-        f1s = []
-        for j in range(class_count):
-            f1 = 2 * (precisions[j] * recalls[j]) / \
-                (precisions[j] + recalls[j])
-            f1s.append(f1)
-        print('f1 {}'.format(f1s))
-
         with open('/tmp/evaluations.txt', 'w') as evaluations:
-            evaluations.write('True positives: {}\n'.format(tps))
-            evaluations.write('False positives: {}\n'.format(fps))
-            evaluations.write('False negatives: {}\n'.format(fns))
-            evaluations.write('True negatives: {}\n'.format(tns))
-            evaluations.write('Recalls: {}\n'.format(recalls))
-            evaluations.write('Precisions: {}\n'.format(precisions))
-            evaluations.write('f1 scores: {}\n'.format(f1s))
-            if '-regression' in args.architecture:
-                preds = np.array(preds)
-                actuals = np.array(actuals)
-                errors = preds - actuals
-                relative_errors = errors / (actuals + 1e-8)
+            if tps and fps and tns and fns:
+                recalls = []
+                precisions = []
+                f1s = []
+                for j in range(class_count):
+                    recall = tps[j] / (tps[j] + fns[j])
+                    recalls.append(recall)
+                    precision = tps[j] / (tps[j] + fps[j])
+                    precisions.append(precision)
+                for j in range(class_count):
+                    f1 = 2 * (precisions[j] * recalls[j]) / \
+                        (precisions[j] + recalls[j])
+                    f1s.append(f1)
+                print('True Positives  {}'.format(tps))
+                print('False Positives {}'.format(fps))
+                print('False Negatives {}'.format(fns))
+                print('True Negatives  {}'.format(tns))
+                print('Recalls    {}'.format(recalls))
+                print('Precisions {}'.format(precisions))
+                print('f1 {}'.format(f1s))
+                evaluations.write('True positives: {}\n'.format(tps))
+                evaluations.write('False positives: {}\n'.format(fps))
+                evaluations.write('False negatives: {}\n'.format(fns))
+                evaluations.write('True negatives: {}\n'.format(tns))
+                evaluations.write('Recalls: {}\n'.format(recalls))
+                evaluations.write('Precisions: {}\n'.format(precisions))
+                evaluations.write('f1 scores: {}\n'.format(f1s))
+            if pred_pcts and gt_pcts:
+                pred_pcts = np.array(pred_pcts)
+                gt_pcts = np.array(gt_pcts)
+                errors = pred_pcts - gt_pcts
+                relative_errors = errors / (gt_pcts + 1e-8)
                 print('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
                     np.abs(errors).mean(), (errors**2).mean(),
                     relative_errors.mean(), np.abs(relative_errors).mean()))
                 print('mean prediction = {}, mean actual = {}'.format(
-                    preds.mean(), actuals.mean()))
+                    pred_pcts.mean(), gt_pcts.mean()))
                 evaluations.write('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
                     np.abs(errors).mean(), (errors**2).mean(),
                     relative_errors.mean(), np.abs(relative_errors).mean()))
                 evaluations.write('mean prediction = {}, mean actual = {}'.format(
-                    preds.mean(), actuals.mean()))
+                    pred_pcts.mean(), gt_pcts.mean()))
+            if l1s and l2s:
+                l1s = np.stack(l1s)
+                l2s = np.stack(l2s)
+                print('MAE = {}, MSE = {}'.format(l1s.mean(), l2s.mean()))
+                evaluations.write(
+                    'MAE = {}, MSE = {}'.format(l1s.mean(), l2s.mean()))
 
         if not args.no_upload:
             s3 = boto3.client('s3')
@@ -1024,7 +1061,10 @@ if __name__ == '__main__':
     device = torch.device(args.backend)
 
     if not args.weights:
-        args.weights = [1.0, 1.0]
+        if '-binary' in args.architecture:
+            args.weights = [1.0] * 2
+        else:
+            args.weights = [1.0] * (len(args.label_map)-1)
     class_count = len(args.weights)
 
     if args.label_nd is None:
@@ -1049,18 +1089,14 @@ if __name__ == '__main__':
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
     print('\t STEPS PER EPOCH={}'.format(args.max_epoch_size))
 
-    if args.architecture.endswith('-binary.py'):
-        obj = torch.nn.BCEWithLogitsLoss().to(device)
-    elif args.architecture.endswith('-regressiononly.py'):
-        obj = None
-    else:
-        obj = torch.nn.CrossEntropyLoss(
+    obj = {
+        'seg': torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
             weight=torch.FloatTensor(args.weights).to(device)
-        ).to(device)
-
-    if '-regression' in args.architecture:
-        obj = {'obj1': obj, 'obj2': torch.nn.L1Loss().to(device)}
+        ).to(device),
+        '2seg': torch.nn.BCEWithLogitsLoss().to(device),
+        'reg':  torch.nn.L1Loss().to(device)
+    }
 
     # ---------------------------------
     if args.watchdog_seconds > 0:

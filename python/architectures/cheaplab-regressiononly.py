@@ -91,7 +91,7 @@ class CheapLabRegressionBinary(torch.nn.Module):
             Nugget(1, 2, 1)
         )
         self.input_layers = [self.indices]
-        self.output_layers = [self.classifier]
+        self.output_layers = [self.regression]
 
     def forward(self, x):
         x = self.indices(x)

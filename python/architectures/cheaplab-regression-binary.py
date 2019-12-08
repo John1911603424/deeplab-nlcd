@@ -107,7 +107,7 @@ class CheapLabRegressionBinary(torch.nn.Module):
             _x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
         regression = self.downsample(regression)
         regression = regression.reshape(-1, 1)
-        return {'seg': x, 'reg': regression}
+        return {'2seg': x, 'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):

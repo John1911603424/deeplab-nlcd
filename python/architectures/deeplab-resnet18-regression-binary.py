@@ -94,7 +94,7 @@ class DeepLabResnet18Binary(torch.nn.Module):
         regression = self.downsample(regression)
         regression = regression.reshape(-1, 1)
 
-        return {'seg': x, 'reg': regression}
+        return {'2seg': x, 'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):

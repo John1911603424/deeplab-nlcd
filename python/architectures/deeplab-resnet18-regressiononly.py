@@ -48,9 +48,6 @@ class Nugget(torch.nn.Module):
 
 
 class DeepLabResnet18Binary(torch.nn.Module):
-
-    patch_size = 32
-
     def __init__(self, band_count, input_stride, divisor, pretrained):
         super(DeepLabResnet18Binary, self).__init__()
         resnet18 = torchvision.models.resnet.resnet18(
@@ -58,8 +55,6 @@ class DeepLabResnet18Binary(torch.nn.Module):
         self.backbone = torchvision.models._utils.IntermediateLayerGetter(
             resnet18, return_layers={'layer4': 'out'})
         inplanes = 512
-        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-            inplanes, 1)
         self.backbone.conv1 = torch.nn.Conv2d(
             band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
@@ -68,16 +63,16 @@ class DeepLabResnet18Binary(torch.nn.Module):
         else:
             self.factor = 32 // divisor
 
-        self.downsample = torch.nn.Sequential(
-            Nugget(16+1, inplanes, 16),
-            Nugget(8+1, 16, 8),
-            Nugget(4+1, 8, 4),
-            Nugget(2+1, 4, 2),
-            Nugget(1+1, 2, 1)
+        self.regression = torch.nn.Sequential(
+            Nugget(1, inplanes, 16),
+            Nugget(1, 16, 8),
+            Nugget(1, 8, 4),
+            Nugget(1, 4, 2),
+            Nugget(1, 2, 1)
         )
 
         self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.classifier[4]]
+        self.output_layers = [self.regression]
 
     def forward(self, x):
         [w, h] = x.shape[-2:]
@@ -85,16 +80,11 @@ class DeepLabResnet18Binary(torch.nn.Module):
         features = self.backbone(torch.nn.functional.interpolate(
             x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-        x = self.classifier(features['out'])
         x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
+            features['out'], size=[w, h], mode='bilinear', align_corners=False)
+        x = self.regression(x)
 
-        pct = torch.nn.functional.interpolate(
-            features['out'], size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        pct = self.downsample(pct)
-        pct = pct.reshape(-1, 1)
-
-        return {'out': x, 'pct': pct}
+        return {'reg': x}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
