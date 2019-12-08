@@ -84,14 +84,14 @@ class CheapLabRegressionBinary(torch.nn.Module):
 
         self.indices = LearnedIndices(band_count)
         self.classifier = torch.nn.Sequential(
-            Nugget(1, self.indices.output_channels, 16),
+            Nugget(1, self.indices.output_channels+band_count, 16),
             Nugget(1, 16, 8),
             Nugget(1, 8, 4),
             Nugget(1, 4, 2),
             torch.nn.Conv2d(2, 1, kernel_size=1)
         )
         self.downsample = torch.nn.Sequential(
-            Nugget(16+1, self.indices.output_channels, 16),
+            Nugget(16+1, self.indices.output_channels+band_count, 16),
             Nugget(8+1, 16, 8),
             Nugget(4+1, 8, 4),
             Nugget(2+1, 4, 2),
@@ -101,7 +101,7 @@ class CheapLabRegressionBinary(torch.nn.Module):
         self.output_layers = [self.classifier]
 
     def forward(self, x):
-        _x = self.indices(x)
+        _x = torch.cat([self.indices(x), x], axis=1)
         x = self.classifier(_x)
         regression = torch.nn.functional.interpolate(
             _x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)

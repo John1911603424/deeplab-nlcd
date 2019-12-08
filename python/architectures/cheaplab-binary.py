@@ -80,7 +80,7 @@ class CheapLabBinary(torch.nn.Module):
         super(CheapLabBinary, self).__init__()
         self.indices = LearnedIndices(band_count)
         self.classifier = torch.nn.Sequential(
-            Nugget(1, self.indices.output_channels, 16),
+            Nugget(1, self.indices.output_channels+band_count, 16),
             Nugget(1, 16, 8),
             Nugget(1, 8, 4),
             Nugget(1, 4, 2),
@@ -90,7 +90,7 @@ class CheapLabBinary(torch.nn.Module):
         self.output_layers = [self.classifier]
 
     def forward(self, x):
-        x = self.indices(x)
+        x = torch.cat([self.indices(x), x], axis=1)
         x = self.classifier(x)
         return {'2seg': x}
 
