@@ -1051,6 +1051,8 @@ if __name__ == '__main__':
 
     if args.architecture.endswith('-binary.py'):
         obj = torch.nn.BCEWithLogitsLoss().to(device)
+    elif args.architecture.endswith('-regressiononly.py'):
+        obj = None
     else:
         obj = torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
@@ -1058,7 +1060,7 @@ if __name__ == '__main__':
         ).to(device)
 
     if '-regression' in args.architecture:
-        obj = {'obj1': obj, 'obj2': torch.nn.L1Loss()}
+        obj = {'obj1': obj, 'obj2': torch.nn.L1Loss().to(device)}
 
     # ---------------------------------
     if args.watchdog_seconds > 0:
