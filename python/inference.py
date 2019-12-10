@@ -252,8 +252,13 @@ if __name__ == '__main__':
     # ---------------------------------
     print('DATA')
 
-    for inference_img in args.inference_img:
+    # Look for newline-delimited lists of files
+    if len(args.inference_img) == 1 and args.inference_img[0].endswith('.list'):
+        text = read_text(args.inference_img[0])
+        args.inference_img = list(
+            filter(lambda line: len(line) > 0, text.split('\n')))
 
+    for inference_img in args.inference_img:
         mul = '/tmp/mul.tif'
         if not os.path.exists(mul) or len(args.inference_img) > 1:
             s3 = boto3.client('s3')
@@ -413,20 +418,25 @@ if __name__ == '__main__':
                                         (window.width, window.height), dtype=np.float32)
                                     reg = out.get('reg')
                                     reg_window = reg_window * reg.item()
-                                    ds_reg.write(reg_window, window=window, indexes=1)
-                                out = out.get('out', out.get('seg', out.get('2seg')))
+                                    ds_reg.write(
+                                        reg_window, window=window, indexes=1)
+                                out = out.get('out', out.get(
+                                    'seg', out.get('2seg')))
                             out = out.cpu().numpy()
                             for i in range(0, args.classes):
-                                ds_raw.write(out[0, i], window=window, indexes=i+1)
+                                ds_raw.write(
+                                    out[0, i], window=window, indexes=i+1)
                             if args.classes > 1:
                                 out = np.apply_along_axis(np.argmax, 1, out)
                                 out = np.array(out, dtype=np.uint8)
                                 out = out * (0xff // (args.classes-1))
-                                ds_final.write(out[0], window=window, indexes=1)
+                                ds_final.write(
+                                    out[0], window=window, indexes=1)
                             else:
                                 out = np.array(out > 0.0, dtype=np.uint8)
                                 out = out * 0xff
-                                ds_final.write(out[0][0], window=window, indexes=1)
+                                ds_final.write(
+                                    out[0][0], window=window, indexes=1)
                     print('{}% complete'.format(
                         (int)(100.0 * x_offset / width)))
 
