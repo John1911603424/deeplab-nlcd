@@ -250,6 +250,16 @@ if __name__ == '__main__':
     load_architectures(args.architecture)
 
     # ---------------------------------
+    print('MODEL')
+
+    if not os.path.exists('/tmp/weights.pth'):
+        s3 = boto3.client('s3')
+        bucket, prefix = parse_s3_url(args.model)
+        print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
+        s3.download_file(bucket, prefix, '/tmp/weights.pth')
+        del s3
+
+    # ---------------------------------
     print('DATA')
 
     # Look for newline-delimited lists of files
@@ -268,14 +278,6 @@ if __name__ == '__main__':
             del s3
 
         # ---------------------------------
-        print('MODEL')
-
-        if not os.path.exists('/tmp/weights.pth'):
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.model)
-            print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, '/tmp/weights.pth')
-            del s3
 
         device = torch.device(args.backend)
 
