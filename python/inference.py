@@ -193,6 +193,8 @@ if True:
         parser.add_argument('--classes',
                             required=False, type=int, default=1,
                             help='The number of prediction classes')
+        parser.add_argument('--force-download',
+                            type=bool, default=False)
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
         parser.add_argument('--image-nd',
@@ -252,7 +254,7 @@ if __name__ == '__main__':
     # ---------------------------------
     print('MODEL')
 
-    if not os.path.exists('/tmp/weights.pth'):
+    if not os.path.exists('/tmp/weights.pth') or args.force_download:
         s3 = boto3.client('s3')
         bucket, prefix = parse_s3_url(args.model)
         print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
@@ -270,7 +272,7 @@ if __name__ == '__main__':
 
     for inference_img in args.inference_img:
         mul = '/tmp/mul.tif'
-        if not os.path.exists(mul) or len(args.inference_img) > 1:
+        if not os.path.exists(mul) or len(args.inference_img) > 1 or args.force_download:
             s3 = boto3.client('s3')
             bucket, prefix = parse_s3_url(inference_img)
             print('Inference image bucket and prefix: {}, {}'.format(bucket, prefix))
