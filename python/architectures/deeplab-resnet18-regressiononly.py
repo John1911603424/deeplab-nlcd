@@ -32,19 +32,29 @@ if False:
     import torchvision
 
 
-class DeepLabResnet34(torch.nn.Module):
-    def __init__(self, band_count, input_stride, class_count, divisor, pretrained):
-        super(DeepLabResnet34, self).__init__()
-        resnet34 = torchvision.models.resnet.resnet34(
+class Nugget(torch.nn.Module):
+    def __init__(self, kernel_size, in_channels, out_channels):
+        super(Nugget, self).__init__()
+        self.conv2d = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=kernel_size)
+        self.batch_norm = torch.nn.BatchNorm2d(out_channels)
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.batch_norm(x)
+        x = self.relu(x)
+        return x
+
+
+class DeepLabResnet18Binary(torch.nn.Module):
+    def __init__(self, band_count, input_stride, divisor, pretrained):
+        super(DeepLabResnet18Binary, self).__init__()
+        resnet18 = torchvision.models.resnet.resnet18(
             pretrained=pretrained)
         self.backbone = torchvision.models._utils.IntermediateLayerGetter(
-            resnet34, return_layers={'layer4': 'out', 'layer3': 'aux'})
+            resnet18, return_layers={'layer4': 'out'})
         inplanes = 512
-        self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
-            inplanes, class_count)
-        inplanes = 256
-        self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
-            inplanes, class_count)
         self.backbone.conv1 = torch.nn.Conv2d(
             band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
@@ -53,8 +63,16 @@ class DeepLabResnet34(torch.nn.Module):
         else:
             self.factor = 32 // divisor
 
+        self.regression = torch.nn.Sequential(
+            Nugget(1, inplanes, 16),
+            Nugget(1, 16, 8),
+            Nugget(1, 8, 4),
+            Nugget(1, 4, 2),
+            Nugget(1, 2, 1)
+        )
+
         self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.classifier[4]]
+        self.output_layers = [self.regression]
 
     def forward(self, x):
         [w, h] = x.shape[-2:]
@@ -62,24 +80,14 @@ class DeepLabResnet34(torch.nn.Module):
         features = self.backbone(torch.nn.functional.interpolate(
             x, size=[w*self.factor, h*self.factor], mode='bilinear', align_corners=False))
 
-        result = {}
-
-        x = features['out']
-        x = self.classifier(x)
         x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['seg'] = x
+            features['out'], size=[w, h], mode='bilinear', align_corners=False)
+        x = self.regression(x)
 
-        y = features['aux']
-        y = self.aux_classifier(y)
-        y = torch.nn.functional.interpolate(
-            y, size=[w, h], mode='bilinear', align_corners=False)
-        result['aux'] = y
-
-        return {'seg': x, 'aux': y}
+        return {'reg': x}
 
 
-def make_model(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
-    deeplab = DeepLabResnet34(
-        band_count, input_stride, class_count, divisor, pretrained)
+def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
+    deeplab = DeepLabResnet18Binary(
+        band_count, input_stride, divisor, pretrained)
     return deeplab

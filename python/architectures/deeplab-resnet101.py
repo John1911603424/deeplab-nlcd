@@ -68,15 +68,15 @@ class DeepLabResnet101(torch.nn.Module):
         x = self.classifier(x)
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
-        result['out'] = x
+        result['seg'] = x
 
-        x = features['aux']
-        x = self.aux_classifier(x)
-        x = torch.nn.functional.interpolate(
-            x, size=[w, h], mode='bilinear', align_corners=False)
-        result['aux'] = x
+        y = features['aux']
+        y = self.aux_classifier(y)
+        y = torch.nn.functional.interpolate(
+            y, size=[w, h], mode='bilinear', align_corners=False)
+        result['aux'] = y
 
-        return result
+        return {'seg': x, 'aux': y}
 
 
 def make_model(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):

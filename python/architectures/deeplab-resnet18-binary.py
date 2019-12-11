@@ -66,7 +66,7 @@ class DeepLabResnet18Binary(torch.nn.Module):
         x = torch.nn.functional.interpolate(
             x, size=[w, h], mode='bilinear', align_corners=False)
 
-        return x
+        return {'2seg': x}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
