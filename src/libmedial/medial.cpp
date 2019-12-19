@@ -31,50 +31,21 @@
 
 #include <vector>
 
-#include <boost/geometry.hpp>
-#include <boost/geometry/geometries/geometries.hpp>
-#include <boost/geometry/geometries/point_xy.hpp>
-#include <boost/geometry/index/rtree.hpp>
+#include <boost/polygon/segment_data.hpp>
+#include <boost/polygon/voronoi.hpp>
 
-namespace bg = boost::geometry;
-namespace bgi = boost::geometry::index;
+namespace bp = boost::polygon;
 
-typedef bg::model::d2::point_xy<double> point_t;
-typedef bg::model::box<point_t> box_t;
-typedef bg::model::polygon<point_t> polygon_t;
-typedef bg::model::multi_polygon<polygon_t> multipolygon_t;
-typedef std::pair<box_t, int> value_t;
-typedef bgi::rtree<value_t, bgi::linear<8>> rtree_t;
+typedef bp::point_data<int64_t> point;
+typedef bp::segment_data<int64_t> segment;
+typedef bp::voronoi_edge<double> voronoi_edge;
+typedef bp::voronoi_diagram<double> voronoi_diagram;
 
-std::vector<rtree_t> trees;
-
-extern "C" int add_tree()
+int get_edges(const std::vector<segment> &segments, std::vector<voronoi_edge> &edges)
 {
-    trees.emplace_back();
-    return trees.size();
-}
+    voronoi_diagram vd;
+    std::vector<point> points;
+    bp::construct_voronoi(points.begin(), points.end(), segments.begin(), segments.end(), &vd);
 
-extern "C" double query(int index, double xmin, double ymin, double xmax, double ymax)
-{
-    box_t box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
-    multipolygon_t difference;
-    bg::convert(box, difference);
-    std::vector<value_t> results;
-
-    trees[index].query(bgi::intersects(box), std::back_inserter(results));
-
-    for (const auto &result : results)
-    {
-        multipolygon_t new_difference;
-        bg::difference(difference, result.first, new_difference);
-        difference = new_difference;
-    }
-
-    return (bg::area(difference) / bg::area(box));
-}
-
-extern "C" void insert(int index, double xmin, double ymin, double xmax, double ymax)
-{
-    box_t box = box_t(point_t(xmin, ymin), point_t(xmax, ymax));
-    trees[index].insert(std::make_pair(box, 33));
+    return 0;
 }

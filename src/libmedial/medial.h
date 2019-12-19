@@ -26,11 +26,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef __TREES_H__
-#define __TREES_H__
-
-int add_tree();
-double query(int index, double xmin, double ymin, double xmax, double ymax);
-void insert(int index, double xmin, double ymin, double xmax, double ymax);
+#ifndef __MEDIAL_H__
+#define __MEDIAL_H__
 
 #endif
