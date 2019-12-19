@@ -16,7 +16,7 @@ liboverlaps.so: trees.o
 	strip $@
 
 main: main.c trees.cpp trees.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -I . $^ -o $@
+	$(CC) $(CFLAGS) main.c trees.cpp $(LDFLAGS) -I . -o $@
 
 clean:
 	rm -f *.o
