@@ -29,4 +29,6 @@
 #ifndef __MEDIAL_H__
 #define __MEDIAL_H__
 
+int get_skeleton(const char *wkt);
+
 #endif

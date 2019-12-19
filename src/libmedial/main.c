@@ -28,7 +28,11 @@
 
 #include <stdio.h>
 
+#include "medial.h"
+
 int main()
 {
+    get_skeleton("POLYGON((0 0,0 7,4 2,2 0,0 0))");
+
     return 0;
 }

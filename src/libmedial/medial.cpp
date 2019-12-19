@@ -31,21 +31,61 @@
 
 #include <vector>
 
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/polygon.hpp>
+#include <boost/geometry/geometries/point_xy.hpp>
 #include <boost/polygon/segment_data.hpp>
 #include <boost/polygon/voronoi.hpp>
 
 namespace bp = boost::polygon;
+namespace bg = boost::geometry;
+
+typedef bg::model::d2::point_xy<int64_t> polygon_integral_point;
+typedef boost::geometry::model::referring_segment<polygon_integral_point> polygon_segment;
+typedef bg::model::polygon<polygon_integral_point> polygon;
 
 typedef bp::point_data<int64_t> point;
 typedef bp::segment_data<int64_t> segment;
 typedef bp::voronoi_edge<double> voronoi_edge;
 typedef bp::voronoi_diagram<double> voronoi_diagram;
 
-int get_edges(const std::vector<segment> &segments, std::vector<voronoi_edge> &edges)
+extern "C" int get_skeleton(const char *wkt)
 {
-    voronoi_diagram vd;
     std::vector<point> points;
-    bp::construct_voronoi(points.begin(), points.end(), segments.begin(), segments.end(), &vd);
+    std::vector<segment> segments;
+    polygon p;
+    voronoi_diagram vd;
+
+    // construct polygon
+    bg::read_wkt(wkt, p);
+
+    // construct voronoi diagram
+    bg::for_each_segment(p, [&segments](polygon_segment s1) {
+        point low(s1.first.x(), s1.first.y());
+        point hi(s1.second.x(), s1.second.y());
+        segment s2(low, hi);
+        segments.push_back(s2);
+    });
+    bp::construct_voronoi(points.cbegin(), points.cend(), segments.cbegin(), segments.cend(), &vd);
+
+    for (auto it = vd.edges().cbegin(); it != vd.edges().cend(); ++it)
+    {
+        if (it->is_primary() && it->is_finite())
+        {
+            auto index = it->cell()->source_index();
+
+            double x1, y1, x2, y2;
+
+            x1 = it->vertex0()->x();
+            y1 = it->vertex0()->y();
+            x2 = it->vertex1()->x();
+            y2 = it->vertex1()->y();
+            if (x1 <= x2)
+            {
+                fprintf(stderr, "(%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
+            }
+        }
+    }
 
     return 0;
 }
