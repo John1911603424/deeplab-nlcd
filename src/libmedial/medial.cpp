@@ -81,17 +81,23 @@ extern "C" int get_skeleton(const char *wkt)
                 break;
             }
         }
+#if defined(DEBUG)
         fprintf(stderr, "VERTEX %lf %lf\n", vit->x(), vit->y());
+#endif
         if (!starting_edge->is_primary())
         {
+#if defined(DEBUG)
             fprintf(stderr, "\tNO PRIMARY EDGES\n");
+#endif
             break;
         }
         auto starting_source_segment = segments[starting_edge->cell()->source_index()];
         auto shared_endpoints = std::set<decltype(starting_source_segment.low())>();
 
+#if defined(DEBUG)
         fprintf(stderr, "*\t%s EDGE (%lf %lf) (%lf %lf)\n", starting_edge->is_primary() ? "PRIMARY" : "SECONDARY", starting_edge->vertex0()->x(), starting_edge->vertex0()->y(), starting_edge->vertex1()->x(), starting_edge->vertex1()->y());
         fprintf(stderr, "*\t\tSEGMENT (%ld %ld) (%ld %ld)\n", starting_source_segment.low().x(), starting_source_segment.low().y(), starting_source_segment.high().x(), starting_source_segment.high().y());
+#endif
 
         // Sanity check
         /*if (!starting_edge->cell()->contains_segment())
@@ -105,6 +111,7 @@ extern "C" int get_skeleton(const char *wkt)
 
         for (auto edge = starting_edge->rot_next(); edge->cell() != starting_edge->cell(); edge = edge->rot_next())
         {
+#if defined(DEBUG)
             if (edge->is_finite())
             {
                 fprintf(stderr, "\t%s EDGE (%lf %lf) (%lf %lf)\n", edge->is_primary() ? "PRIMARY" : "SECONDARY", edge->vertex0()->x(), edge->vertex0()->y(), edge->vertex1()->x(), edge->vertex1()->y());
@@ -113,16 +120,22 @@ extern "C" int get_skeleton(const char *wkt)
             {
                 fprintf(stderr, "\t%s EDGE (%lf %lf) (... ...)\n", edge->is_primary() ? "PRIMARY" : "SECONDARY", edge->vertex0()->x(), edge->vertex0()->y());
             }
+#endif
             if (!edge->is_primary())
             {
+#if defined(DEBUG)
                 fprintf(stderr, "\t\tSKIPPING SECONDARY EDGE\n");
+#endif
                 continue;
             }
             auto associated_cell = edge->cell();
             auto source_segment = segments[associated_cell->source_index()];
             auto old_shared_endpoints = shared_endpoints;
 
+#if defined(DEBUG)
             fprintf(stderr, "\t\tSEGMENT (%ld %ld) (%ld %ld)\n", source_segment.low().x(), source_segment.low().y(), source_segment.high().x(), source_segment.high().y());
+#endif
+
             // Sanity check
             /*if (!associated_cell->contains_segment())
             {
@@ -134,12 +147,16 @@ extern "C" int get_skeleton(const char *wkt)
             shared_endpoints.clear();
             if (old_shared_endpoints.count(source_segment.low()) > 0)
             {
+#if defined(DEBUG)
                 fprintf(stderr, "\t\t\tKEEPING FIRST SEGMENT ENDPOINT\n");
+#endif
                 shared_endpoints.insert(source_segment.low());
             }
             if (old_shared_endpoints.count(source_segment.high()) > 0)
             {
+#if defined(DEBUG)
                 fprintf(stderr, "\t\t\tKEEPING SECOND SEGMENT ENDPOINT\n");
+#endif
                 shared_endpoints.insert(source_segment.high());
             }
 
@@ -157,7 +174,9 @@ extern "C" int get_skeleton(const char *wkt)
         if (shared_endpoints.size() > 0)
         {
             vit->color(MAGIC_COLOR);
+#if defined(DEBUG)
             fprintf(stderr, "\tBOUNDARY VERTEX: (%lf %lf)\n", vit->x(), vit->y());
+#endif
         }
     }
 
@@ -175,7 +194,11 @@ extern "C" int get_skeleton(const char *wkt)
             y2 = eit->vertex1()->y();
             if (x1 <= x2)
             {
+#if defined(DEBUG)
                 fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) %ld %ld\n", x1, y1, x2, y2, eit->vertex0()->color(), eit->vertex1()->color());
+#else
+                fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
+#endif
             }
         }
     }
