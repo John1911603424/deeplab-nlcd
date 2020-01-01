@@ -50,18 +50,7 @@ typedef bp::segment_data<int64_t> segment;
 typedef bp::voronoi_edge<double> voronoi_edge;
 typedef bp::voronoi_diagram<double> voronoi_diagram_t;
 
-namespace boost
-{
-namespace polygon
-{
-
-bool operator<(const voronoi_diagram_t::vertex_type &a, const voronoi_diagram_t::vertex_type &b)
-{
-    return (a.x() < b.x()) || (a.y() < b.y());
-}
-
-} // namespace polygon
-} // namespace boost
+#define MAGIC_COLOR (33)
 
 extern "C" int get_skeleton(const char *wkt)
 {
@@ -69,7 +58,6 @@ extern "C" int get_skeleton(const char *wkt)
     std::vector<segment> segments;
     polygon p;
     voronoi_diagram_t vd;
-    auto boundary_vertices = std::set<voronoi_diagram_t::vertex_type>();
 
     // construct polygon
     bg::read_wkt(wkt, p);
@@ -168,14 +156,14 @@ extern "C" int get_skeleton(const char *wkt)
         // http://boost.2283326.n4.nabble.com/voronoi-medial-axis-tp4651161p4651225.html )
         if (shared_endpoints.size() > 0)
         {
-            boundary_vertices.insert(*vit);
+            vit->color(MAGIC_COLOR);
             fprintf(stderr, "\tBOUNDARY VERTEX: (%lf %lf)\n", vit->x(), vit->y());
         }
     }
 
     for (auto eit = vd.edges().cbegin(); eit != vd.edges().cend(); ++eit)
     {
-        if (eit->is_primary() && eit->is_finite() && boundary_vertices.count(*(eit->vertex0())) == 0 && boundary_vertices.count(*(eit->vertex1())) == 0)
+        if (eit->is_primary() && eit->is_finite() && eit->vertex0()->color() != MAGIC_COLOR && eit->vertex1()->color() != MAGIC_COLOR)
         {
             auto index = eit->cell()->source_index();
 
@@ -187,7 +175,7 @@ extern "C" int get_skeleton(const char *wkt)
             y2 = eit->vertex1()->y();
             if (x1 <= x2)
             {
-                fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
+                fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) %ld %ld\n", x1, y1, x2, y2, eit->vertex0()->color(), eit->vertex1()->color());
             }
         }
     }
