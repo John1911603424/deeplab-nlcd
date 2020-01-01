@@ -30,6 +30,7 @@
 #include <cstdint>
 
 #include <vector>
+#include <set>
 
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/polygon.hpp>
@@ -47,14 +48,28 @@ typedef bg::model::polygon<polygon_integral_point> polygon;
 typedef bp::point_data<int64_t> point;
 typedef bp::segment_data<int64_t> segment;
 typedef bp::voronoi_edge<double> voronoi_edge;
-typedef bp::voronoi_diagram<double> voronoi_diagram;
+typedef bp::voronoi_diagram<double> voronoi_diagram_t;
+
+namespace boost
+{
+namespace polygon
+{
+
+bool operator<(const voronoi_diagram_t::vertex_type &a, const voronoi_diagram_t::vertex_type &b)
+{
+    return (a.x() < b.x()) || (a.y() < b.y());
+}
+
+} // namespace polygon
+} // namespace boost
 
 extern "C" int get_skeleton(const char *wkt)
 {
     std::vector<point> points;
     std::vector<segment> segments;
     polygon p;
-    voronoi_diagram vd;
+    voronoi_diagram_t vd;
+    auto boundary_vertices = std::set<voronoi_diagram_t::vertex_type>();
 
     // construct polygon
     bg::read_wkt(wkt, p);
@@ -68,21 +83,111 @@ extern "C" int get_skeleton(const char *wkt)
     });
     bp::construct_voronoi(points.cbegin(), points.cend(), segments.cbegin(), segments.cend(), &vd);
 
-    for (auto it = vd.edges().cbegin(); it != vd.edges().cend(); ++it)
+    for (auto vit = vd.vertices().cbegin(); vit != vd.vertices().cend(); ++vit)
     {
-        if (it->is_primary() && it->is_finite())
+        auto starting_edge = vit->incident_edge()->rot_next();
+        for (; starting_edge->cell() != vit->incident_edge()->cell(); starting_edge = starting_edge->rot_next())
         {
-            auto index = it->cell()->source_index();
+            if (starting_edge->is_primary())
+            {
+                break;
+            }
+        }
+        fprintf(stderr, "VERTEX %lf %lf\n", vit->x(), vit->y());
+        if (!starting_edge->is_primary())
+        {
+            fprintf(stderr, "\tNO PRIMARY EDGES\n");
+            break;
+        }
+        auto starting_source_segment = segments[starting_edge->cell()->source_index()];
+        auto shared_endpoints = std::set<decltype(starting_source_segment.low())>();
+
+        fprintf(stderr, "*\t%s EDGE (%lf %lf) (%lf %lf)\n", starting_edge->is_primary() ? "PRIMARY" : "SECONDARY", starting_edge->vertex0()->x(), starting_edge->vertex0()->y(), starting_edge->vertex1()->x(), starting_edge->vertex1()->y());
+        fprintf(stderr, "*\t\tSEGMENT (%ld %ld) (%ld %ld)\n", starting_source_segment.low().x(), starting_source_segment.low().y(), starting_source_segment.high().x(), starting_source_segment.high().y());
+
+        // Sanity check
+        /*if (!starting_edge->cell()->contains_segment())
+        {
+            continue;
+        }*/
+
+        // Initialization
+        shared_endpoints.insert(starting_source_segment.low());
+        shared_endpoints.insert(starting_source_segment.high());
+
+        for (auto edge = starting_edge->rot_next(); edge->cell() != starting_edge->cell(); edge = edge->rot_next())
+        {
+            if (edge->is_finite())
+            {
+                fprintf(stderr, "\t%s EDGE (%lf %lf) (%lf %lf)\n", edge->is_primary() ? "PRIMARY" : "SECONDARY", edge->vertex0()->x(), edge->vertex0()->y(), edge->vertex1()->x(), edge->vertex1()->y());
+            }
+            else
+            {
+                fprintf(stderr, "\t%s EDGE (%lf %lf) (... ...)\n", edge->is_primary() ? "PRIMARY" : "SECONDARY", edge->vertex0()->x(), edge->vertex0()->y());
+            }
+            if (!edge->is_primary())
+            {
+                fprintf(stderr, "\t\tSKIPPING SECONDARY EDGE\n");
+                continue;
+            }
+            auto associated_cell = edge->cell();
+            auto source_segment = segments[associated_cell->source_index()];
+            auto old_shared_endpoints = shared_endpoints;
+
+            fprintf(stderr, "\t\tSEGMENT (%ld %ld) (%ld %ld)\n", source_segment.low().x(), source_segment.low().y(), source_segment.high().x(), source_segment.high().y());
+            // Sanity check
+            /*if (!associated_cell->contains_segment())
+            {
+                shared_endpoints.clear();
+                break;
+            }*/
+
+            // Remove non-shared endpoints
+            shared_endpoints.clear();
+            if (old_shared_endpoints.count(source_segment.low()) > 0)
+            {
+                fprintf(stderr, "\t\t\tKEEPING FIRST SEGMENT ENDPOINT\n");
+                shared_endpoints.insert(source_segment.low());
+            }
+            if (old_shared_endpoints.count(source_segment.high()) > 0)
+            {
+                fprintf(stderr, "\t\t\tKEEPING SECOND SEGMENT ENDPOINT\n");
+                shared_endpoints.insert(source_segment.high());
+            }
+
+            // If the number of shared endpoints has dropped to zero, leave
+            /*if (shared_endpoints.size() == 0)
+            {
+                break;
+            }*/
+        }
+
+        // If there is a shared endpoint between the source segments
+        // of all of the cells that meet this voronoi vertex, then it
+        // is a boundary vertex (see
+        // http://boost.2283326.n4.nabble.com/voronoi-medial-axis-tp4651161p4651225.html )
+        if (shared_endpoints.size() > 0)
+        {
+            boundary_vertices.insert(*vit);
+            fprintf(stderr, "\tBOUNDARY VERTEX: (%lf %lf)\n", vit->x(), vit->y());
+        }
+    }
+
+    for (auto eit = vd.edges().cbegin(); eit != vd.edges().cend(); ++eit)
+    {
+        if (eit->is_primary() && eit->is_finite() && boundary_vertices.count(*(eit->vertex0())) == 0 && boundary_vertices.count(*(eit->vertex1())) == 0)
+        {
+            auto index = eit->cell()->source_index();
 
             double x1, y1, x2, y2;
 
-            x1 = it->vertex0()->x();
-            y1 = it->vertex0()->y();
-            x2 = it->vertex1()->x();
-            y2 = it->vertex1()->y();
+            x1 = eit->vertex0()->x();
+            y1 = eit->vertex0()->y();
+            x2 = eit->vertex1()->x();
+            y2 = eit->vertex1()->y();
             if (x1 <= x2)
             {
-                fprintf(stderr, "(%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
+                fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
             }
         }
     }
