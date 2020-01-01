@@ -99,12 +99,6 @@ extern "C" int get_skeleton(const char *wkt)
         fprintf(stderr, "*\t\tSEGMENT (%ld %ld) (%ld %ld)\n", starting_source_segment.low().x(), starting_source_segment.low().y(), starting_source_segment.high().x(), starting_source_segment.high().y());
 #endif
 
-        // Sanity check
-        /*if (!starting_edge->cell()->contains_segment())
-        {
-            continue;
-        }*/
-
         // Initialization
         shared_endpoints.insert(starting_source_segment.low());
         shared_endpoints.insert(starting_source_segment.high());
@@ -136,13 +130,6 @@ extern "C" int get_skeleton(const char *wkt)
             fprintf(stderr, "\t\tSEGMENT (%ld %ld) (%ld %ld)\n", source_segment.low().x(), source_segment.low().y(), source_segment.high().x(), source_segment.high().y());
 #endif
 
-            // Sanity check
-            /*if (!associated_cell->contains_segment())
-            {
-                shared_endpoints.clear();
-                break;
-            }*/
-
             // Remove non-shared endpoints
             shared_endpoints.clear();
             if (old_shared_endpoints.count(source_segment.low()) > 0)
@@ -161,10 +148,10 @@ extern "C" int get_skeleton(const char *wkt)
             }
 
             // If the number of shared endpoints has dropped to zero, leave
-            /*if (shared_endpoints.size() == 0)
+            if (shared_endpoints.size() == 0)
             {
                 break;
-            }*/
+            }
         }
 
         // If there is a shared endpoint between the source segments
