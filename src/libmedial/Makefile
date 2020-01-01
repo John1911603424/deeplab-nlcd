@@ -8,6 +8,9 @@ all: libmedial.so
 %.o: %.c
 	$(CC) $(CFLAGS) -fPIC $< -c -o $@
 
+%.o: %.cpp %.h
+	$(CXX) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
+
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
 
@@ -15,8 +18,8 @@ libmedial.so: medial.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-main: main.c medial.cpp medial.h
-	$(CC) $(CFLAGS) -I . main.c medial.cpp $(LDFLAGS) -o $@
+main: main.c medial.o
+	$(CC) $(CFLAGS) -I . main.c medial.o $(LDFLAGS) -o $@
 
 clean:
 	rm -f *.o

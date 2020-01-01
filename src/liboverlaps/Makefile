@@ -8,6 +8,9 @@ all: liboverlaps.so
 %.o: %.c
 	$(CC) $(CFLAGS) -fPIC $< -c -o $@
 
+%.o: %.cpp %.h
+	$(CXX) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
+
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
 
@@ -15,8 +18,8 @@ liboverlaps.so: trees.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-main: main.c trees.cpp trees.h
-	$(CC) $(CFLAGS) main.c trees.cpp $(LDFLAGS) -I . -o $@
+main: main.c trees.o
+	$(CC) $(CFLAGS) main.c trees.o $(LDFLAGS) -I . -o $@
 
 clean:
 	rm -f *.o
