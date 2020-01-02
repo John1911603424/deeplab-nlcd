@@ -18,8 +18,8 @@ libmedial.so: medial.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-main: main.c medial.o
-	$(CC) $(CFLAGS) -I . main.c medial.o $(LDFLAGS) -o $@
+main: main.o medial.o
+	$(CC) $(CFLAGS) -I . main.o medial.o $(LDFLAGS) -o $@
 
 clean:
 	rm -f *.o

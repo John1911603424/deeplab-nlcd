@@ -2,7 +2,7 @@
  * The MIT License (MIT)
  * =====================
  *
- * Copyright © 2019 Azavea
+ * Copyright © 2019-2020 Azavea
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -29,6 +29,12 @@
 #ifndef __MEDIAL_H__
 #define __MEDIAL_H__
 
-int get_skeleton(const char *wkt);
-
+#if defined(__cplusplus)
+extern "C"
+{
+#endif
+    int get_skeleton(int n, int64_t * data, double ** return_data);
+#if defined(__cplusplus)
+}
+#endif
 #endif

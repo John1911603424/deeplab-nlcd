@@ -2,7 +2,7 @@
  * The MIT License (MIT)
  * =====================
  *
- * Copyright © 2019 Azavea
+ * Copyright © 2019-2020 Azavea
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -32,18 +32,10 @@
 #include <vector>
 #include <set>
 
-#include <boost/geometry.hpp>
-#include <boost/geometry/geometries/polygon.hpp>
-#include <boost/geometry/geometries/point_xy.hpp>
 #include <boost/polygon/segment_data.hpp>
 #include <boost/polygon/voronoi.hpp>
 
 namespace bp = boost::polygon;
-namespace bg = boost::geometry;
-
-typedef bg::model::d2::point_xy<int64_t> polygon_integral_point;
-typedef boost::geometry::model::referring_segment<polygon_integral_point> polygon_segment;
-typedef bg::model::polygon<polygon_integral_point> polygon;
 
 typedef bp::point_data<int64_t> point;
 typedef bp::segment_data<int64_t> segment;
@@ -52,23 +44,18 @@ typedef bp::voronoi_diagram<double> voronoi_diagram_t;
 
 #define MAGIC_COLOR (33)
 
-extern "C" int get_skeleton(const char *wkt)
+extern "C" int get_skeleton(int n, int64_t *data, double **return_data)
 {
     std::vector<point> points;
     std::vector<segment> segments;
-    polygon p;
+    std::vector<double> axis_vector;
     voronoi_diagram_t vd;
 
-    // construct polygon
-    bg::read_wkt(wkt, p);
-
     // construct voronoi diagram
-    bg::for_each_segment(p, [&segments](polygon_segment s1) {
-        point low(s1.first.x(), s1.first.y());
-        point hi(s1.second.x(), s1.second.y());
-        segment s2(low, hi);
-        segments.push_back(s2);
-    });
+    for (int i = 0; i < n; i += 4)
+    {
+        segments.emplace_back(point(data[i + 0], data[i + 1]), point(data[i + 2], data[i + 3]));
+    }
     bp::construct_voronoi(points.cbegin(), points.cend(), segments.cbegin(), segments.cend(), &vd);
 
     for (auto vit = vd.vertices().cbegin(); vit != vd.vertices().cend(); ++vit)
@@ -183,12 +170,18 @@ extern "C" int get_skeleton(const char *wkt)
             {
 #if defined(DEBUG)
                 fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) %ld %ld\n", x1, y1, x2, y2, eit->vertex0()->color(), eit->vertex1()->color());
-#else
-                fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
 #endif
+                axis_vector.push_back(x1);
+                axis_vector.push_back(y1);
+                axis_vector.push_back(x2);
+                axis_vector.push_back(y2);
             }
         }
     }
 
-    return 0;
+    // Copy results back
+    *return_data = static_cast<double *>(malloc(axis_vector.size() * sizeof(double)));
+    memcpy(*return_data, axis_vector.data(), axis_vector.size() * sizeof(double));
+
+    return axis_vector.size();
 }
