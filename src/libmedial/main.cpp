@@ -40,27 +40,27 @@ namespace bg = boost::geometry;
 
 typedef bg::model::d2::point_xy<int64_t> polygon_integral_point;
 typedef bg::model::referring_segment<polygon_integral_point> polygon_segment;
-typedef bg::model::polygon<polygon_integral_point> polygon; // XXX
+typedef bg::model::polygon<polygon_integral_point> polygon;
 
 int main()
 {
     const char *wkt_polygon = "POLYGON((0 0,0 7,4 2,2 0,0 0))";
     polygon bg_polygon;
-    std::vector<int64_t> xy_data;
+    std::vector<int64_t> segments;
 
     int n = -1;
     double *return_data;
 
     bg::read_wkt(wkt_polygon, bg_polygon);
-    bg::for_each_segment(bg_polygon, [&xy_data](polygon_segment s) {
-        xy_data.push_back(s.first.x());
-        xy_data.push_back(s.first.y());
-        xy_data.push_back(s.second.x());
-        xy_data.push_back(s.second.y());
+    bg::for_each_segment(bg_polygon, [&segments](polygon_segment s) {
+        segments.push_back(s.first.x());
+        segments.push_back(s.first.y());
+        segments.push_back(s.second.x());
+        segments.push_back(s.second.y());
     });
 
     // Compute the internal axis
-    n = get_skeleton(xy_data.size(), xy_data.data(), &return_data);
+    n = get_skeleton(segments.size(), segments.data(), &return_data);
 
     // Display the internal axis
     for (int i = 0; i < n; i += 4)
