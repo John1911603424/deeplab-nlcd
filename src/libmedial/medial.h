@@ -33,7 +33,7 @@
 extern "C"
 {
 #endif
-    int get_skeleton(int n, int64_t * data, double ** return_data);
+    int get_skeleton(int n, void * data, double ** return_data);
 #if defined(__cplusplus)
 }
 #endif

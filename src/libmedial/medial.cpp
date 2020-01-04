@@ -34,66 +34,218 @@
 
 #include <boost/polygon/segment_data.hpp>
 #include <boost/polygon/voronoi.hpp>
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/point.hpp>
+#include <boost/geometry/geometries/box.hpp>
+#include <boost/geometry/index/rtree.hpp>
 
 namespace bp = boost::polygon;
+namespace bg = boost::geometry;
+namespace bgi = boost::geometry::index;
 
-typedef int64_t coordinate_t;
-typedef coordinate_t *segment;
-typedef void *point; // XXX This would also coordinate_t * if that was legal
-typedef bp::voronoi_edge<double> voronoi_edge;
+typedef int64_t integral_coordinate_t;
+
+struct integral_point_t
+{
+    integral_coordinate_t x;
+    integral_coordinate_t y;
+} __attribute__((packed));
+
+bool operator<(const integral_point_t &a, const integral_point_t &b)
+{
+    if (a.x == b.x)
+    {
+        return (a.y < b.y);
+    }
+    else
+    {
+        return (a.x < b.x);
+    }
+}
+
+struct integral_segment_t
+{
+    integral_point_t v0;
+    integral_point_t v1;
+} __attribute__((packed));
+
+bool operator<(const integral_segment_t &a, const integral_segment_t &b)
+{
+    if (a.v0.x == b.v0.x)
+    {
+        return (a.v0.y <= b.v0.y);
+    }
+    else
+    {
+        return (a.v0.x <= b.v0.x);
+    }
+}
+
+typedef bp::voronoi_edge<double> voronoi_edge_t;
 typedef bp::voronoi_diagram<double> voronoi_diagram_t;
 
+typedef std::pair<integral_segment_t *, uint32_t> integral_rtree_value_t;
+typedef bgi::rtree<integral_rtree_value_t, bgi::linear<16>> integral_rtree_t;
+
+// Geometry concepts
+namespace boost::geometry::traits
+{
 template <>
-struct bp::geometry_concept<point>
+struct tag<integral_point_t>
+{
+    typedef point_tag type;
+};
+
+template <>
+struct coordinate_type<integral_point_t>
+{
+    typedef integral_coordinate_t type;
+};
+
+template <>
+struct coordinate_system<integral_point_t>
+{
+    typedef cs::cartesian type;
+};
+
+template <>
+struct dimension<integral_point_t> : boost::mpl::int_<2>
+{
+};
+
+template <std::size_t Dimension>
+struct access<integral_point_t, Dimension>
+{
+    static inline integral_coordinate_t get(integral_point_t const &p)
+    {
+        if (Dimension == 0)
+        {
+            return p.x;
+        }
+        else if (Dimension == 1)
+        {
+            return p.y;
+        }
+        else
+        {
+            return __LINE__;
+        }
+    }
+};
+
+template <>
+struct tag<integral_segment_t>
+{
+    typedef segment_tag type;
+};
+
+template <>
+struct point_type<integral_segment_t>
+{
+    typedef integral_point_t type;
+};
+
+template <std::size_t Index, std::size_t Dimension>
+struct indexed_access<integral_segment_t, Index, Dimension>
+{
+    static inline integral_coordinate_t get(integral_segment_t const &s)
+    {
+        if (Index == 0 && Dimension == 0)
+        {
+            return s.v0.x;
+        }
+        else if (Index == 0 && Dimension == 1)
+        {
+            return s.v0.y;
+        }
+        else if (Index == 1 && Dimension == 0)
+        {
+            return s.v1.x;
+        }
+        else if (Index == 1 && Dimension == 1)
+        {
+            return s.v1.y;
+        }
+        else
+        {
+            throw __LINE__;
+        }
+    }
+};
+} // namespace boost::geometry::traits
+
+// Polygon concepts
+namespace boost::polygon
+{
+
+template <>
+struct geometry_concept<integral_point_t>
 {
     typedef point_concept type;
 };
 
 template <>
-struct bp::point_traits<point>
+struct point_traits<integral_point_t>
 {
     typedef int64_t coordinate_type;
 
-    static coordinate_type get(const point &_p, bp::orientation_2d orient)
+    static coordinate_type get(const integral_point_t &p, orientation_2d orient)
     {
-        auto p = static_cast<int64_t *>(_p);
-        return p[orient.to_int()];
+        if (orient.to_int() == 0)
+        {
+            return p.x;
+        }
+        else
+        {
+            return p.y;
+        }
     }
 };
 
 template <>
-struct bp::geometry_concept<segment>
+struct geometry_concept<integral_segment_t>
 {
     typedef segment_concept type;
 };
 
 template <>
-struct bp::segment_traits<segment>
+struct segment_traits<integral_segment_t>
 {
-    typedef bp::point_traits<point>::coordinate_type coordinate_type;
-    typedef point point_type;
+    typedef point_traits<integral_point_t>::coordinate_type coordinate_type;
+    typedef integral_point_t point_type;
 
-    static inline point_type get(const segment &s, bp::direction_1d dir)
+    static inline point_type get(const integral_segment_t &s, direction_1d dir)
     {
-        int i = dir.to_int() << 1;
-        return s + i;
+        if (dir.to_int() == 0)
+        {
+            return s.v0;
+        }
+        else
+        {
+            return s.v1;
+        }
     }
 };
+} // namespace boost::polygon
 
 #define MAGIC_COLOR (33)
 
-extern "C" int get_skeleton(int n, int64_t *segment_data, double **return_data)
+extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
 {
-    std::vector<segment> segments;
+    auto segments = static_cast<integral_segment_t *>(segment_data);
     std::vector<double> axis_vector;
     voronoi_diagram_t vd;
+    integral_rtree_t input_segment_rtree;
 
     // construct voronoi diagram
-    for (int i = 0; i < n; i += 4)
+    bp::construct_voronoi(segments, segments + (n >> 2), &vd);
+
+    // construct rtree over input segments
+    for (int i = 0; i < (n >> 2); ++i)
     {
-        segments.push_back(segment_data + i);
+        auto segment = static_cast<integral_segment_t *>(segment_data) + i;
+        input_segment_rtree.insert(std::make_pair(segment, i));
     }
-    bp::construct_voronoi(segments.cbegin(), segments.cend(), &vd);
 
     // iterate through the voronoi vertices looking for boundary vertices
     for (auto vit = vd.vertices().cbegin(); vit != vd.vertices().cend(); ++vit)
@@ -117,7 +269,7 @@ extern "C" int get_skeleton(int n, int64_t *segment_data, double **return_data)
             break;
         }
         auto starting_source_segment = segments[starting_edge->cell()->source_index()];
-        auto shared_endpoints = std::set<point>();
+        auto shared_endpoints = std::set<integral_point_t>();
 
 #if defined(DEBUG)
         fprintf(stderr, "*\t%s EDGE (%lf %lf) (%lf %lf)\n", starting_edge->is_primary() ? "PRIMARY" : "SECONDARY", starting_edge->vertex0()->x(), starting_edge->vertex0()->y(), starting_edge->vertex1()->x(), starting_edge->vertex1()->y());
@@ -125,8 +277,8 @@ extern "C" int get_skeleton(int n, int64_t *segment_data, double **return_data)
 #endif
 
         // Initialization
-        shared_endpoints.insert(static_cast<point>(starting_source_segment + 0));
-        shared_endpoints.insert(static_cast<point>(starting_source_segment + 2));
+        shared_endpoints.insert(static_cast<integral_point_t>(starting_source_segment.v0));
+        shared_endpoints.insert(static_cast<integral_point_t>(starting_source_segment.v1));
 
         for (auto edge = starting_edge->rot_next(); edge->cell() != starting_edge->cell(); edge = edge->rot_next())
         {
@@ -157,19 +309,19 @@ extern "C" int get_skeleton(int n, int64_t *segment_data, double **return_data)
 
             // Remove non-shared endpoints
             shared_endpoints.clear();
-            if (old_shared_endpoints.count(source_segment + 0) > 0)
+            if (old_shared_endpoints.count(source_segment.v0) > 0)
             {
 #if defined(DEBUG)
                 fprintf(stderr, "\t\t\tKEEPING FIRST SEGMENT ENDPOINT\n");
 #endif
-                shared_endpoints.insert(source_segment + 0);
+                shared_endpoints.insert(source_segment.v0);
             }
-            if (old_shared_endpoints.count(source_segment + 2) > 0)
+            if (old_shared_endpoints.count(source_segment.v1) > 0)
             {
 #if defined(DEBUG)
                 fprintf(stderr, "\t\t\tKEEPING SECOND SEGMENT ENDPOINT\n");
 #endif
-                shared_endpoints.insert(source_segment + 2);
+                shared_endpoints.insert(source_segment.v1);
             }
 
             // If the number of shared endpoints has dropped to zero, leave
@@ -192,6 +344,7 @@ extern "C" int get_skeleton(int n, int64_t *segment_data, double **return_data)
         }
     }
 
+    // Loop over voronoi edges, reporting those that do not meet a boundary vertex
     for (auto eit = vd.edges().cbegin(); eit != vd.edges().cend(); ++eit)
     {
         if (eit->is_primary() && eit->is_finite() && eit->vertex0()->color() != MAGIC_COLOR && eit->vertex1()->color() != MAGIC_COLOR)
