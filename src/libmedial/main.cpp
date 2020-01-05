@@ -65,16 +65,18 @@ int main()
     n = get_skeleton(segments.size(), segments.data(), &return_data);
 
     // Display the internal axis
-    for (int i = 0; i < n; i += 4)
+    for (int i = 0; i < n; i += 6)
     {
-        double x1, y1, x2, y2;
+        double x1, y1, d1, x2, y2, d2;
 
         x1 = return_data[i + 0] / f;
         y1 = return_data[i + 1] / f;
+        d1 = return_data[i + 2] / f;
         x2 = return_data[i + 2] / f;
         y2 = return_data[i + 3] / f;
+        d2 = return_data[i + 5] / f;
 
-        fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
+        fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) with distances %lf %lf\n", x1, y1, x2, y2, d1, d2);
     }
 
     // Cleanup

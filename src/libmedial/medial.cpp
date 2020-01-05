@@ -357,52 +357,48 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
         auto results = std::vector<real_rtree_value_t>();
         voronoi_segment_rtree.query(bgi::nearest(current_point, 1), std::back_inserter(results));
         auto result = results.front();
-        const auto & current_segment = axis_vector[result.second];
+        const auto current_segment = axis_vector[result.second];
+        double x1, y1, d1, x2, y2, d2;
 
         if (bg::distance(current_point, current_segment.first) < bg::distance(current_point, current_segment.second))
         {
             // Insert segment in original orientation
-            sorted_axis_vector.push_back(current_segment.first.get<0>());
-            sorted_axis_vector.push_back(current_segment.first.get<1>());
-            sorted_axis_vector.push_back(current_segment.second.get<0>());
-            sorted_axis_vector.push_back(current_segment.second.get<1>());
+
+            x1 = current_segment.first.get<0>();
+            y1 = current_segment.first.get<1>();
+            x2 = current_segment.second.get<0>();
+            y2 = current_segment.second.get<1>();
         }
         else
         {
             // Insert flipped segment
-            sorted_axis_vector.push_back(current_segment.second.get<0>());
-            sorted_axis_vector.push_back(current_segment.second.get<1>());
-            sorted_axis_vector.push_back(current_segment.first.get<0>());
-            sorted_axis_vector.push_back(current_segment.first.get<1>());
+            x1 = current_segment.second.get<0>();
+            y1 = current_segment.second.get<1>();
+            x2 = current_segment.first.get<0>();
+            y2 = current_segment.first.get<1>();
         }
+
+        auto results1 = std::vector<integral_rtree_value_t>();
+        auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
+        input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // This is okay due to (pre-)scaling
+        d1 = bg::distance(v1, results1.front().first);
+
+        auto results2 = std::vector<integral_rtree_value_t>();
+        auto v2 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
+        input_segment_rtree.query(bgi::nearest(v2, 1), std::back_inserter(results2)); // okay due to scaling
+        d2 = bg::distance(v2, results2.front().first);
+
+        sorted_axis_vector.push_back(x1);
+        sorted_axis_vector.push_back(y1);
+        sorted_axis_vector.push_back(x2);
+        sorted_axis_vector.push_back(y2);
+        sorted_axis_vector.push_back(d1);
+        sorted_axis_vector.push_back(d2);
 
         current_point = current_segment.second;
         voronoi_segment_rtree.remove(result);
     }
     axis_vector.clear();
-
-    /*{
-        auto results0 = std::vector<integral_rtree_value_t>();
-        auto v0 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
-        input_segment_rtree.query(bgi::nearest(v0, 1), std::back_inserter(results0)); // This is okay due to (pre-)scaling
-        for (auto result : results0)
-        {
-            fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v0, result.first));
-        }
-
-        auto results1 = std::vector<integral_rtree_value_t>();
-        auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
-        input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // okay due to scaling
-        for (auto result : results1)
-        {
-            fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v1, result.first));
-        }
-                axis_vector.push_back(x1);
-                axis_vector.push_back(y1);
-                axis_vector.push_back(x2);
-                axis_vector.push_back(y2);
-        fprintf(stderr, "\n");
-    }*/
 
     // Copy results back
     auto m = sorted_axis_vector.size();
