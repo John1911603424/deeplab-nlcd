@@ -87,6 +87,11 @@ typedef bp::voronoi_diagram<double> voronoi_diagram_t;
 typedef std::pair<const integral_segment_t *, uint32_t> integral_rtree_value_t;
 typedef bgi::rtree<integral_rtree_value_t, bgi::linear<16>> integral_rtree_t;
 
+typedef bg::model::point<double, 2, bg::cs::cartesian> real_point_t;
+typedef bg::model::segment<real_point_t> real_segment_t;
+typedef std::pair<real_segment_t *, uint32_t> real_rtree_value_t;
+typedef bgi::rtree<real_rtree_value_t, bgi::linear<16>> real_rtree_t;
+
 // Geometry concepts
 namespace boost::geometry::traits
 {
@@ -193,7 +198,6 @@ struct indexed_access<integral_segment_t, Index, Dimension>
 // Polygon concepts
 namespace boost::polygon
 {
-
 template <>
 struct geometry_concept<integral_point_t>
 {
@@ -249,9 +253,11 @@ struct segment_traits<integral_segment_t>
 extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
 {
     auto segments = static_cast<integral_segment_t *>(segment_data);
-    std::vector<double> axis_vector;
+    std::vector<real_segment_t> axis_vector;
+    std::vector<double> sorted_axis_vector;
     voronoi_diagram_t vd;
     integral_rtree_t input_segment_rtree;
+    real_rtree_t voronoi_segment_rtree;
 
     // construct voronoi diagram
     bp::construct_voronoi(segments, segments + (n >> 2), &vd);
@@ -323,7 +329,7 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
         }
     }
 
-    // Loop over voronoi edges, reporting those that do not meet a boundary vertex
+    // Loop over voronoi edges, recording those that do not meet a boundary vertex
     for (auto eit = vd.edges().cbegin(); eit != vd.edges().cend(); ++eit)
     {
         if (eit->is_primary() && eit->is_finite() && eit->vertex0()->color() != MAGIC_COLOR && eit->vertex1()->color() != MAGIC_COLOR)
@@ -338,36 +344,71 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
             y2 = eit->vertex1()->y();
             if (x1 <= x2)
             {
-
-                auto results0 = std::vector<integral_rtree_value_t>();
-                auto v0 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
-                input_segment_rtree.query(bgi::nearest(v0, 1), std::back_inserter(results0)); // This is okay due to (pre-)scaling
-                for (auto result : results0)
-                {
-                    fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v0, result.first));
-                }
-
-                fprintf(stderr, "\n");
-
-                auto results1 = std::vector<integral_rtree_value_t>();
-                auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
-                input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // okay due to scaling
-                for (auto result : results1)
-                {
-                    fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v1, result.first));
-                }
-
-                axis_vector.push_back(x1);
-                axis_vector.push_back(y1);
-                axis_vector.push_back(x2);
-                axis_vector.push_back(y2);
+                axis_vector.emplace_back(real_point_t(x1, y1), real_point_t(x2, y2));
+                voronoi_segment_rtree.insert(std::make_pair(&(axis_vector.back()), axis_vector.size() - 1));
             }
         }
     }
 
-    // Copy results back
-    *return_data = static_cast<double *>(malloc(axis_vector.size() * sizeof(double)));
-    memcpy(*return_data, axis_vector.data(), axis_vector.size() * sizeof(double));
+    // Get segments in "sorted" order
+    real_point_t &current_point = axis_vector.front().first;
+    while (voronoi_segment_rtree.size() > 0)
+    {
+        auto results = std::vector<real_rtree_value_t>();
+        voronoi_segment_rtree.query(bgi::nearest(current_point, 1), std::back_inserter(results));
+        auto result = results.front();
+        const auto & current_segment = axis_vector[result.second];
 
-    return axis_vector.size();
+        if (bg::distance(current_point, current_segment.first) < bg::distance(current_point, current_segment.second))
+        {
+            // Insert segment in original orientation
+            sorted_axis_vector.push_back(current_segment.first.get<0>());
+            sorted_axis_vector.push_back(current_segment.first.get<1>());
+            sorted_axis_vector.push_back(current_segment.second.get<0>());
+            sorted_axis_vector.push_back(current_segment.second.get<1>());
+        }
+        else
+        {
+            // Insert flipped segment
+            sorted_axis_vector.push_back(current_segment.second.get<0>());
+            sorted_axis_vector.push_back(current_segment.second.get<1>());
+            sorted_axis_vector.push_back(current_segment.first.get<0>());
+            sorted_axis_vector.push_back(current_segment.first.get<1>());
+        }
+
+        current_point = current_segment.second;
+        voronoi_segment_rtree.remove(result);
+    }
+    axis_vector.clear();
+
+    /*{
+        auto results0 = std::vector<integral_rtree_value_t>();
+        auto v0 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
+        input_segment_rtree.query(bgi::nearest(v0, 1), std::back_inserter(results0)); // This is okay due to (pre-)scaling
+        for (auto result : results0)
+        {
+            fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v0, result.first));
+        }
+
+        auto results1 = std::vector<integral_rtree_value_t>();
+        auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
+        input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // okay due to scaling
+        for (auto result : results1)
+        {
+            fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v1, result.first));
+        }
+                axis_vector.push_back(x1);
+                axis_vector.push_back(y1);
+                axis_vector.push_back(x2);
+                axis_vector.push_back(y2);
+        fprintf(stderr, "\n");
+    }*/
+
+    // Copy results back
+    auto m = sorted_axis_vector.size();
+    auto l = m * sizeof(double);
+    *return_data = static_cast<double *>(malloc(l));
+    memcpy(*return_data, sorted_axis_vector.data(), l);
+
+    return sorted_axis_vector.size();
 }
