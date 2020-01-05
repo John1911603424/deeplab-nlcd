@@ -84,7 +84,7 @@ bool operator<(const integral_segment_t &a, const integral_segment_t &b)
 typedef bp::voronoi_edge<double> voronoi_edge_t;
 typedef bp::voronoi_diagram<double> voronoi_diagram_t;
 
-typedef std::pair<integral_segment_t *, uint32_t> integral_rtree_value_t;
+typedef std::pair<const integral_segment_t *, uint32_t> integral_rtree_value_t;
 typedef bgi::rtree<integral_rtree_value_t, bgi::linear<16>> integral_rtree_t;
 
 // Geometry concepts
@@ -128,7 +128,23 @@ struct access<integral_point_t, Dimension>
         }
         else
         {
-            return __LINE__;
+            throw __LINE__;
+        }
+    }
+
+    static inline void set(integral_point_t &p, integral_coordinate_t c)
+    {
+        if (Dimension == 0)
+        {
+            p.x = c;
+        }
+        else if (Dimension == 1)
+        {
+            p.y = c;
+        }
+        else
+        {
+            throw __LINE__;
         }
     }
 };
@@ -243,7 +259,7 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
     // construct rtree over input segments
     for (int i = 0; i < (n >> 2); ++i)
     {
-        auto segment = static_cast<integral_segment_t *>(segment_data) + i;
+        auto segment = static_cast<const integral_segment_t *>(segment_data) + i;
         input_segment_rtree.insert(std::make_pair(segment, i));
     }
 
@@ -322,6 +338,25 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
             y2 = eit->vertex1()->y();
             if (x1 <= x2)
             {
+
+                auto results0 = std::vector<integral_rtree_value_t>();
+                auto v0 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
+                input_segment_rtree.query(bgi::nearest(v0, 1), std::back_inserter(results0)); // This is okay due to (pre-)scaling
+                for (auto result : results0)
+                {
+                    fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v0, result.first));
+                }
+
+                fprintf(stderr, "\n");
+
+                auto results1 = std::vector<integral_rtree_value_t>();
+                auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
+                input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // okay due to scaling
+                for (auto result : results1)
+                {
+                    fprintf(stderr, "%d: (%ld %ld) (%ld %ld) %lf\n", result.second, result.first->v0.x, result.first->v0.y, result.first->v1.x, result.first->v1.y, bg::distance(v1, result.first));
+                }
+
                 axis_vector.push_back(x1);
                 axis_vector.push_back(y1);
                 axis_vector.push_back(x2);
