@@ -46,6 +46,7 @@ int main()
 {
     // https://upload.wikimedia.org/wikipedia/commons/5/55/SFA_Polygon_with_hole.svg
     const char *wkt_polygon = "POLYGON ((35 10, 45 45, 15 40, 10 20, 35 10),(20 30, 35 35, 30 20, 20 30))";
+    const int f = 1000;
     polygon bg_polygon;
     std::vector<int64_t> segments;
 
@@ -54,10 +55,10 @@ int main()
 
     bg::read_wkt(wkt_polygon, bg_polygon);
     bg::for_each_segment(bg_polygon, [&segments](polygon_segment s) {
-        segments.push_back(s.first.x());
-        segments.push_back(s.first.y());
-        segments.push_back(s.second.x());
-        segments.push_back(s.second.y());
+        segments.push_back(s.first.x() * f);
+        segments.push_back(s.first.y() * f);
+        segments.push_back(s.second.x() * f);
+        segments.push_back(s.second.y() * f);
     });
 
     // Compute the internal axis
@@ -68,10 +69,10 @@ int main()
     {
         double x1, y1, x2, y2;
 
-        x1 = return_data[i + 0];
-        y1 = return_data[i + 1];
-        x2 = return_data[i + 2];
-        y2 = return_data[i + 3];
+        x1 = return_data[i + 0] / f;
+        y1 = return_data[i + 1] / f;
+        x2 = return_data[i + 2] / f;
+        y2 = return_data[i + 3] / f;
 
         fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf)\n", x1, y1, x2, y2);
     }
