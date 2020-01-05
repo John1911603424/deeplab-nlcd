@@ -44,7 +44,8 @@ typedef bg::model::polygon<polygon_integral_point> polygon;
 
 int main()
 {
-    const char *wkt_polygon = "POLYGON((0 0,0 7,4 2,2 0,0 0))";
+    // https://upload.wikimedia.org/wikipedia/commons/5/55/SFA_Polygon_with_hole.svg
+    const char *wkt_polygon = "POLYGON ((35 10, 45 45, 15 40, 10 20, 35 10),(20 30, 35 35, 30 20, 20 30))";
     polygon bg_polygon;
     std::vector<int64_t> segments;
 
