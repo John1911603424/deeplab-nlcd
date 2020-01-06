@@ -89,7 +89,7 @@ typedef bgi::rtree<integral_rtree_value_t, bgi::linear<16>> integral_rtree_t;
 
 typedef bg::model::point<double, 2, bg::cs::cartesian> real_point_t;
 typedef bg::model::segment<real_point_t> real_segment_t;
-typedef std::pair<real_segment_t *, uint32_t> real_rtree_value_t;
+typedef std::pair<real_segment_t, uint32_t> real_rtree_value_t;
 typedef bgi::rtree<real_rtree_value_t, bgi::linear<16>> real_rtree_t;
 
 // Geometry concepts
@@ -345,7 +345,7 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
             if (x1 <= x2)
             {
                 axis_vector.emplace_back(real_point_t(x1, y1), real_point_t(x2, y2));
-                voronoi_segment_rtree.insert(std::make_pair(&(axis_vector.back()), axis_vector.size() - 1));
+                voronoi_segment_rtree.insert(std::make_pair(axis_vector.back(), axis_vector.size() - 1));
             }
         }
     }
@@ -357,7 +357,7 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
         auto results = std::vector<real_rtree_value_t>();
         voronoi_segment_rtree.query(bgi::nearest(current_point, 1), std::back_inserter(results));
         auto result = results.front();
-        const auto current_segment = axis_vector[result.second];
+        const auto current_segment = axis_vector[result.second]; // XXX first entry is not only mutable but apparently mutated!!
         double x1, y1, d1, x2, y2, d2;
 
         if (bg::distance(current_point, current_segment.first) < bg::distance(current_point, current_segment.second))
@@ -381,12 +381,12 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
         auto results1 = std::vector<integral_rtree_value_t>();
         auto v1 = integral_point_t{.x = static_cast<integral_coordinate_t>(x1), .y = static_cast<integral_coordinate_t>(y1)};
         input_segment_rtree.query(bgi::nearest(v1, 1), std::back_inserter(results1)); // This is okay due to (pre-)scaling
-        d1 = bg::distance(v1, results1.front().first);
+        d1 = bg::distance(v1, segments[results1.front().second]);
 
         auto results2 = std::vector<integral_rtree_value_t>();
         auto v2 = integral_point_t{.x = static_cast<integral_coordinate_t>(x2), .y = static_cast<integral_coordinate_t>(y2)};
         input_segment_rtree.query(bgi::nearest(v2, 1), std::back_inserter(results2)); // okay due to scaling
-        d2 = bg::distance(v2, results2.front().first);
+        d2 = bg::distance(v2, segments[results2.front().second]);
 
         sorted_axis_vector.push_back(x1);
         sorted_axis_vector.push_back(y1);
