@@ -27,6 +27,7 @@
  */
 
 #include <cstdio>
+#include <cmath>
 
 #include <vector>
 
@@ -67,16 +68,17 @@ int main()
     // Display the internal axis
     for (int i = 0; i < n; i += 6)
     {
-        double x1, y1, d1, x2, y2, d2;
+        double x1, y1, d1, x2, y2, d2, length;
 
         x1 = return_data[i + 0] / f;
         y1 = return_data[i + 1] / f;
-        d1 = return_data[i + 2] / f;
         x2 = return_data[i + 2] / f;
         y2 = return_data[i + 3] / f;
+        d1 = return_data[i + 4] / f;
         d2 = return_data[i + 5] / f;
+        length = sqrt((x1-x2)*(x1-x2) + (y1-y2)*(y1-y2));
 
-        fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) with distances %lf %lf\n", x1, y1, x2, y2, d1, d2);
+        fprintf(stderr, "INTERNAL EDGE: (%lf %lf) (%lf %lf) with distances %lf %lf and length %lf\n", x1, y1, x2, y2, d1, d2, length);
     }
 
     // Cleanup
