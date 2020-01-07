@@ -113,8 +113,9 @@ def decorate_item(item: Union[pystac.item.Item, pystac.label.LabelItem]) -> Unio
         base = next(filter(lambda link: link.rel ==
                            'self', source.get_links())).target
         base = '/'.join(base.split('/')[0:-1]) + '/'
-        item.imagery_uri = base + imagery_uri[2:len(imagery_uri)]
-        item.imagery_uri = item.imagery_uri.replace('s3://', '/vsis3/')
+        imagery_uri = base + imagery_uri[2:len(imagery_uri)]
+    imagery_uri = imagery_uri.replace('s3://', '/vsis3/')
+    item.imagery_uri = imagery_uri
 
     with rasterio.open(item.imagery_uri, 'r') as input_ds:
         item.imagery_transform = input_ds.transform
@@ -287,7 +288,7 @@ if __name__ == '__main__':
         catalog = pystac.Catalog.from_file(arg)
         for collection in catalog.get_children():
             if args.imagery_only:
-                if 'imagery' in str.lower(collection.description):
+                if 'imagery' in str.lower(collection.description) or 'scene collection' in str.lower(collection.description):
                     print('imagery collection {} ({}) accepted'.format(
                         collection, collection.description))
                     interesting_collections.append(collection)
