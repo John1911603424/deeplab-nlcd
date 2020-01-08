@@ -28,6 +28,7 @@
 
 
 import argparse
+import ast
 import codecs
 import copy
 import ctypes
@@ -194,7 +195,7 @@ if True:
                             required=False, type=int, default=1,
                             help='The number of prediction classes')
         parser.add_argument('--force-download',
-                            type=bool, default=False)
+                            type=ast.literal_eval, default=False)
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
         parser.add_argument('--image-nd',
@@ -212,7 +213,7 @@ if True:
         parser.add_argument('--model',
                             required=True,
                             help='The model to use for preditions')
-        parser.add_argument('--no-warmup', type=bool, default=True)
+        parser.add_argument('--no-warmup', type=ast.literal_eval, default=True)
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
@@ -420,7 +421,7 @@ if __name__ == '__main__':
                                 if 'reg' in out:
                                     reg_window = np.ones(
                                         (window.width, window.height), dtype=np.float32)
-                                    reg = out.get('reg')
+                                    reg: Any = out.get('reg')
                                     reg_window = reg_window * reg.item()
                                     ds_reg.write(
                                         reg_window, window=window, indexes=1)
