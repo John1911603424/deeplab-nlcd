@@ -3,7 +3,7 @@
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2019-2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -28,6 +28,7 @@
 
 
 import argparse
+import ast
 import concurrent.futures
 import copy
 import ctypes
@@ -62,6 +63,10 @@ def cli_parser() -> argparse.ArgumentParser:
     parser.add_argument('--imagery-only', action='store_true')
     parser.add_argument('--input', required=True, nargs='+', type=str)
     parser.add_argument('--local-prefix', default=None, type=str)
+    parser.add_argument('--transpose-footprints', default=False, type=ast.literal_eval)
+    parser.add_argument('--liboverlaps',
+                        default='/workdir/src/liboverlaps/liboverlaps.so', type=str)
+    parser.add_argument('--gdal', default=True, type=ast.literal_eval)
     return parser
 
 
@@ -186,13 +191,29 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
         return None
 
 
-def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
+def footprint_transpose(x: float, y: float) -> Tuple[float, float]:
+    """A transform function to swap the coordinates of a shapely geometry
+
+    Arguments:
+        x {float} -- The original x-coordinate
+        y {float} -- The original y-coordinate
+
+    Returns:
+        Tuple[float, float] -- A tuple with the coordinates swapped
+    """
+    v = (y, x)
+    return v
+
+
+def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]], transpose: bool, gdal: bool) -> None:
     """Render a list of label items
 
     Lists of imagery and label rasters are written which are suitable as input to gdalbuildvrt
 
     Arguments:
         t {Tuple[int, List[pystac.label.LabelItem]]} -- A list of label items along with the list number
+        transpose {bool} -- Whether to transpose the coordinates of the footprint json files
+        gdal {bool} -- Whether to invoke GDAL
     """
     (i, item_list) = t
     imagery_template = '/tmp/imagery-{}.{}'
@@ -206,15 +227,22 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
     label_vrt = label_template.format(i, 'vrt')
     label_tif = label_template.format(i, 'tif')
     feature_collection = {'type': 'FeatureCollection', 'features': []}
+
     for item in item_list:
+        geometry = copy.copy(item.geometry)
+        if transpose is True:
+            shape = shapely.geometry.shape(geometry)
+            shape = shapely.ops.transform(footprint_transpose, shape)
+            geometry = shapely.geometry.mapping(shape)
         feature = {
             'type': 'Feature',
-            'geometry': copy.copy(item.geometry),
+            'geometry': geometry,
             'properties': {
                 'timestamp': copy.copy(item.properties['datetime'])
             }
         }
         feature_collection['features'].append(feature)
+
     with open(imagery_map, 'w') as f:
         f.write(json.dumps(feature_collection) + '\n')
     with open(imagery_txt, 'w') as f, open(label_txt, 'w') as g:
@@ -223,23 +251,27 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]]) -> None:
         for (imagery, label) in retvals:
             f.write(imagery + '\n')
             g.write(label + '\n')
-    os.system(
-        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
-    os.system(
-        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
-    os.system(
-        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
-    os.system(
-        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+
+    if gdal is True:
+        os.system(
+            'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
+        os.system(
+            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
+        os.system(
+            'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+        os.system(
+            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
-def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
+def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: bool, gdal: bool) -> None:
     """Render a list of imagery items
 
     A list of imagery is written which is suitable as input to gdalbuildvrt
 
     Arguments:
         t {Tuple[int, List[pystac.item.Item]]} -- A list of label items along with a list number
+        transpose {bool} -- Whether to transpose the coordinates of the footprint json files
+        gdal {bool} -- Whether to invoke GDAL
     """
     (i, item_list) = t
     template = '/tmp/imagery-{}.{}'
@@ -250,9 +282,14 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
     feature_collection = {'type': 'FeatureCollection', 'features': []}
     with open(imagery_txt, 'w') as f:
         for item in item_list:
+            geometry = copy.copy(item.geometry)
+            if transpose is True:
+                shape = shapely.geometry.shape(geometry)
+                shape = shapely.ops.transform(footprint_transpose, shape)
+                geometry = shapely.geometry.mapping(shape)
             feature = {
                 'type': 'Feature',
-                'geometry': copy.copy(item.geometry),
+                'geometry': geometry,
                 'properties': {
                     'timestamp': copy.copy(item.properties['datetime'])
                 }
@@ -261,15 +298,16 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]]) -> None:
             f.write(item.imagery_uri + '\n')
     with open(imagery_map, 'w') as f:
         f.write(json.dumps(feature_collection) + '\n')
-    os.system(
-        'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
-    os.system(
-        'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+
+    if gdal is True:
+        os.system(
+            'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
+        os.system(
+            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
 if __name__ == '__main__':
     args = cli_parser().parse_args()
-
     postfix = '/catalog.json'
     local_prefix = args.local_prefix
     base_prefix = args.input[0:-len(postfix) + 1]
@@ -308,7 +346,7 @@ if __name__ == '__main__':
     for interesting_collection in interesting_collections:
         interesting_itemss.append(interesting_collection.get_items())
 
-    liboverlaps = ctypes.CDLL('/tmp/liboverlaps.so')
+    liboverlaps = ctypes.CDLL(args.liboverlaps)
     liboverlaps.query.argtypes = [
         ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double]
     liboverlaps.query.restype = ctypes.c_double
@@ -341,6 +379,6 @@ if __name__ == '__main__':
 
     for t in zip(range(len(item_lists)), item_lists):
         if args.imagery_only:
-            render_imagery_item_list(t)
+            render_imagery_item_list(t, args.transpose_footprints, args.gdal)
         else:
-            render_label_item_list(t)
+            render_label_item_list(t, args.transpose_footprints, args.gdal)
