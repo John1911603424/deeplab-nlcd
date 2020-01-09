@@ -28,6 +28,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cmath>
 
 #include <set>
 #include <vector>
@@ -93,7 +94,11 @@ typedef std::pair<real_segment_t, uint32_t> real_rtree_value_t;
 typedef bgi::rtree<real_rtree_value_t, bgi::linear<16>> real_rtree_t;
 
 // Geometry concepts
-namespace boost::geometry::traits
+namespace boost
+{
+namespace geometry
+{
+namespace traits
 {
 template <>
 struct tag<integral_point_t>
@@ -193,10 +198,14 @@ struct indexed_access<integral_segment_t, Index, Dimension>
         }
     }
 };
-} // namespace boost::geometry::traits
+} // namespace traits
+} // namespace geometry
+} // namespace boost
 
 // Polygon concepts
-namespace boost::polygon
+namespace boost
+{
+namespace polygon
 {
 template <>
 struct geometry_concept<integral_point_t>
@@ -246,7 +255,8 @@ struct segment_traits<integral_segment_t>
         }
     }
 };
-} // namespace boost::polygon
+} // namespace polygon
+} // namespace boost
 
 #define MAGIC_COLOR (33)
 
@@ -334,17 +344,15 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
     {
         if (eit->is_primary() && eit->is_finite() && eit->vertex0()->color() != MAGIC_COLOR && eit->vertex1()->color() != MAGIC_COLOR)
         {
-            auto index = eit->cell()->source_index();
-
             double x1, y1, x2, y2;
 
             x1 = eit->vertex0()->x();
             y1 = eit->vertex0()->y();
             x2 = eit->vertex1()->x();
             y2 = eit->vertex1()->y();
-            if (x1 <= x2)
+            if ((x1 <= x2) && std::isfinite(x1) && std::isfinite(y1) && std::isfinite(x2) && std::isfinite(y2))
             {
-                axis_vector.emplace_back(real_point_t(x1, y1), real_point_t(x2, y2));
+                axis_vector.push_back(real_segment_t(real_point_t(x1, y1), real_point_t(x2, y2)));
                 voronoi_segment_rtree.insert(std::make_pair(axis_vector.back(), axis_vector.size() - 1));
             }
         }
@@ -396,7 +404,8 @@ extern "C" int get_skeleton(int n, void *segment_data, double **return_data)
         sorted_axis_vector.push_back(d2);
 
         current_point = current_segment.second;
-        voronoi_segment_rtree.remove(result);
+        auto return_code = voronoi_segment_rtree.remove(result);
+        assert(return_code > 0);
     }
     axis_vector.clear();
 

@@ -1,5 +1,5 @@
 BOOST_ROOT ?= /usr/include
-CFLAGS ?= -Wall -Werror -Ofast -mtune=native
+CFLAGS ?= -Wall -Werror -O0 -ggdb3
 LDFLAGS ?= -lstdc++ -lm
 CXXFLAGS ?= -std=c++11 -I$(BOOST_ROOT)
 
@@ -27,5 +27,5 @@ clean:
 cleaner: clean
 
 cleanest: cleaner
-	rm -f liboverlaps.so
+	rm -f libmedial.so
 	rm -f main
