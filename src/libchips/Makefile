@@ -14,8 +14,8 @@ libchips.so: chips.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-main: main.c chips.h chips.c
-	$(CC) $(GDALCFLAGS) $(CFLAGS) -I . $^ $(shell pkg-config gdal --libs) -lpthread -o $@
+main: main.c chips.c chips.h
+	$(CC) $(GDALCFLAGS) $(CFLAGS) -I . main.c chips.c $(shell pkg-config gdal --libs) -lpthread -o $@
 
 clean:
 	rm -f *.o
