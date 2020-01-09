@@ -35,7 +35,7 @@ import sys
 
 import numpy as np
 
-from shapely.geometry import LineString, mapping, shape
+from shapely.geometry import Polygon, LineString, mapping, shape
 from shapely.ops import cascaded_union, transform
 
 
@@ -43,14 +43,17 @@ def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', required=True, type=str)
     parser.add_argument('--output', required=True, type=str)
+    parser.add_argument('--simplified', required=False,
+                        default='/tmp/simplified.geojson', type=str)
     parser.add_argument('--dn', required=False, type=int, default=255)
-    parser.add_argument(
-        '--libmedial', default='/workdir/src/libmedial/libmedial.so', type=str)
+    parser.add_argument('--libmedial',
+                        default='/workdir/src/libmedial/libmedial.so', type=str)
     return parser
 
 
 def geojson_to_shapely(feature):
-    return shape(feature['geometry']).simplify(0.0005)
+    polygon = Polygon(shape(feature['geometry']).exterior).buffer(0)
+    return polygon.simplify(0.01, preserve_topology=True).buffer(0.1).buffer(-0.1)
 
 
 def polygon_to_linestrings(shape):
@@ -103,7 +106,8 @@ def polygon_to_linestrings(shape):
         d1 = return_data[i + 4] / f
         d2 = return_data[i + 5] / f
         line_string = LineString([(x1, y1), (x2, y2)])
-        output_segments.append(line_string)
+        if (line_string.within(shape)):
+            output_segments.append(line_string)
     libc.free(return_data)
 
     if len(output_segments) > 0:
@@ -122,11 +126,13 @@ if __name__ == '__main__':
         features = geojson_dict.get('features')
 
     features = filter(lambda f: f['properties']['DN'] == args.dn, features)
-    features = [list(features)[758]] # XXX
     shapes = list(map(geojson_to_shapely, features))
+    with open(args.simplified, 'w') as f:
+        geojson_dict['features'] = [
+            {'type': 'Feature', 'geometry': mapping(shape)} for shape in shapes]
+        json.dump(geojson_dict, f)
     shapes = list(map(polygon_to_linestrings, shapes))
     shapes = list(filter(lambda u: u is not None, shapes))
-
     with open(args.output, 'w') as f:
         geojson_dict['features'] = [
             {'type': 'Feature', 'geometry': mapping(shape)} for shape in shapes]
