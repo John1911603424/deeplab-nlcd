@@ -14,7 +14,7 @@ RUN cd /usr/local/src && \
     cd ../../gdal-2.4.3 && ./configure --prefix=/usr/local --with-proj=/usr/local --with-openjpeg=/usr/local --without-xml2 && nice -n 19 make -j33 && make install && cd swig/python && python3 setup.py build && mkdir -p /opt/conda/lib/python3.6/site-packages && python3 setup.py install --prefix=/opt/conda && \
     cd ../../.. && rm -r proj-4.9.3/ gdal-2.4.3/ openjpeg-2.3.1/ proj-4.9.3.tar.gz gdal-2.4.3.tar.gz openjpeg-2.3.1.tar.gz && \
     echo '/usr/local/lib >> /etc/ld.so.conf' && ldconfig
-RUN pip install awscli boto3 pyproj rasterio pystac==0.3.1 shapely sklearn torchvision --upgrade && \
+RUN pip install --upgrade awscli boto3 pyproj rasterio pystac==0.3.1 shapely sklearn torchvision --upgrade && \
     rm -rf /root/.cache/pip
 
 COPY ./download_run.sh /workspace/download_run.sh
