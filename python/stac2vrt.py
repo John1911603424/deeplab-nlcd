@@ -255,11 +255,11 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]], transpos
         os.system(
             'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(label_txt, label_vrt))
         os.system(
-            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
+            'gdalwarp {} -co COMPRESS=DEFLATE -co PREDICTOR=2 -co TILED=YES -co SPARSE_OK=YES {}'.format(label_vrt, label_tif))
         os.system(
             'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
         os.system(
-            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+            'gdalwarp {} -co COMPRESS=DEFLATE -co PREDICTOR=2 -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
 def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: bool, gdal: bool) -> None:
@@ -302,7 +302,7 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: b
         os.system(
             'gdalbuildvrt -srcnodata 0 -input_file_list {} {}'.format(imagery_txt, imagery_vrt))
         os.system(
-            'gdalwarp {} -co COMPRESS=LZW -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
+            'gdalwarp {} -co COMPRESS=DEFLATE -co PREDICTOR=2 -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
 if __name__ == '__main__':
