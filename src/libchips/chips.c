@@ -37,13 +37,21 @@
 
 #include <gdal.h>
 
+enum op_mode
+{
+    stopped = 0,
+    training = 1,
+    evaluation = 2,
+    inference = 3,
+};
+
 // Global variables
 int N = 0;
 int M = 0;
 int L = 0;
 GDALDataType imagery_data_type = -1;
 GDALDataType label_data_type = -1;
-int operation_mode = 0;
+int operation_mode = stopped;
 int window_size = 0;
 int band_count = 0;
 int *bands = NULL;
@@ -192,7 +200,7 @@ void get_statistics(const char *imagery_filename,
 }
 
 /**
- * Get an (inference) chip.  This can be used only if operation_mode 3
+ * Get an (inference) chip.  This can be used only if operation_mode 3 (inference)
  * is active.
  *
  * @param imagery_buffer The return-pointer for the imagery data
@@ -209,7 +217,7 @@ int get_inference_chip(void *imagery_buffer,
     int x_offset = x / window_size;
     int y_offset = y / window_size;
 
-    if ((operation_mode != 3) || EMPTY_WINDOW)
+    if ((operation_mode != inference) || EMPTY_WINDOW)
     {
         memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
         return 0;
@@ -322,12 +330,12 @@ static void *reader(void *_id)
     CPLErr err = CE_None;
     unsigned int state = (unsigned long)id;
 
-    while (operation_mode == 1 || operation_mode == 2)
+    while (operation_mode == training || operation_mode == evaluation)
     {
         int wradius = radius / window_size;
 
         // Get a suitable training or evaluation window
-        if (operation_mode == 1) // Training chip
+        if (operation_mode == training) // Training chip
         {
             x_offset = y_offset = -1;
             while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
@@ -338,7 +346,7 @@ static void *reader(void *_id)
                 y_offset = center_ys[id] + rand_y - wradius;
             }
         }
-        else if (operation_mode == 2) // Evaluation chip
+        else if (operation_mode == evaluation) // Evaluation chip
         {
             x_offset = y_offset = -1;
             while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
@@ -353,7 +361,7 @@ static void *reader(void *_id)
         y_offset *= window_size;
 
         // Find an unused data slot
-        for (slot = rand_r(&state) % M; (operation_mode == 1 || operation_mode == 2); slot = (slot + 1) % M)
+        for (slot = rand_r(&state) % M; (operation_mode == training || operation_mode == evaluation); slot = (slot + 1) % M)
         {
             // If slot is unlocked and slot is empty, read
             if ((pthread_mutex_trylock(&slot_mutexes[slot]) == 0) && (ready[slot] == 0))
@@ -365,7 +373,7 @@ static void *reader(void *_id)
 
         // If search for slot terminated because the mode changed,
         // break out of the loop
-        if (operation_mode != 1 && operation_mode != 2)
+        if (operation_mode != training && operation_mode != evaluation)
         {
             UNLOCK_BREAK((slot + M - 1) % M, 0);
         }
@@ -571,7 +579,7 @@ void start(int _N,
  */
 void stop()
 {
-    operation_mode = 0;
+    operation_mode = stopped;
     for (int i = 0; i < N; ++i)
     {
         pthread_join(threads[i], NULL);
