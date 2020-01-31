@@ -75,30 +75,35 @@ class Nugget(torch.nn.Module):
         return x
 
 
-class CheapLabRegressionBinary(torch.nn.Module):
+class CheapLabRegressionOnly(torch.nn.Module):
 
     patch_size = 32
 
     def __init__(self, band_count):
-        super(CheapLabRegressionBinary, self).__init__()
+        super(CheapLabRegressionOnly, self).__init__()
 
         self.indices = LearnedIndices(band_count)
-        self.regression = torch.nn.Sequential(
-            Nugget(1, self.indices.output_channels, 16),
-            Nugget(1, 16, 8),
-            Nugget(1, 8, 4),
-            Nugget(1, 4, 2),
-            Nugget(1, 2, 1)
+        self.downsample = torch.nn.Sequential(
+            Nugget(self.patch_size+1-32,
+                   self.indices.output_channels+band_count, 32),
+            Nugget(16+1, 32, 16),
+            Nugget(8+1, 16, 8),
+            Nugget(4+1, 8, 4),
+            Nugget(2+1, 4, 2),
+            Nugget(1+1, 2, 1)
         )
         self.input_layers = [self.indices]
-        self.output_layers = [self.regression]
+        self.output_layers = [self.downsample]
 
     def forward(self, x):
-        x = self.indices(x)
-        x = self.regression(x)
-        return {'reg': x}
+        _x = torch.cat([self.indices(x), x], axis=1)
+        regression = torch.nn.functional.interpolate(
+            _x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
+        regression = self.downsample(regression)
+        regression = regression.reshape(-1, 1)
+        return {'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-    cheaplab = CheapLabRegressionBinary(band_count)
+    cheaplab = CheapLabRegressionOnly(band_count)
     return cheaplab
