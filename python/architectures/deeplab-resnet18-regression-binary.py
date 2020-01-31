@@ -43,12 +43,12 @@ class Nugget(torch.nn.Module):
         return x
 
 
-class DeepLabResnet18Binary(torch.nn.Module):
+class DeepLabResnet18RegressionBinary(torch.nn.Module):
 
     patch_size = 32
 
     def __init__(self, band_count, input_stride, divisor, pretrained):
-        super(DeepLabResnet18Binary, self).__init__()
+        super(DeepLabResnet18RegressionBinary, self).__init__()
         resnet18 = torchvision.models.resnet.resnet18(
             pretrained=pretrained)
         self.backbone = torchvision.models._utils.IntermediateLayerGetter(
@@ -94,6 +94,6 @@ class DeepLabResnet18Binary(torch.nn.Module):
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-    deeplab = DeepLabResnet18Binary(
+    deeplab = DeepLabResnet18RegressionBinary(
         band_count, input_stride, divisor, pretrained)
     return deeplab
