@@ -65,7 +65,7 @@ class DeepLabResnet18RegressionBinary(torch.nn.Module):
             self.factor = 32 // divisor
 
         self.downsample = torch.nn.Sequential(
-            Nugget(16+1, inplanes, 16),
+            Nugget(self.patch_size+1-16, inplanes, 16),
             Nugget(8+1, 16, 8),
             Nugget(4+1, 8, 4),
             Nugget(2+1, 4, 2),

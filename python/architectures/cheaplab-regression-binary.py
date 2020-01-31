@@ -87,7 +87,8 @@ class CheapLabRegressionBinary(torch.nn.Module):
             torch.nn.Conv2d(2, 1, kernel_size=1)
         )
         self.downsample = torch.nn.Sequential(
-            Nugget(16+1, self.indices.output_channels+band_count, 16),
+            Nugget(self.patch_size+1-16,
+                   self.indices.output_channels+band_count, 16),
             Nugget(8+1, 16, 8),
             Nugget(4+1, 8, 4),
             Nugget(2+1, 4, 2),
