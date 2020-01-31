@@ -27,10 +27,6 @@
 # The code in this file is under the MIT license except where
 # indicted.
 
-if False:
-    import torch
-    import torchvision
-
 
 class Nugget(torch.nn.Module):
     def __init__(self, kernel_size, in_channels, out_channels):

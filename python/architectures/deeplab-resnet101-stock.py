@@ -27,10 +27,6 @@
 # The code in this file is under the MIT license except where
 # indicted.
 
-if False:
-    import torch
-    import torchvision
-
 
 def make_model(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
     deeplab = torchvision.models.segmentation.deeplabv3_resnet101(
