@@ -577,7 +577,8 @@ if True:
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
                     pcts = torch.FloatTensor(pcts).to(device)
-                    loss = obj.get('l1')(pred_reg, pcts)
+                    loss = obj.get('l1')(pred_reg, pcts) + \
+                        obj.get('l2')(pred_reg, pcts)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
@@ -1095,7 +1096,8 @@ if __name__ == '__main__':
             weight=torch.FloatTensor(args.weights).to(device)
         ).to(device),
         '2seg': torch.nn.BCEWithLogitsLoss().to(device),
-        'l1':  torch.nn.L1Loss().to(device),
+        'l1': torch.nn.L1Loss().to(device),
+        'l2': torch.nn.MSELoss().to(device),
     }
 
     # ---------------------------------
