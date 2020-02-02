@@ -1097,7 +1097,7 @@ if __name__ == '__main__':
         ).to(device),
         '2seg': torch.nn.BCEWithLogitsLoss().to(device),
         'l1': torch.nn.L1Loss().to(device),
-        'l2': torch.nn.MSELoss().to(device),
+        'l2': torch.nn.MSELoss().to(device)
     }
 
     # ---------------------------------
