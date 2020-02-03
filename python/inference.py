@@ -426,22 +426,23 @@ if __name__ == '__main__':
                                     ds_reg.write(
                                         reg_window, window=window, indexes=1)
                                 out = out.get('out', out.get(
-                                    'seg', out.get('2seg')))
-                            out = out.cpu().numpy()
-                            for i in range(0, args.classes):
-                                ds_raw.write(
-                                    out[0, i], window=window, indexes=i+1)
-                            if args.classes > 1:
-                                out = np.apply_along_axis(np.argmax, 1, out)
-                                out = np.array(out, dtype=np.uint8)
-                                out = out * (0xff // (args.classes-1))
-                                ds_final.write(
-                                    out[0], window=window, indexes=1)
-                            else:
-                                out = np.array(out > 0.0, dtype=np.uint8)
-                                out = out * 0xff
-                                ds_final.write(
-                                    out[0][0], window=window, indexes=1)
+                                    'seg', out.get('2seg', None)))
+                            if out is not None:
+                                out = out.cpu().numpy()
+                                for i in range(0, args.classes):
+                                    ds_raw.write(
+                                        out[0, i], window=window, indexes=i+1)
+                                if args.classes > 1:
+                                    out = np.apply_along_axis(np.argmax, 1, out)
+                                    out = np.array(out, dtype=np.uint8)
+                                    out = out * (0xff // (args.classes-1))
+                                    ds_final.write(
+                                        out[0], window=window, indexes=1)
+                                else:
+                                    out = np.array(out > 0.0, dtype=np.uint8)
+                                    out = out * 0xff
+                                    ds_final.write(
+                                        out[0][0], window=window, indexes=1)
                     print('{}% complete'.format(
                         (int)(100.0 * x_offset / width)))
 

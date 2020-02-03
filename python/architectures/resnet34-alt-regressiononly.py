@@ -30,7 +30,7 @@
 
 class LearnedIndices(torch.nn.Module):
 
-    output_channels = 32
+    output_channels = 32-13
 
     def __init__(self, band_count):
         super(LearnedIndices, self).__init__()
@@ -56,57 +56,32 @@ class LearnedIndices(torch.nn.Module):
         return x
 
 
-class Nugget(torch.nn.Module):
-    def __init__(self, kernel_size, in_channels, out_channels):
-        super(Nugget, self).__init__()
-        self.conv2d = torch.nn.Conv2d(
-            in_channels, out_channels, kernel_size=kernel_size)
-        self.batch_norm = torch.nn.BatchNorm2d(out_channels)
-        self.relu = torch.nn.ReLU()
+class Resnet34RegressionOnly(torch.nn.Module):
 
-    def forward(self, x):
-        x = self.conv2d(x)
-        x = self.batch_norm(x)
-        x = self.relu(x)
-        return x
-
-
-class CheapLabRegressionBinary(torch.nn.Module):
-
-    patch_size = 32
-
-    def __init__(self, band_count):
-        super(CheapLabRegressionBinary, self).__init__()
+    def __init__(self, band_count, input_stride, pretrained):
+        super(Resnet34RegressionOnly, self).__init__()
 
         self.indices = LearnedIndices(band_count)
-        self.classifier = torch.nn.Sequential(
-            Nugget(1, self.indices.output_channels+band_count, 16),
-            Nugget(1, 16, 8),
-            Nugget(1, 8, 4),
-            Nugget(1, 4, 2),
-            torch.nn.Conv2d(2, 1, kernel_size=1)
-        )
-        self.downsample = torch.nn.Sequential(
-            Nugget(self.patch_size+1-16,
-                   self.indices.output_channels+band_count, 16),
-            Nugget(8+1, 16, 8),
-            Nugget(4+1, 8, 4),
-            Nugget(2+1, 4, 2),
-            Nugget(1+1, 2, 1)
-        )
-        self.input_layers = [self.indices]
-        self.output_layers = [self.classifier]
+        self.backbone = torchvision.models.resnet.resnet34(
+            pretrained=pretrained)
+        self.backbone.conv1 = torch.nn.Conv2d(
+            band_count + self.indices.output_channels, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+        inplanes = 512
+        self.backbone.fc = torch.nn.Linear(
+            in_features=512, out_features=1, bias=True)
+
+        self.input_layers = [self.backbone.conv1, self.indices]
+        self.output_layers = [self.backbone.fc]
 
     def forward(self, x):
-        _x = torch.cat([self.indices(x), x], axis=1)
-        x = self.classifier(_x)
-        regression = torch.nn.functional.interpolate(
-            _x, size=[self.patch_size, self.patch_size], mode='bilinear', align_corners=False)
-        regression = self.downsample(regression)
+        x = torch.cat([self.indices(x), x], axis=1)
+        regression = self.backbone(x)
         regression = regression.reshape(-1, 1)
-        return {'2seg': x, 'reg': regression}
+
+        return {'reg': regression}
 
 
 def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-    cheaplab = CheapLabRegressionBinary(band_count)
-    return cheaplab
+    deeplab = Resnet34RegressionOnly(
+        band_count, input_stride, pretrained)
+    return deeplab

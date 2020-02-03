@@ -27,10 +27,6 @@
 # The code in this file is under the MIT license except where
 # indicted.
 
-if False:
-    import torch
-    import torchvision
-
 
 class DeepLabResnet18Binary(torch.nn.Module):
     def __init__(self, band_count, input_stride, divisor, pretrained):

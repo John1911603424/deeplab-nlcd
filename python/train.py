@@ -476,10 +476,6 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            if False or not args.architecture.endswith('-binary.py'):  # XXX
-                for i in range(len(raster)):
-                    raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
-
             # NODATA from rasters
             image_nds += np.isnan(raster).sum(axis=0)
 
@@ -530,7 +526,7 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
-                while (not (batch[1] == 1).any()) and (args.reroll > random.random()):
+                while (args.reroll > 0.0) and (not (batch[1] == 1).any()) and (args.reroll > random.random()):
                     batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
@@ -562,7 +558,6 @@ if True:
                 elif pred_2seg is not None and pred_reg is not None:
                     # binary segmentation with percent regression
                     labels = (batch[1] == 1).to(device, dtype=torch.float)
-                    pred_2seg = pred_2seg[:, 0, :, :]
                     pcts = []
                     for label in batch[1].cpu().numpy():
                         # XXX assumes that background and target are 0 and 1, respectively
@@ -570,13 +565,20 @@ if True:
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
                     pcts = torch.FloatTensor(pcts).to(device)
+                    pred_2seg = pred_2seg[:, 0, :, :]
                     loss = obj.get('2seg')(pred_2seg, labels) + \
                         obj.get('l1')(pred_reg, pcts)
                 elif pred_seg is None and pred_aux is None and pred_2seg is None and pred_reg is not None:
                     # regression only
-                    labels = batch[1].to(device, dtype=torch.float)
-                    pred_reg = pred_reg[:, 0, :, :]
-                    loss = obj.get('l2')(pred_reg, labels)
+                    pcts = []
+                    for label in batch[1].cpu().numpy():
+                        # XXX assumes that background and target are 0 and 1, respectively
+                        ones = float((label == 1).sum())
+                        zeros = float((label == 0).sum())
+                        pcts.append([(ones/(ones + zeros + 1e-8))])
+                    pcts = torch.FloatTensor(pcts).to(device)
+                    loss = obj.get('l1')(pred_reg, pcts) + \
+                        obj.get('l2')(pred_reg, pcts)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
@@ -726,7 +728,7 @@ if True:
                     precisions.append(precision)
                 for j in range(class_count):
                     f1 = 2 * (precisions[j] * recalls[j]) / \
-                        (precisions[j] + recalls[j])
+                        (precisions[j] + recalls[j] + 1e-8)
                     f1s.append(f1)
                 print('True Positives  {}'.format(tps))
                 print('False Positives {}'.format(fps))
@@ -927,9 +929,9 @@ if __name__ == '__main__':
                 args.forbidden_label_value = k
 
     if '-regression' in args.architecture and args.forbidden_imagery_value is None:
-        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN IMAGERY VALUE\n')
+        print('WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN IMAGERY VALUE')
     if '-regression' in args.architecture and args.forbidden_label_value is None:
-        print('\n WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE\n')
+        print('WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE')
 
     # ---------------------------------
     print('DATA')
