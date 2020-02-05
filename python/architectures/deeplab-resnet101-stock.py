@@ -23,9 +23,6 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
-#
-# The code in this file is under the MIT license except where
-# indicted.
 
 
 def make_model(band_count, input_stride=1, class_count=2, divisor=1, pretrained=False):
