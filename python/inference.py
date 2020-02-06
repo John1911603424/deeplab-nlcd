@@ -37,6 +37,7 @@ import sys
 import threading
 from typing import *
 from urllib.parse import urlparse
+from datetime import datetime
 
 import boto3  # type: ignore
 import numpy as np  # type: ignore
@@ -397,6 +398,7 @@ if __name__ == '__main__':
                 nodata=None
             )
         deeplab.eval()
+        start_time = datetime.now()
         with torch.no_grad():
             with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, \
                     rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw, \
@@ -433,7 +435,8 @@ if __name__ == '__main__':
                                     ds_raw.write(
                                         out[0, i], window=window, indexes=i+1)
                                 if args.classes > 1:
-                                    out = np.apply_along_axis(np.argmax, 1, out)
+                                    out = np.apply_along_axis(
+                                        np.argmax, 1, out)
                                     out = np.array(out, dtype=np.uint8)
                                     out = out * (0xff // (args.classes-1))
                                     ds_final.write(
@@ -445,6 +448,7 @@ if __name__ == '__main__':
                                         out[0][0], window=window, indexes=1)
                     print('{}% complete'.format(
                         (int)(100.0 * x_offset / width)))
+        finish_time = datetime.now()
 
         if args.final_prediction_img is not None:
             s3 = boto3.client('s3')
@@ -467,3 +471,5 @@ if __name__ == '__main__':
 
     libchips.stop()
     libchips.deinit()
+
+    print(finish_time - start_time)
