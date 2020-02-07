@@ -121,7 +121,7 @@ class SheepLabRegressionBinary(torch.nn.Module):
 
         self.input_layers = [self.indices]
         self.output_layers = [self.classifier]
-        self.immutable_layers = [self.mask]
+        self.immutable_layers = []
 
     def forward(self, x):
         [mb, c, w, h] = x.shape
