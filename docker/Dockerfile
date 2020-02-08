@@ -16,5 +16,6 @@ RUN cd /usr/local/src && \
     echo '/usr/local/lib >> /etc/ld.so.conf' && ldconfig
 RUN pip install --upgrade awscli boto3 pyproj rasterio pystac==0.3.1 shapely sklearn torchvision --upgrade && \
     rm -rf /root/.cache/pip
+RUN pip install s2cloudless
 
 COPY ./download_run.sh /workspace/download_run.sh
