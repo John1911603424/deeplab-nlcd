@@ -405,7 +405,7 @@ if __name__ == '__main__':
                     rio.open('/tmp/pred-reg.tif', 'w', **profile_reg) as ds_reg:
                 width = libchips.get_width(0)
                 height = libchips.get_height(0)
-                print('{} {}'.format(width, height))
+                print('x={} y={} n={}'.format(width, height, args.window_size))
                 for x_offset in range(0, width, args.window_size):
                     if x_offset + args.window_size > width:
                         x_offset = width - args.window_size - 1
@@ -446,8 +446,8 @@ if __name__ == '__main__':
                                     out = out * 0xff
                                     ds_final.write(
                                         out[0][0], window=window, indexes=1)
-                    print('{}% complete'.format(
-                        (int)(100.0 * x_offset / width)))
+                    print('{:02.2f}% complete'.format(
+                        (100.0 * x_offset / width)))
         finish_time = datetime.now()
 
         if args.final_prediction_img is not None:
