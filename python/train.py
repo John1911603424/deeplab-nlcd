@@ -578,8 +578,13 @@ if True:
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
                     pcts = torch.FloatTensor(pcts).to(device)
-                    loss = obj.get('l1')(pred_reg, pcts) + \
-                        obj.get('l2')(pred_reg, pcts)
+                    if args.bce:
+                        # Binary cross entropy
+                        loss = obj.get('2seg')(pred_reg, pcts)
+                    else:
+                        # l1 and l2
+                        loss = obj.get('l1')(pred_reg, pcts) + \
+                            obj.get('l2')(pred_reg, pcts)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
@@ -661,6 +666,8 @@ if True:
                     pred_seg_mask = pred_2seg
                 if pred_reg is not None:
                     pred_reg = pred_reg.cpu().numpy()
+                    if args.bce:
+                        pred_reg = (pred_reg > 0).astype(np.float32)
                     labels_reg = batch[1].cpu().numpy()
                     if pred_reg.shape[-1] == 1:
                         for (pred, actual) in zip(pred_reg, labels_reg):
@@ -857,6 +864,9 @@ if True:
                             action='store_true')
         parser.add_argument('--no-upload',
                             help='Do not upload anything to S3',
+                            action='store_true')
+        parser.add_argument('--bce',
+                            help='Use binary cross-entropy for binary-only regression',
                             action='store_true')
         parser.add_argument('--optimizer', default='adam',
                             choices=['sgd', 'adam', 'adamw'])
