@@ -226,6 +226,7 @@ if True:
         parser.add_argument('--warmup-batch-size', default=16, type=int)
         parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
+        parser.add_argument('--threshold', required=False, default=0.0, type=float)
         return parser
 
 # Architectures
@@ -442,7 +443,7 @@ if __name__ == '__main__':
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
                                 else:
-                                    out = np.array(out > 0.0, dtype=np.uint8)
+                                    out = np.array(out > args.threshold, dtype=np.uint8)
                                     out = out * 0xff
                                     ds_final.write(
                                         out[0][0], window=window, indexes=1)
