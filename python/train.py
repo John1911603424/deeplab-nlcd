@@ -578,8 +578,13 @@ if True:
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
                     pcts = torch.FloatTensor(pcts).to(device)
-                    loss = obj.get('l1')(pred_reg, pcts) + \
-                        obj.get('l2')(pred_reg, pcts)
+                    if args.bce:
+                        # Binary cross entropy
+                        loss = obj.get('2seg')(pred_reg, pcts)
+                    else:
+                        # l1 and l2
+                        loss = obj.get('l1')(pred_reg, pcts) + \
+                            obj.get('l2')(pred_reg, pcts)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
@@ -661,6 +666,8 @@ if True:
                     pred_seg_mask = pred_2seg
                 if pred_reg is not None:
                     pred_reg = pred_reg.cpu().numpy()
+                    if args.bce:
+                        pred_reg = (pred_reg > 0).astype(np.float32)
                     labels_reg = batch[1].cpu().numpy()
                     if pred_reg.shape[-1] == 1:
                         for (pred, actual) in zip(pred_reg, labels_reg):
@@ -858,6 +865,9 @@ if True:
         parser.add_argument('--no-upload',
                             help='Do not upload anything to S3',
                             action='store_true')
+        parser.add_argument('--bce',
+                            help='Use binary cross-entropy for binary-only regression',
+                            action='store_true')
         parser.add_argument('--optimizer', default='adam',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
@@ -880,6 +890,7 @@ if True:
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
         parser.add_argument('--weights', nargs='+', type=float)
         parser.add_argument('--window-size', default=32, type=int)
+        parser.add_argument('--inner-model', required=False, type=str)
         return parser
 
 # Architectures
@@ -955,13 +966,13 @@ if __name__ == '__main__':
         if not os.path.exists(mul):
             s3 = boto3.client('s3')
             bucket, prefix = parse_s3_url(training_img)
-            print('training image bucket and prefix: {}, {}'.format(bucket, prefix))
+            print('Training image bucket and prefix: {}, {}'.format(bucket, prefix))
             s3.download_file(bucket, prefix, mul)
             del s3
         if not os.path.exists(mask):
             s3 = boto3.client('s3')
             bucket, prefix = parse_s3_url(label_img)
-            print('training labels bucket and prefix: {}, {}'.format(bucket, prefix))
+            print('Training labels bucket and prefix: {}, {}'.format(bucket, prefix))
             s3.download_file(bucket, prefix, mask)
             del s3
 
@@ -1115,6 +1126,12 @@ if __name__ == '__main__':
     print('TRAINING')
 
     if complete_thru == -1:
+        if not os.path.exists('/tmp/inner-weights.pth') and args.inner_model is not None:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.inner_model)
+            print('Inner model bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, '/tmp/inner-weights.pth')
+            del s3
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
@@ -1122,6 +1139,8 @@ if __name__ == '__main__':
             divisor=args.resolution_divisor,
             pretrained=True
         ).to(device)
+        if args.inner_model is not None:
+            model.mask.load_state_dict(torch.load('/tmp/inner-weights.pth'))
 
     # Phase 1
     if complete_thru == 0:
@@ -1145,6 +1164,10 @@ if __name__ == '__main__':
         for layer in model.input_layers + model.output_layers:
             for p in layer.parameters():
                 p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
         ps = []
         for n, p in model.named_parameters():
@@ -1192,6 +1215,10 @@ if __name__ == '__main__':
         for layer in model.input_layers + model.output_layers:
             for p in layer.parameters():
                 p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
         ps = []
         for n, p in model.named_parameters():
@@ -1244,6 +1271,10 @@ if __name__ == '__main__':
 
         for p in model.parameters():
             p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
         ps = []
         for n, p in model.named_parameters():
@@ -1286,6 +1317,10 @@ if __name__ == '__main__':
 
         for p in model.parameters():
             p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
         ps = []
         for n, p in model.named_parameters():
@@ -1338,6 +1373,10 @@ if __name__ == '__main__':
 
         for p in model.parameters():
             p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
         ps = []
         for n, p in model.named_parameters():
