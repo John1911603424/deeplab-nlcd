@@ -1361,7 +1361,15 @@ if __name__ == '__main__':
         print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
         s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+        if current_pth[0:5] == 's3://':
+            things = current_pth[5:].split('/')
+            args_s3_bucket = things[0]
+            current_pth = ''.join(map(lambda s: s + '/', things[1:]))
+            while current_pth[-1] == '/':
+                current_pth = current_pth[:-1]
+            s3.download_file(args_s3_bucket, current_pth, 'weights.pth')
+        else:
+            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
