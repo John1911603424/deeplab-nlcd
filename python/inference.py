@@ -85,53 +85,6 @@ if True:
         parsed = urlparse(url, allow_fragments=False)
         return (parsed.netloc, parsed.path.lstrip('/'))
 
-# Warm-up
-if True:
-    def get_warmup_batch(libchips: ctypes.CDLL,
-                         args: argparse.Namespace) -> torch.Tensor:
-        """Get a warm-up batch
-
-        Arguments:
-            libchips {ctypes.CDLL} -- A shared library handled used for reading data
-            args {argparse.Namespace} -- The arguments
-
-        Returns:
-            torch.Tensor -- A batch in the form of a PyTorch tensor
-        """
-        shape = (len(args.bands),
-                 args.warmup_window_size,
-                 args.warmup_window_size)
-        temp1 = np.zeros(shape, dtype=np.float32)
-        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-
-        rasters = []
-        for _ in range(args.warmup_batch_size):
-            libchips.get_next(temp1_ptr, ctypes.c_void_p(0))
-            rasters.append(temp1.copy())
-
-        raster_batch = []
-        for raster in rasters:
-
-            if not args.architecture.endswith('-binary.py'):
-                for i in range(len(raster)):
-                    raster[i] = (raster[i] - args.mus[i]) / args.sigmas[i]
-
-            # NODATA from rasters
-            image_nds = np.isnan(raster).sum(axis=0)
-            if args.image_nd is not None:
-                image_nds += (raster == args.image_nd).sum(axis=0)
-
-            # Remove NaNs from rasters
-            nodata = (image_nds > 0)
-            for i in range(len(raster)):
-                raster[i][nodata == True] = 0.0
-
-            raster_batch.append(raster)
-
-        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
-
-        return raster_batch_tensor
-
 # Inference
 if True:
     def get_inference_window(libchips: ctypes.CDLL,
@@ -215,7 +168,6 @@ if True:
         parser.add_argument('--model',
                             required=True,
                             help='The model to use for preditions')
-        parser.add_argument('--no-warmup', type=ast.literal_eval, default=True)
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
@@ -224,8 +176,6 @@ if True:
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--statistics-img-uri',
                             help='The image from which to obtain statistics for normalization')
-        parser.add_argument('--warmup-batch-size', default=16, type=int)
-        parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
         parser.add_argument('--threshold', required=False,
                             default=0.0, type=float)
@@ -330,39 +280,6 @@ if __name__ == '__main__':
         )
         print('MEANS={}'.format(args.mus))
         print('SIGMAS={}'.format(args.sigmas))
-
-        # ---------------------------------
-
-        if not args.no_warmup:
-            # https://discuss.pytorch.org/t/model-eval-gives-incorrect-loss-for-model-with-batchnorm-layers/7561/2
-            # https://discuss.pytorch.org/t/performance-highly-degraded-when-eval-is-activated-in-the-test-phase/3323/37
-            print('WARMUP')
-
-            def momentum_fn(m):
-                if isinstance(m, torch.nn.BatchNorm2d):
-                    m.momentum = 0.9
-            deeplab.apply(momentum_fn)
-            deeplab.train()
-            libchips.start(
-                16,  # Number of threads
-                256,  # Number of slots
-                b'/tmp/mul.tif',  # Image data
-                None,  # Label data
-                6,  # Make all rasters float32
-                5,  # Make all labels int32
-                None,  # means
-                None,  # standard deviations
-                args.radius,  # typical radius of a component
-                1,  # Training mode
-                args.warmup_window_size,
-                len(args.bands),
-                np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
-            with torch.no_grad():
-                for i in range(107):
-                    batch = get_warmup_batch(libchips, copy.copy(args))
-                    out = deeplab(batch.to(device))
-                    del out
-            libchips.stop()
 
         # ---------------------------------
         print('INFERENCE')
