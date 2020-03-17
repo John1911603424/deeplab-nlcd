@@ -32,18 +32,19 @@ import ast
 import codecs
 import copy
 import ctypes
+import json
 import os
 import sys
 import threading
+from datetime import datetime
 from typing import *
 from urllib.parse import urlparse
-from datetime import datetime
 
-import boto3  # type: ignore
 import numpy as np  # type: ignore
-import rasterio as rio  # type: ignore
 import requests
 
+import boto3  # type: ignore
+import rasterio as rio  # type: ignore
 import torch
 import torchvision  # type: ignore
 
@@ -226,7 +227,12 @@ if True:
         parser.add_argument('--warmup-batch-size', default=16, type=int)
         parser.add_argument('--warmup-window-size', default=32, type=int)
         parser.add_argument('--window-size', default=256, type=int)
-        parser.add_argument('--threshold', required=False, default=0.0, type=float)
+        parser.add_argument('--threshold', required=False,
+                            default=0.0, type=float)
+        parser.add_argument(
+            '--report', help='The location where the report will be stored')
+        parser.add_argument(
+            '--report-band', help='The band from which the report should be derived')
         return parser
 
 # Architectures
@@ -443,7 +449,8 @@ if __name__ == '__main__':
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
                                 else:
-                                    out = np.array(out > args.threshold, dtype=np.uint8)
+                                    out = np.array(
+                                        out > args.threshold, dtype=np.uint8)
                                     out = out * 0xff
                                     ds_final.write(
                                         out[0][0], window=window, indexes=1)
@@ -472,5 +479,16 @@ if __name__ == '__main__':
 
     libchips.stop()
     libchips.deinit()
+
+    if args.report and args.report_band:
+        info = json.loads(os.popen('gdalinfo -json /tmp/mul.tif').read())
+        [x, y] = info.get('size')
+        os.system(
+            'gdal_translate -b {} -co TILED=YES -co SPARSE_OK=YES /tmp/mul.tif /tmp/out0.tif'.format(args.report_band))
+        os.system(
+            'gdalwarp -ts {} {} -r max -co TILED=YES -co SPARSE_OK=YES /tmp/out0.tif /tmp/out1.tif'.format(x//4, y//4))
+        os.system('gdal_polygonize.py /tmp/out1.tif -f GeoJSON /tmp/out.geojson')
+        os.system('gzip -9 /tmp/out.geojson')
+        os.system('aws s3 cp /tmp/out.geojson.gz {}'.format(args.report))
 
     print(finish_time - start_time)
