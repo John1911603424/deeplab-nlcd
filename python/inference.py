@@ -107,9 +107,6 @@ if True:
         image_ptr = image.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         if (libchips.get_inference_chip(image_ptr, x_offset, y_offset, 33) == 1):
-            if False and not args.architecture.endswith('-binary.py'):
-                for i in range(len(image)):
-                    image[i] = (image[i] - args.mus[i]) / args.sigmas[i]
             image_nds = np.isnan(image).sum(axis=0)
             if args.image_nd is not None:
                 image_nds += (image == args.image_nd).sum(axis=0)
@@ -165,17 +162,15 @@ if True:
         parser.add_argument('--libchips',
                             required=True,
                             help='The location of libchips.so')
-        parser.add_argument('--model',
+        parser.add_argument('--weights',
                             required=True,
-                            help='The model to use for preditions')
+                            help='The weights for the model used for preditions')
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--raw-prediction-img',
                             help='The location where the raw prediction image should be stored')
         parser.add_argument('--regression-prediction-img',
                             help='The location where the regression prediction image should be stored')
         parser.add_argument('--resolution-divisor', default=1, type=int)
-        parser.add_argument('--statistics-img-uri',
-                            help='The image from which to obtain statistics for normalization')
         parser.add_argument('--window-size', default=256, type=int)
         parser.add_argument('--threshold', required=False,
                             default=0.0, type=float)
@@ -196,15 +191,18 @@ if True:
         exec(arch_code, globals())
 
 
+tmp_weights = '/tmp/weights.pth'
+tmp_mul = '/tmp/mul.tif'
+tmp_libchips = '/tmp/libchips.so'
+tmp_pred_final = '/tmp/pred-final.tif'
+tmp_pred_raw = '/tmp/pred-raw.tif'
+tmp_pred_reg = '/tmp/pred-reg.tif'
+
+
 if __name__ == '__main__':
 
     parser = inference_cli_parser()
     args = inference_cli_parser().parse_args()
-
-    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
-    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
-    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     args.band_count = len(args.bands)
 
@@ -213,12 +211,14 @@ if __name__ == '__main__':
     # ---------------------------------
     print('MODEL')
 
-    if not os.path.exists('/tmp/weights.pth') or args.force_download:
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.model)
-        print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/weights.pth')
-        del s3
+    if args.weights.startswith('s3://'):
+        if not os.path.exists(tmp_weights) or args.force_download:
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.weights)
+            print('Model bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, tmp_weights)
+            del s3
+        args.weights = tmp_weights
 
     # ---------------------------------
     print('DATA')
@@ -230,56 +230,46 @@ if __name__ == '__main__':
             filter(lambda line: len(line) > 0, text.split('\n')))
 
     for inference_img in args.inference_img:
-        mul = '/tmp/mul.tif'
-        if not os.path.exists(mul) or len(args.inference_img) > 1 or args.force_download:
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(inference_img)
-            print('Inference image bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, mul)
-            del s3
+        if inference_img.startswith('s3://'):
+            if not os.path.exists(tmp_mul) or len(args.inference_img) > 1 or args.force_download:
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(inference_img)
+                print('Inference image bucket and prefix: {}, {}'.format(
+                    bucket, prefix))
+                s3.download_file(bucket, prefix, tmp_mul)
+                del s3
+            inference_img = tmp_mul
 
         # ---------------------------------
 
         device = torch.device(args.backend)
 
-        deeplab = make_model(
+        model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=args.classes,
             divisor=args.resolution_divisor,
             pretrained=False,
         ).to(device)
-        deeplab.load_state_dict(torch.load(
-            '/tmp/weights.pth', map_location=device))
+        if not hasattr(model, 'no_weights'):
+            model.load_state_dict(torch.load(
+                args.weights, map_location=device))
 
         # ---------------------------------
         print('NATIVE CODE')
 
-        if not os.path.exists('/tmp/libchips.so'):
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.libchips)
-            print('Shared library bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, '/tmp/libchips.so')
-            del s3
+        if args.libchips.startswith('s3://'):
+            if not os.path.exists(tmp_libchips):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(args.libchips)
+                print('Shared library bucket and prefix: {}, {}'.format(
+                    bucket, prefix))
+                s3.download_file(bucket, prefix, tmp_libchips)
+                del s3
+            args.libchips = tmp_libchips
 
-        libchips = ctypes.CDLL('/tmp/libchips.so')
+        libchips = ctypes.CDLL(args.libchips)
         libchips.init()
-
-        # ---------------------------------
-        print('STATISTICS')
-
-        if args.statistics_img_uri is None:
-            args.statistics_img_uri = '/tmp/mul.tif'
-        libchips.get_statistics(
-            args.statistics_img_uri.encode('utf-8'),
-            len(args.bands),
-            np.array(args.bands, dtype=np.int32).ctypes.data_as(
-                ctypes.POINTER(ctypes.c_int32)),
-            mus_ptr,
-            sigmas_ptr
-        )
-        print('MEANS={}'.format(args.mus))
-        print('SIGMAS={}'.format(args.sigmas))
 
         # ---------------------------------
         print('INFERENCE')
@@ -287,7 +277,7 @@ if __name__ == '__main__':
         libchips.start(
             1,  # Number of threads
             0,  # Number of slots
-            b'/tmp/mul.tif',  # Image data
+            inference_img.encode(),  # Image data
             None,  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
@@ -299,7 +289,7 @@ if __name__ == '__main__':
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
-        with rio.open('/tmp/mul.tif') as ds:
+        with rio.open(inference_img) as ds:
             profile_final = copy.copy(ds.profile)
             profile_final.update(
                 dtype=rio.uint8,
@@ -321,12 +311,12 @@ if __name__ == '__main__':
                 compress='lzw',
                 nodata=None
             )
-        deeplab.eval()
+        model.eval()
         start_time = datetime.now()
         with torch.no_grad():
-            with rio.open('/tmp/pred-final.tif', 'w', **profile_final) as ds_final, \
-                    rio.open('/tmp/pred-raw.tif', 'w', **profile_raw) as ds_raw, \
-                    rio.open('/tmp/pred-reg.tif', 'w', **profile_reg) as ds_reg:
+            with rio.open(tmp_pred_final, 'w', **profile_final) as ds_final, \
+                    rio.open(tmp_pred_raw, 'w', **profile_raw) as ds_raw, \
+                    rio.open(tmp_pred_reg, 'w', **profile_reg) as ds_reg:
                 width = libchips.get_width(0)
                 height = libchips.get_height(0)
                 print('x={} y={} n={}'.format(width, height, args.window_size))
@@ -342,7 +332,7 @@ if __name__ == '__main__':
                             libchips, x_offset, y_offset, copy.copy(args))
                         if tensor is not None:
                             tensor = tensor.to(device)
-                            out = deeplab(tensor)
+                            out = model(tensor)
                             if isinstance(out, dict):
                                 if 'reg' in out:
                                     reg_window = np.ones(
@@ -374,38 +364,65 @@ if __name__ == '__main__':
                     print('{:02.2f}% complete'.format(
                         (100.0 * x_offset / width)))
         finish_time = datetime.now()
+        print(finish_time - start_time)
 
         if args.final_prediction_img is not None:
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.final_prediction_img)
-            prefix = prefix.replace('*', inference_img.split('/')[-1])
-            s3.upload_file('/tmp/pred-final.tif', bucket, prefix)
-            del s3
+            if args.final_prediction_img.startswith('s3://'):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(args.final_prediction_img)
+                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                s3.upload_file(tmp_pred_final, bucket, prefix)
+                del s3
+            else:
+                img = args.final_prediction_img.replace(
+                    '*', inference_img.split('/')[-1])
+                command = 'cp -f {} {}'.format(tmp_pred_final, img)
+                os.system(command)
+
         if args.raw_prediction_img is not None:
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.raw_prediction_img)
-            prefix = prefix.replace('*', inference_img.split('/')[-1])
-            s3.upload_file('/tmp/pred-raw.tif', bucket, prefix)
-            del s3
+            if args.raw_prediction_img.startswith('s3://'):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(args.raw_prediction_img)
+                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                s3.upload_file(tmp_pred_raw, bucket, prefix)
+                del s3
+            else:
+                img = args.raw_prediction_img.replace(
+                    '*', inference_img.split('/')[-1])
+                command = 'cp -f {} {}'.format(tmp_pred_raw, img)
+                os.system(command)
+
         if args.regression_prediction_img is not None:
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.regression_prediction_img)
-            prefix = prefix.replace('*', inference_img.split('/')[-1])
-            s3.upload_file('/tmp/pred-reg.tif', bucket, prefix)
-            del s3
+            if args.regression_prediction_img.startswith('s3://'):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(args.regression_prediction_img)
+                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                s3.upload_file(tmp_pred_reg, bucket, prefix)
+                del s3
+            else:
+                img = args.regression_prediction_img.replace(
+                    '*', inference_img.split('/')[-1])
+                command = 'cp -f {} {}'.format(tmp_pred_reg, img)
+                os.system(command)
 
     libchips.stop()
     libchips.deinit()
 
     if args.report and args.report_band:
-        info = json.loads(os.popen('gdalinfo -json /tmp/mul.tif').read())
+        command = 'gdalinfo -json {}'.format(inference_img)
+        info = json.loads(os.popen(command).read())
         [x, y] = info.get('size')
-        os.system(
-            'gdal_translate -b {} -co TILED=YES -co SPARSE_OK=YES /tmp/mul.tif /tmp/out0.tif'.format(args.report_band))
-        os.system(
-            'gdalwarp -ts {} {} -r max -co TILED=YES -co SPARSE_OK=YES /tmp/out0.tif /tmp/out1.tif'.format(x//4, y//4))
-        os.system('gdal_polygonize.py /tmp/out1.tif -f GeoJSON /tmp/out.geojson')
-        os.system('gzip -9 /tmp/out.geojson')
-        os.system('aws s3 cp /tmp/out.geojson.gz {}'.format(args.report))
-
-    print(finish_time - start_time)
+        command = 'gdal_translate -b {} -co TILED=YES -co SPARSE_OK=YES {} /tmp/out0.tif'.format(
+            args.report_band, inference_img)
+        os.system(command)
+        command = 'gdalwarp -ts {} {} -r max -co TILED=YES -co SPARSE_OK=YES /tmp/out0.tif /tmp/out1.tif'.format(
+            x//4, y//4)
+        os.system(command)
+        command = 'gdal_polygonize.py /tmp/out1.tif -f GeoJSON /tmp/out.geojson'
+        os.system(command)
+        command = 'gzip -9 /tmp/out.geojson'
+        os.system(command)
+        command = 'aws s3 cp /tmp/out.geojson.gz {}'.format(args.report)
+        os.system(command)
+        command = 'rm -f /tmp/out0.tif /tmp/out1.tif /tmp/out.geojson.gz'
+        os.system(command)
