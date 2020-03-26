@@ -42,13 +42,11 @@ def cli_parser() -> argparse.ArgumentParser:
 
 if __name__ == '__main__':
     args = cli_parser().parse_args()
-    os.system(
-        'gdalinfo -proj4 -json {} > /tmp/gdalinfo.txt'.format(args.metadata_file))
-    with open('/tmp/gdalinfo.txt') as f:
-        gdalinfo = json.load(f)
+    command = 'gdalinfo -proj4 -json {}'.format(args.metadata_file)
+    gdalinfo = json.loads(os.popen(command).read())
     proj4 = gdalinfo['coordinateSystem']['proj4']
     [width, height] = gdalinfo['size']
     [xmin, ymax] = gdalinfo['cornerCoordinates']['upperLeft']
     [xmax, ymin] = gdalinfo['cornerCoordinates']['lowerRight']
-    os.system('gdalwarp {} -dstnodata 255 -t_srs "{}" -ts {} {} -te {} {} {} {} -r near -co COMPRESS -co SPARSE_OK=YES {}'.format(
+    os.system('gdalwarp {} -dstnodata 255 -t_srs "{}" -ts {} {} -te {} {} {} {} -r near -co COMPRESS=LZW -co PREDICTOR=2 -co SPARSE_OK=YES {}'.format(
         args.input, proj4, width, height, xmin, ymin, xmax, ymax, args.output))
