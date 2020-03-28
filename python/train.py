@@ -898,10 +898,15 @@ if True:
     def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
         raise Exception()
 
-    def load_architectures(uri: str) -> None:
+    def load_architecture(uri: str) -> None:
         arch_str = read_text(uri)
         arch_code = compile(arch_str, uri, 'exec')
         exec(arch_code, globals())
+
+
+tmp_mul = '/tmp/mul{}.tif'
+tmp_label = '/tmp/mask{}.tif'
+tmp_libchips = '/tmp/libchips.so'
 
 
 if __name__ == '__main__':
@@ -920,14 +925,12 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
-    args.mus = np.ndarray(len(args.bands), dtype=np.float64)
-    args.sigmas = np.ndarray(len(args.bands), dtype=np.float64)
-    mus_ptr = args.mus.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    sigmas_ptr = args.sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sigmas_ptr = ctypes.POINTER(ctypes.c_double)()
+    mus_ptr = ctypes.POINTER(ctypes.c_double)()
 
     args.band_count = len(args.bands)
 
-    load_architectures(args.architecture)
+    load_architecture(args.architecture)
 
     # ---------------------------------
     if '-regression' in args.architecture and args.forbidden_imagery_value is None and args.image_nd is not None:
@@ -959,22 +962,29 @@ if __name__ == '__main__':
             filter(lambda line: len(line) > 0, text.split('\n')))
 
     args.pairs = list(zip(args.training_img, args.label_img))
-    indexed_pairs = zip(range(len(args.pairs)), args.pairs)
-    for (i, (training_img, label_img)) in indexed_pairs:
-        mul = '/tmp/mul{}.tif'.format(i)
-        mask = '/tmp/mask{}.tif'.format(i)
-        if not os.path.exists(mul):
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(training_img)
-            print('Training image bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, mul)
-            del s3
-        if not os.path.exists(mask):
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(label_img)
-            print('Training labels bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, mask)
-            del s3
+    for i in range(len(args.pairs)):
+        training_img = args.training_img[i]
+        label_img = args.label_img[i]
+
+        if training_img.startswith('s3://'):
+            tmp_mul_local = tmp_mul.format(i)
+            if not os.path.exists(tmp_mul_local):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(training_img)
+                print('Training image bucket and prefix: {}, {}'.format(bucket, prefix))
+                s3.download_file(bucket, prefix, tmp_mul_local)
+                del s3
+            args.training_img[i] = tmp_mul_local
+
+        if label_img.startwith('s3://'):
+            tmp_label_local = tmp_label.format(i)
+            if not os.path.exists(tmp_label_local):
+                s3 = boto3.client('s3')
+                bucket, prefix = parse_s3_url(label_img)
+                print('Training labels bucket and prefix: {}, {}'.format(bucket, prefix))
+                s3.download_file(bucket, prefix, tmp_label_local)
+                del s3
+            args.label_img[i] = tmp_label_local
 
     if not args.read_threads:
         args.read_threads = len(args.pairs)
@@ -982,14 +992,16 @@ if __name__ == '__main__':
     # ---------------------------------
     print('NATIVE CODE')
 
-    if not os.path.exists('/tmp/libchips.so'):
-        s3 = boto3.client('s3')
-        bucket, prefix = parse_s3_url(args.libchips)
-        print('shared library bucket and prefix: {}, {}'.format(bucket, prefix))
-        s3.download_file(bucket, prefix, '/tmp/libchips.so')
-        del s3
+    if args.libchips.startswith('s3://'):
+        if not os.path.exists(tmp_libchips):
+            s3 = boto3.client('s3')
+            bucket, prefix = parse_s3_url(args.libchips)
+            print('shared library bucket and prefix: {}, {}'.format(bucket, prefix))
+            s3.download_file(bucket, prefix, tmp_libchips)
+            del s3
+        args.libchips = tmp_libchips
 
-    libchips = ctypes.CDLL('/tmp/libchips.so')
+    libchips = ctypes.CDLL(args.libchips)
     libchips.recenter.argtypes = [ctypes.c_int]
     libchips.get_next.argtypes = [
         ctypes.POINTER(ctypes.c_float),
@@ -1021,12 +1033,6 @@ if __name__ == '__main__':
         args.window_size,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
-
-    # ---------------------------------
-    print('STATISTICS')
-
-    print('\t MEANS={}'.format(args.mus))
-    print('\t SIGMAS={}'.format(args.sigmas))
 
     # ---------------------------------
     print('RECORDING RUN')
