@@ -1,9 +1,7 @@
-#!/usr/bin/env python3
-
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -27,26 +25,18 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-import argparse
-import json
-import os
+class SentinelNDWI(torch.nn.Module):
+
+    def __init__(self, band_count):
+        super(SentinelNDWI, self).__init__()
+        self.no_weights = True
+
+    def forward(self, x):
+        self.nir = x[:, 7:8, :, :]
+        self.green = x[:, 2:3, :, :]
+        return (self.green - self.nir)/(self.green + self.nir + 1e-6)
 
 
-def cli_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--metadata-file', required=True, type=str)
-    parser.add_argument('--input', required=True, type=str)
-    parser.add_argument('--output', required=True, type=str)
-    return parser
-
-
-if __name__ == '__main__':
-    args = cli_parser().parse_args()
-    command = 'gdalinfo -proj4 -json {}'.format(args.metadata_file)
-    gdalinfo = json.loads(os.popen(command).read())
-    proj4 = gdalinfo['coordinateSystem']['proj4']
-    [width, height] = gdalinfo['size']
-    [xmin, ymax] = gdalinfo['cornerCoordinates']['upperLeft']
-    [xmax, ymin] = gdalinfo['cornerCoordinates']['lowerRight']
-    os.system('gdalwarp {} -dstnodata 255 -t_srs "{}" -ts {} {} -te {} {} {} {} -r near -co COMPRESS=LZW -co PREDICTOR=2 -co SPARSE_OK=YES {}'.format(
-        args.input, proj4, width, height, xmin, ymin, xmax, ymax, args.output))
+def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
+    ndwi = SentinelNDWI(band_count)
+    return ndwi
