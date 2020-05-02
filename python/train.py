@@ -976,7 +976,7 @@ if __name__ == '__main__':
                 del s3
             args.training_img[i] = tmp_mul_local
 
-        if label_img.startwith('s3://'):
+        if label_img.startswith('s3://'):
             tmp_label_local = tmp_label.format(i)
             if not os.path.exists(tmp_label_local):
                 s3 = boto3.client('s3')
