@@ -1163,285 +1163,290 @@ if __name__ == '__main__':
             model.mask.load_state_dict(torch.load('/tmp/inner-weights.pth'))
 
     # Phase 1
-    if complete_thru == 0:
-        s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor,
-            pretrained=True
-        ).to(device)
-        model.load_state_dict(torch.load('weights.pth'))
-        del s3
-        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-    elif complete_thru < 0:
-        print('\t TRAINING FIRST AND LAST LAYERS (1/2)')
+    if True:
+        if complete_thru == 0:
+            s3 = boto3.client('s3')
+            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+            model = make_model(
+                args.band_count,
+                input_stride=args.input_stride,
+                class_count=class_count,
+                divisor=args.resolution_divisor,
+                pretrained=True
+            ).to(device)
+            model.load_state_dict(torch.load('weights.pth'))
+            del s3
+            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+        elif complete_thru < 0:
+            print('\t TRAINING FIRST AND LAST LAYERS (1/2)')
 
-        for p in model.parameters():
-            p.requires_grad = False
-        for layer in model.input_layers + model.output_layers:
-            for p in layer.parameters():
-                p.requires_grad = True
-        if hasattr(model, 'immutable_layers'):
-            for layer in model.immutable_layers:
+            for p in model.parameters():
+                p.requires_grad = False
+            for layer in model.input_layers + model.output_layers:
                 for p in layer.parameters():
-                    p.requires_grad = False
+                    p.requires_grad = True
+            if hasattr(model, 'immutable_layers'):
+                for layer in model.immutable_layers:
+                    for p in layer.parameters():
+                        p.requires_grad = False
 
-        ps = []
-        for n, p in model.named_parameters():
-            if p.requires_grad == True:
-                ps.append(p)
-            else:
-                p.grad = None
-        if args.optimizer == 'sgd':
-            opt: OPT = torch.optim.SGD(
-                ps, lr=args.learning_rate1, momentum=0.9)
-        elif args.optimizer == 'adam':
-            opt = torch.optim.Adam(ps, lr=args.learning_rate1)
-        elif args.optimizer == 'adamw':
-            opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
+            ps = []
+            for n, p in model.named_parameters():
+                if p.requires_grad == True:
+                    ps.append(p)
+                else:
+                    p.grad = None
+            if args.optimizer == 'sgd':
+                opt: OPT = torch.optim.SGD(
+                    ps, lr=args.learning_rate1, momentum=0.9)
+            elif args.optimizer == 'adam':
+                opt = torch.optim.Adam(ps, lr=args.learning_rate1)
+            elif args.optimizer == 'adamw':
+                opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
 
-        train(model,
-              opt,
-              None,
-              obj,
-              args.epochs1,
-              libchips,
-              device,
-              copy.copy(args),
-              arg_hash)
+            train(model,
+                opt,
+                None,
+                obj,
+                args.epochs1,
+                libchips,
+                device,
+                copy.copy(args),
+                arg_hash)
 
     # Phase 2
-    if complete_thru == 1:
-        s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor,
-            pretrained=True
-        ).to(device)
-        model.load_state_dict(torch.load('weights.pth'))
-        del s3
-        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-    elif complete_thru < 1:
-        print('\t TRAINING FIRST AND LAST LAYERS (2/2)')
-
-        for p in model.parameters():
-            p.requires_grad = False
-        for layer in model.input_layers + model.output_layers:
-            for p in layer.parameters():
-                p.requires_grad = True
-        if hasattr(model, 'immutable_layers'):
-            for layer in model.immutable_layers:
-                for p in layer.parameters():
-                    p.requires_grad = False
-
-        ps = []
-        for n, p in model.named_parameters():
-            if p.requires_grad == True:
-                ps.append(p)
-            else:
-                p.grad = None
-        if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
-        elif args.optimizer == 'adam':
-            opt = torch.optim.Adam(ps, lr=args.learning_rate2)
-        elif args.optimizer == 'adamw':
-            opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
-        sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                  epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
-
-        train(model,
-              opt,
-              sched,
-              obj,
-              args.epochs2,
-              libchips,
-              device,
-              copy.copy(args),
-              arg_hash)
-
-        if not args.no_upload:
-            print('\t UPLOADING')
-            torch.save(model.state_dict(), 'weights.pth')
+    if True:
+        if complete_thru == 1:
             s3 = boto3.client('s3')
-            s3.upload_file('weights.pth', args.s3_bucket,
-                           '{}/{}/weights_1.pth'.format(args.s3_prefix, arg_hash))
+            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+            model = make_model(
+                args.band_count,
+                input_stride=args.input_stride,
+                class_count=class_count,
+                divisor=args.resolution_divisor,
+                pretrained=True
+            ).to(device)
+            model.load_state_dict(torch.load('weights.pth'))
             del s3
+            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+        elif complete_thru < 1:
+            print('\t TRAINING FIRST AND LAST LAYERS (2/2)')
+
+            for p in model.parameters():
+                p.requires_grad = False
+            for layer in model.input_layers + model.output_layers:
+                for p in layer.parameters():
+                    p.requires_grad = True
+            if hasattr(model, 'immutable_layers'):
+                for layer in model.immutable_layers:
+                    for p in layer.parameters():
+                        p.requires_grad = False
+
+            ps = []
+            for n, p in model.named_parameters():
+                if p.requires_grad == True:
+                    ps.append(p)
+                else:
+                    p.grad = None
+            if args.optimizer == 'sgd':
+                opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+            elif args.optimizer == 'adam':
+                opt = torch.optim.Adam(ps, lr=args.learning_rate2)
+            elif args.optimizer == 'adamw':
+                opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
+            sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
+                                    epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+
+            train(model,
+                opt,
+                sched,
+                obj,
+                args.epochs2,
+                libchips,
+                device,
+                copy.copy(args),
+                arg_hash)
+
+            if not args.no_upload:
+                print('\t UPLOADING')
+                torch.save(model.state_dict(), 'weights.pth')
+                s3 = boto3.client('s3')
+                s3.upload_file('weights.pth', args.s3_bucket,
+                            '{}/{}/weights_1.pth'.format(args.s3_prefix, arg_hash))
+                del s3
 
     # Phase 3
-    if complete_thru == 2:
-        s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor
-        ).to(device)
-        model.load_state_dict(torch.load('weights.pth'))
-        del s3
-        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-    elif complete_thru < 2:
-        print('\t TRAINING ALL LAYERS (1/2)')
+    if True:
+        if complete_thru == 2:
+            s3 = boto3.client('s3')
+            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+            model = make_model(
+                args.band_count,
+                input_stride=args.input_stride,
+                class_count=class_count,
+                divisor=args.resolution_divisor
+            ).to(device)
+            model.load_state_dict(torch.load('weights.pth'))
+            del s3
+            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+        elif complete_thru < 2:
+            print('\t TRAINING ALL LAYERS (1/2)')
 
-        for p in model.parameters():
-            p.requires_grad = True
-        if hasattr(model, 'immutable_layers'):
-            for layer in model.immutable_layers:
-                for p in layer.parameters():
-                    p.requires_grad = False
+            for p in model.parameters():
+                p.requires_grad = True
+            if hasattr(model, 'immutable_layers'):
+                for layer in model.immutable_layers:
+                    for p in layer.parameters():
+                        p.requires_grad = False
 
-        ps = []
-        for n, p in model.named_parameters():
-            if p.requires_grad == True:
-                ps.append(p)
-            else:
-                p.grad = None
-        if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
-        elif args.optimizer == 'adam':
-            opt = torch.optim.Adam(ps, lr=args.learning_rate3)
-        elif args.optimizer == 'adamw':
-            opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
+            ps = []
+            for n, p in model.named_parameters():
+                if p.requires_grad == True:
+                    ps.append(p)
+                else:
+                    p.grad = None
+            if args.optimizer == 'sgd':
+                opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
+            elif args.optimizer == 'adam':
+                opt = torch.optim.Adam(ps, lr=args.learning_rate3)
+            elif args.optimizer == 'adamw':
+                opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
 
-        train(model,
-              opt,
-              None,
-              obj,
-              args.epochs3,
-              libchips,
-              device,
-              copy.copy(args),
-              arg_hash)
+            train(model,
+                opt,
+                None,
+                obj,
+                args.epochs3,
+                libchips,
+                device,
+                copy.copy(args),
+                arg_hash)
 
     # Phase 4
-    if complete_thru == 3:
-        s3 = boto3.client('s3')
-        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor
-        ).to(device)
-        model.load_state_dict(torch.load('weights.pth'))
-        del s3
-        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-    elif complete_thru < 3:
-        print('\t TRAINING ALL LAYERS (2/2)')
-
-        for p in model.parameters():
-            p.requires_grad = True
-        if hasattr(model, 'immutable_layers'):
-            for layer in model.immutable_layers:
-                for p in layer.parameters():
-                    p.requires_grad = False
-
-        ps = []
-        for n, p in model.named_parameters():
-            if p.requires_grad == True:
-                ps.append(p)
-            else:
-                p.grad = None
-        if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
-        elif args.optimizer == 'adam':
-            opt = torch.optim.Adam(ps, lr=args.learning_rate4)
-        elif args.optimizer == 'adamw':
-            opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-        sched = OneCycleLR(opt, max_lr=args.learning_rate4,
-                           epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
-
-        train(model,
-              opt,
-              sched,
-              obj,
-              args.epochs4,
-              libchips,
-              device,
-              copy.copy(args),
-              arg_hash,
-              no_checkpoints=False)
-
-        if not args.no_upload:
-            print('\t UPLOADING')
-            torch.save(model.state_dict(), 'weights.pth')
+    if True:
+        if complete_thru == 3:
             s3 = boto3.client('s3')
-            s3.upload_file('weights.pth', args.s3_bucket,
-                           '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
+            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+            model = make_model(
+                args.band_count,
+                input_stride=args.input_stride,
+                class_count=class_count,
+                divisor=args.resolution_divisor
+            ).to(device)
+            model.load_state_dict(torch.load('weights.pth'))
             del s3
+            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+        elif complete_thru < 3:
+            print('\t TRAINING ALL LAYERS (2/2)')
+
+            for p in model.parameters():
+                p.requires_grad = True
+            if hasattr(model, 'immutable_layers'):
+                for layer in model.immutable_layers:
+                    for p in layer.parameters():
+                        p.requires_grad = False
+
+            ps = []
+            for n, p in model.named_parameters():
+                if p.requires_grad == True:
+                    ps.append(p)
+                else:
+                    p.grad = None
+            if args.optimizer == 'sgd':
+                opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+            elif args.optimizer == 'adam':
+                opt = torch.optim.Adam(ps, lr=args.learning_rate4)
+            elif args.optimizer == 'adamw':
+                opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
+            sched = OneCycleLR(opt, max_lr=args.learning_rate4,
+                            epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+
+            train(model,
+                opt,
+                sched,
+                obj,
+                args.epochs4,
+                libchips,
+                device,
+                copy.copy(args),
+                arg_hash,
+                no_checkpoints=False)
+
+            if not args.no_upload:
+                print('\t UPLOADING')
+                torch.save(model.state_dict(), 'weights.pth')
+                s3 = boto3.client('s3')
+                s3.upload_file('weights.pth', args.s3_bucket,
+                            '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
+                del s3
 
     # Restart in Phase 4
-    if complete_thru == 4:
-        print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
+    if True:
+        if complete_thru == 4:
+            print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
 
-        s3 = boto3.client('s3')
-        if current_pth[0:5] == 's3://':
-            things = current_pth[5:].split('/')
-            args_s3_bucket = things[0]
-            current_pth = ''.join(map(lambda s: s + '/', things[1:]))
-            while current_pth[-1] == '/':
-                current_pth = current_pth[:-1]
-            s3.download_file(args_s3_bucket, current_pth, 'weights.pth')
-        else:
-            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor
-        ).to(device)
-        model.load_state_dict(torch.load('weights.pth'))
-        del s3
-
-        for p in model.parameters():
-            p.requires_grad = True
-        if hasattr(model, 'immutable_layers'):
-            for layer in model.immutable_layers:
-                for p in layer.parameters():
-                    p.requires_grad = False
-
-        ps = []
-        for n, p in model.named_parameters():
-            if p.requires_grad == True:
-                ps.append(p)
-            else:
-                p.grad = None
-        if args.optimizer == 'sgd':
-            opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
-        elif args.optimizer == 'adam':
-            opt = torch.optim.Adam(ps, lr=args.learning_rate4)
-        elif args.optimizer == 'adamw':
-            opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-        sched = OneCycleLR(opt, max_lr=args.learning_rate4,
-                           epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
-        for _ in range(current_epoch):
-            sched.step()
-
-        train(model,
-              opt,
-              sched,
-              obj,
-              args.epochs4,
-              libchips,
-              device,
-              copy.copy(args),
-              arg_hash,
-              no_checkpoints=False,
-              starting_epoch=current_epoch)
-
-        if not args.no_upload:
-            print('\t UPLOADING')
-            torch.save(model.state_dict(), 'weights.pth')
             s3 = boto3.client('s3')
-            s3.upload_file('weights.pth', args.s3_bucket,
-                           '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
+            if current_pth[0:5] == 's3://':
+                things = current_pth[5:].split('/')
+                args_s3_bucket = things[0]
+                current_pth = ''.join(map(lambda s: s + '/', things[1:]))
+                while current_pth[-1] == '/':
+                    current_pth = current_pth[:-1]
+                s3.download_file(args_s3_bucket, current_pth, 'weights.pth')
+            else:
+                s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
+            model = make_model(
+                args.band_count,
+                input_stride=args.input_stride,
+                class_count=class_count,
+                divisor=args.resolution_divisor
+            ).to(device)
+            model.load_state_dict(torch.load('weights.pth'))
             del s3
+
+            for p in model.parameters():
+                p.requires_grad = True
+            if hasattr(model, 'immutable_layers'):
+                for layer in model.immutable_layers:
+                    for p in layer.parameters():
+                        p.requires_grad = False
+
+            ps = []
+            for n, p in model.named_parameters():
+                if p.requires_grad == True:
+                    ps.append(p)
+                else:
+                    p.grad = None
+            if args.optimizer == 'sgd':
+                opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+            elif args.optimizer == 'adam':
+                opt = torch.optim.Adam(ps, lr=args.learning_rate4)
+            elif args.optimizer == 'adamw':
+                opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
+            sched = OneCycleLR(opt, max_lr=args.learning_rate4,
+                            epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+            for _ in range(current_epoch):
+                sched.step()
+
+            train(model,
+                opt,
+                sched,
+                obj,
+                args.epochs4,
+                libchips,
+                device,
+                copy.copy(args),
+                arg_hash,
+                no_checkpoints=False,
+                starting_epoch=current_epoch)
+
+            if not args.no_upload:
+                print('\t UPLOADING')
+                torch.save(model.state_dict(), 'weights.pth')
+                s3 = boto3.client('s3')
+                s3.upload_file('weights.pth', args.s3_bucket,
+                            '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
+                del s3
 
     libchips.stop()
 
