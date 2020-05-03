@@ -34,6 +34,7 @@ import argparse
 import codecs
 import copy
 import ctypes
+import glob
 import hashlib
 import math
 import os
@@ -45,10 +46,10 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
-import boto3  # type: ignore
 import numpy as np  # type: ignore
 import requests
 
+import boto3  # type: ignore
 import torch
 import torchvision  # type: ignore
 
@@ -868,6 +869,9 @@ if True:
         parser.add_argument('--bce',
                             help='Use binary cross-entropy for binary-only regression',
                             action='store_true')
+        parser.add_argument('--shm',
+                            help='Use /dev/shm memory for scratch space instead of /tmp',
+                            action='store_true')
         parser.add_argument('--optimizer', default='adam',
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
@@ -904,11 +908,6 @@ if True:
         exec(arch_code, globals())
 
 
-tmp_mul = '/tmp/mul{}.tif'
-tmp_label = '/tmp/mask{}.tif'
-tmp_libchips = '/tmp/libchips.so'
-
-
 if __name__ == '__main__':
 
     parser = training_cli_parser()
@@ -924,6 +923,19 @@ if __name__ == '__main__':
     arg_hash = hash_string(str(hashed_args))
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
+
+    # XXX If args.shm is set to true and /dev/shm on the host is
+    # mounted to /dev/shm in the container, then it is assumed that
+    # there is only one container per node.  The motivation for using
+    # /dev/shm is just to take advantage of the large amount of RAM
+    # (~60GiB) on a p3.2xlarge relative to the small storage given by
+    # the stock AMI (~10GiB).
+    if args.shm:
+        for tif in glob.glob('/dev/shm/mul*.tif') + glob.glob('/dev/shm/mask*.tif'):
+            os.remove(tif)
+    tmp_mul = '/tmp/mul{}.tif' if not args.shm else '/dev/shm/mul{}.tif'
+    tmp_label = '/tmp/mask{}.tif' if not args.shm else '/dev/shm/mask{}.tif'
+    tmp_libchips = '/tmp/libchips.so'
 
     sigmas_ptr = ctypes.POINTER(ctypes.c_double)()
     mus_ptr = ctypes.POINTER(ctypes.c_double)()
@@ -971,7 +983,8 @@ if __name__ == '__main__':
             if not os.path.exists(tmp_mul_local):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(training_img)
-                print('Training image bucket and prefix: {}, {}'.format(bucket, prefix))
+                print('Training image bucket and prefix: {}, {}'.format(
+                    bucket, prefix))
                 s3.download_file(bucket, prefix, tmp_mul_local)
                 del s3
             args.training_img[i] = tmp_mul_local
@@ -981,7 +994,8 @@ if __name__ == '__main__':
             if not os.path.exists(tmp_label_local):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(label_img)
-                print('Training labels bucket and prefix: {}, {}'.format(bucket, prefix))
+                print('Training labels bucket and prefix: {}, {}'.format(
+                    bucket, prefix))
                 s3.download_file(bucket, prefix, tmp_label_local)
                 del s3
             args.label_img[i] = tmp_label_local
@@ -1022,8 +1036,8 @@ if __name__ == '__main__':
         args.read_threads,  # Number of threads
         max(args.read_threads, args.batch_size * 8),  # Number of slots
         len(args.pairs),  # The number of pairs
-        b'/tmp/mul%d.tif',  # Image data
-        b'/tmp/mask%d.tif',  # Label data
+        b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
+        b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
         mus_ptr,  # means
@@ -1437,8 +1451,8 @@ if __name__ == '__main__':
             args.read_threads,  # Number of threads
             args.read_threads,  # The number of read slots
             len(args.pairs),  # The number of pairs
-            b'/tmp/mul%d.tif',  # Image data
-            b'/tmp/mask%d.tif',  # Label data
+            b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
+            b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
             None,  # means
