@@ -53,8 +53,9 @@ class DeepLabResnet18RegressionBinary(torch.nn.Module):
         inplanes = 512
         self.classifier = torchvision.models.segmentation.deeplabv3.DeepLabHead(
             inplanes, 1)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+        if band_count != 3:
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
         if input_stride == 1:
             self.factor = 16 // divisor

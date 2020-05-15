@@ -38,8 +38,9 @@ class DeepLabResnet101(torch.nn.Module):
         inplanes = 1024
         self.aux_classifier = torchvision.models.segmentation.fcn.FCNHead(
             inplanes, class_count)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+        if band_count != 3:
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
 
         if input_stride == 1:
             self.factor = 4 // divisor

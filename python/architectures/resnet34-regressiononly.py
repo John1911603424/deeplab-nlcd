@@ -31,8 +31,9 @@ class Resnet34RegressionOnly(torch.nn.Module):
         super(Resnet34RegressionOnly, self).__init__()
         self.backbone = torchvision.models.resnet.resnet34(
             pretrained=pretrained)
-        self.backbone.conv1 = torch.nn.Conv2d(
-            band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
+        if band_count != 3:
+            self.backbone.conv1 = torch.nn.Conv2d(
+                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
         inplanes = 512
         self.backbone.fc = torch.nn.Linear(
             in_features=512, out_features=1, bias=True)
