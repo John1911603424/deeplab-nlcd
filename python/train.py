@@ -1257,8 +1257,11 @@ if __name__ == '__main__':
                 opt = torch.optim.Adam(ps, lr=args.learning_rate2)
             elif args.optimizer == 'adamw':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
-            sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                      epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+            if args.epochs2 > 0:
+                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
+                                        epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+            else:
+                sched: SCHED = None
 
             train(model,
                   opt,
@@ -1361,8 +1364,11 @@ if __name__ == '__main__':
                 opt = torch.optim.Adam(ps, lr=args.learning_rate4)
             elif args.optimizer == 'adamw':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-            sched = OneCycleLR(opt, max_lr=args.learning_rate4,
-                               epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+            if args.epochs4 > 0:
+                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate4,
+                                epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+            else:
+                sched: SCHED = None
 
             train(model,
                   opt,
