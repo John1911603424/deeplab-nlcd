@@ -3,7 +3,7 @@
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2019-2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -657,8 +657,7 @@ if True:
                 # segmentation predictions
                 pred_seg_mask = None
                 if pred_seg is not None:
-                    pred_seg = pred_seg.cpu().numpy()
-                    pred_seg = np.apply_along_axis(np.argmax, 1, pred_seg)
+                    pred_seg = torch.max(pred_seg, 1)[1].cpu().numpy()
                     pred_seg_mask = pred_seg
                 if pred_2seg is not None:
                     pred_2seg = pred_2seg.cpu().numpy()
@@ -1257,8 +1256,11 @@ if __name__ == '__main__':
                 opt = torch.optim.Adam(ps, lr=args.learning_rate2)
             elif args.optimizer == 'adamw':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
-            sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                      epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+            if args.epochs2 > 0:
+                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
+                                        epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+            else:
+                sched: SCHED = None
 
             train(model,
                   opt,
@@ -1361,8 +1363,11 @@ if __name__ == '__main__':
                 opt = torch.optim.Adam(ps, lr=args.learning_rate4)
             elif args.optimizer == 'adamw':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-            sched = OneCycleLR(opt, max_lr=args.learning_rate4,
-                               epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+            if args.epochs4 > 0:
+                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate4,
+                                epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+            else:
+                sched: SCHED = None
 
             train(model,
                   opt,

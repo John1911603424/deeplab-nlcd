@@ -3,7 +3,7 @@
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2019-2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -344,14 +344,13 @@ if __name__ == '__main__':
                                 out = out.get('out', out.get(
                                     'seg', out.get('2seg', None)))
                             if out is not None:
+                                out_torch = out
                                 out = out.cpu().numpy()
                                 for i in range(0, args.classes):
                                     ds_raw.write(
                                         out[0, i], window=window, indexes=i+1)
                                 if args.classes > 1:
-                                    out = np.apply_along_axis(
-                                        np.argmax, 1, out)
-                                    out = np.array(out, dtype=np.uint8)
+                                    out = torch.max(out_torch, 1)[1].cpu().numpy().astype(np.uint8)
                                     out = out * (0xff // (args.classes-1))
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
