@@ -61,7 +61,7 @@ if __name__ == '__main__':
 
         # Open "predictions"
         with rio.open(prediction, 'r') as ds:
-            prediction_profile = copy.copy(ds.profile)
+            prediction_profile = copy.deepcopy(ds.profile)
             prediction_data = ds.read().astype(np.float64)
         if args.prediction_nd is not None:
             nodata_mask = (prediction_data[0] ==

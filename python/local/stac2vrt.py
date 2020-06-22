@@ -124,7 +124,7 @@ def decorate_item(item: Union[pystac.item.Item, pystac.label.LabelItem]) -> Unio
     with rasterio.open(item.imagery_uri, 'r') as input_ds:
         item.imagery_transform = input_ds.transform
         item.imagery_crs = input_ds.crs.to_proj4()
-        item.imagery_profile = copy.copy(input_ds.profile)
+        item.imagery_profile = copy.deepcopy(input_ds.profile)
 
     return item
 
@@ -155,7 +155,7 @@ def render_label_item(item: pystac.label.LabelItem) -> Optional[Tuple[str, str]]
             pyproj.Proj(args.geojson_crs), pyproj.Proj(item.imagery_crs))
         projection = transformer.transform
 
-        profile = copy.copy(item.imagery_profile)
+        profile = copy.deepcopy(item.imagery_profile)
         profile.update(
             dtype=np.uint8,
             count=1,
@@ -228,7 +228,7 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]], transpos
     feature_collection = {'type': 'FeatureCollection', 'features': []}
 
     for item in item_list:
-        geometry = copy.copy(item.geometry)
+        geometry = copy.deepcopy(item.geometry)
         if transpose is True:
             shape = shapely.geometry.shape(geometry)
             shape = shapely.ops.transform(footprint_transpose, shape)
@@ -237,7 +237,7 @@ def render_label_item_list(t: Tuple[int, List[pystac.label.LabelItem]], transpos
             'type': 'Feature',
             'geometry': geometry,
             'properties': {
-                'timestamp': copy.copy(item.properties['datetime'])
+                'timestamp': copy.deepcopy(item.properties['datetime'])
             }
         }
         feature_collection['features'].append(feature)
@@ -281,7 +281,7 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: b
     feature_collection = {'type': 'FeatureCollection', 'features': []}
     with open(imagery_txt, 'w') as f:
         for item in item_list:
-            geometry = copy.copy(item.geometry)
+            geometry = copy.deepcopy(item.geometry)
             if transpose is True:
                 shape = shapely.geometry.shape(geometry)
                 shape = shapely.ops.transform(footprint_transpose, shape)
@@ -290,7 +290,7 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: b
                 'type': 'Feature',
                 'geometry': geometry,
                 'properties': {
-                    'timestamp': copy.copy(item.properties['datetime'])
+                    'timestamp': copy.deepcopy(item.properties['datetime'])
                 }
             }
             feature_collection['features'].append(feature)

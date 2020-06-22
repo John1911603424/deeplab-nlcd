@@ -914,7 +914,7 @@ if __name__ == '__main__':
 
     parser = training_cli_parser()
     args = training_cli_parser().parse_args()
-    hashed_args = copy.copy(args)
+    hashed_args = copy.deepcopy(args)
     hashed_args.script = sys.argv[0]
     del hashed_args.backend
     del hashed_args.no_eval
@@ -1213,7 +1213,7 @@ if __name__ == '__main__':
                   args.epochs1,
                   libchips,
                   device,
-                  copy.copy(args),
+                  copy.deepcopy(args),
                   arg_hash)
 
     # Phase 2
@@ -1269,7 +1269,7 @@ if __name__ == '__main__':
                   args.epochs2,
                   libchips,
                   device,
-                  copy.copy(args),
+                  copy.deepcopy(args),
                   arg_hash)
 
             if not args.no_upload:
@@ -1324,7 +1324,7 @@ if __name__ == '__main__':
                   args.epochs3,
                   libchips,
                   device,
-                  copy.copy(args),
+                  copy.deepcopy(args),
                   arg_hash)
 
     # Phase 4
@@ -1376,7 +1376,7 @@ if __name__ == '__main__':
                   args.epochs4,
                   libchips,
                   device,
-                  copy.copy(args),
+                  copy.deepcopy(args),
                   arg_hash,
                   no_checkpoints=False)
 
@@ -1448,7 +1448,7 @@ if __name__ == '__main__':
                   args.epochs4,
                   libchips,
                   device,
-                  copy.copy(args),
+                  copy.deepcopy(args),
                   arg_hash,
                   no_checkpoints=False,
                   starting_epoch=current_epoch)
@@ -1488,7 +1488,7 @@ if __name__ == '__main__':
         evaluate(model,
                  libchips,
                  device,
-                 copy.copy(args),
+                 copy.deepcopy(args),
                  arg_hash)
         libchips.stop()
 

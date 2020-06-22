@@ -53,7 +53,7 @@ if __name__ == '__main__':
     command = 'aws s3 cp {} /tmp/raw.tif'.format(args.input)
     os.system(command)
     with rio.open('/tmp/raw.tif', 'r') as ds:
-        profile = copy.copy(ds.profile)
+        profile = copy.deepcopy(ds.profile)
         data = ds.read()
 
     # Threshold
