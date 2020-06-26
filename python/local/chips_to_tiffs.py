@@ -45,7 +45,7 @@ def cli_parser() -> argparse.ArgumentParser:
 
 if __name__ == '__main__':
     args = cli_parser().parse_args()
-    image_chips = glob.glob('{dir}/*.png'.format(dir=args.image_dir))
+    image_chips = sorted(glob.glob('{dir}/*.png'.format(dir=args.image_dir)))
     chip_n = len(image_chips)
 
     with rio.open(image_chips[0], 'r') as ds:
@@ -61,7 +61,7 @@ if __name__ == '__main__':
 
     print('{w}x{h} output size'.format(w=width, h=height))
 
-    images = np.ones((3, width, height), dtype=np.uint8) * 0xff
+    images = np.ones((3, width, height), dtype=np.uint8) * 0x7f
     image_profile = {
         'dtype': np.uint8,
         'count': 3,
@@ -73,10 +73,11 @@ if __name__ == '__main__':
         'nodata': None,
         'tiled': True,
         'transform': rasterio.transform.from_bounds(31.132830, 29.978150, 31.135448, 29.980260, width, height),
-        'crs': 'epsg:4326'
+        'crs': 'epsg:4326',
+        'bigtiff': True,
     }
 
-    labels = np.ones((1, width, height), dtype=np.uint8) * 0xff
+    labels = np.ones((1, width, height), dtype=np.uint8) * 0x7f
     labels_profile = {
         'dtype': np.uint8,
         'count': 1,
@@ -85,10 +86,11 @@ if __name__ == '__main__':
         'driver': 'GTiff',
         'width': width,
         'height': height,
-        'nodata': 0xff,
+        'nodata': 0x7f,
         'tiled': True,
         'transform': rasterio.transform.from_bounds(31.132830, 29.978150, 31.135448, 29.980260, width, height),
-        'crs': 'epsg:4326'
+        'crs': 'epsg:4326',
+        'bigtiff': True,
     }
 
     i = 0
@@ -101,14 +103,19 @@ if __name__ == '__main__':
         y = (i // sqrt_chip_n) * chip_height
 
         with rio.open(image_filename, 'r') as ds:
-            images[:, x:(x+chip_width), y:(y+chip_height)] = ds.read()
+            image_chip = ds.read()
+            nodata = (image_chip[0] == 0) * (image_chip[1] == 0) * (image_chip[2] == 0)
+            images[:, x:(x+chip_width), y:(y+chip_height)] = image_chip
         with rio.open(label_filename, 'r') as ds:
-            labels[:, x:(x+chip_width), y:(y+chip_height)] = ds.read()
+            label_chip = ds.read()
+            label_chip[0][nodata] = 0x7f
+            labels[:, x:(x+chip_width), y:(y+chip_height)] = label_chip
 
-        if (i % (1 << 10)) == 0:
-            print('.')
+        if (i % 1031) == 33:
+            print('{:03.4f}%'.format(100 * float(i) / len(image_chips)))
         i += 1
 
+    print('Writing ...')
     with rio.open('./images.tif', 'w', **image_profile) as ds:
         ds.write(images)
 
