@@ -290,21 +290,21 @@ if __name__ == '__main__':
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
         with rio.open(inference_img) as ds:
-            profile_final = copy.copy(ds.profile)
+            profile_final = copy.deepcopy(ds.profile)
             profile_final.update(
                 dtype=rio.uint8,
                 count=1,
                 compress='lzw',
                 nodata=None
             )
-            profile_raw = copy.copy(ds.profile)
+            profile_raw = copy.deepcopy(ds.profile)
             profile_raw.update(
                 dtype=rio.float32,
                 count=args.classes,
                 compress='lzw',
                 nodata=None
             )
-            profile_reg = copy.copy(ds.profile)
+            profile_reg = copy.deepcopy(ds.profile)
             profile_reg.update(
                 dtype=rio.float32,
                 count=1,
@@ -329,7 +329,7 @@ if __name__ == '__main__':
                         window = rio.windows.Window(
                             x_offset, y_offset, args.window_size, args.window_size)
                         tensor = get_inference_window(
-                            libchips, x_offset, y_offset, copy.copy(args))
+                            libchips, x_offset, y_offset, copy.deepcopy(args))
                         if tensor is not None:
                             tensor = tensor.to(device)
                             out = model(tensor)

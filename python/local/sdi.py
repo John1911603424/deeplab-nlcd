@@ -56,15 +56,15 @@ if __name__ == '__main__':
         print('{} {} {}'.format(image, prediction, truth))
 
         with rio.open(image, 'r') as ds:
-            image_profile = copy.copy(ds.profile)
+            image_profile = copy.deepcopy(ds.profile)
             image_data = ds.read()
 
         with rio.open(prediction, 'r') as ds:
-            prediction_profile = copy.copy(ds.profile)
+            prediction_profile = copy.deepcopy(ds.profile)
             prediction_data = ds.read()
 
         with rio.open(truth, 'r') as ds:
-            truth_profile = copy.copy(ds.profile)
+            truth_profile = copy.deepcopy(ds.profile)
             truth_data = ds.read()
 
         # Width and height

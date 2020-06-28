@@ -48,7 +48,7 @@ if __name__ == '__main__':
     args = cli_parser().parse_args()
 
     with rio.open(args.input, 'r') as ds:
-        profile = copy.copy(ds.profile)
+        profile = copy.deepcopy(ds.profile)
         data = ds.read()
 
     element = np.ones((args.n, args.n))
