@@ -62,7 +62,8 @@ def cli_parser() -> argparse.ArgumentParser:
     parser.add_argument('--imagery-only', action='store_true')
     parser.add_argument('--input', required=True, nargs='+', type=str)
     parser.add_argument('--local-prefix', default=None, type=str)
-    parser.add_argument('--transpose-footprints', default=False, type=ast.literal_eval)
+    parser.add_argument('--transpose-footprints',
+                        default=False, type=ast.literal_eval)
     parser.add_argument('--liboverlaps',
                         default='/workdir/src/liboverlaps/liboverlaps.so', type=str)
     parser.add_argument('--gdal', default=True, type=ast.literal_eval)
@@ -305,6 +306,8 @@ def render_imagery_item_list(t: Tuple[int, List[pystac.item.Item]], transpose: b
             'gdalwarp {} -co COMPRESS=DEFLATE -co PREDICTOR=2 -co TILED=YES -co SPARSE_OK=YES {}'.format(imagery_vrt, imagery_tif))
 
 
+# Input given one or more input STACs containing imagery and/or
+# labels, produce raster renditions of the same.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
     postfix = '/catalog.json'
@@ -320,6 +323,7 @@ if __name__ == '__main__':
 
     pystac.STAC_IO.read_text_method = requests_read_method_local
 
+    # Find a list of collections that contain imagery or labels
     interesting_collections = []
     for arg in args.input:
         catalog = pystac.Catalog.from_file(arg)
@@ -341,6 +345,7 @@ if __name__ == '__main__':
                     print('collection {} ({}) rejected'.format(
                         collection, collection.description))
 
+    # Find a list of imagery items or labels
     interesting_itemss = []
     for interesting_collection in interesting_collections:
         interesting_itemss.append(interesting_collection.get_items())
@@ -355,6 +360,7 @@ if __name__ == '__main__':
     liboverlaps.add_tree()
     item_lists: List[Optional[List[pystac.label.LabelItem]]] = [[]]
 
+    # Generate non-overlapping lists of items
     for interesting_items in interesting_itemss:
         for item in interesting_items:
             decorate_item(item)

@@ -44,6 +44,10 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Given predictions, imagery, and the means and standard deviations of
+# the two prediction classes, compute the percentage of pixels
+# predicted to be foreground.  The imagery is needed solely for its
+# nodata mask.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 

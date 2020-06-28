@@ -43,6 +43,9 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Given a directory containingimagery chips and a directory containing
+# label chips, produce one large imagery tiff and one large label
+# tiff.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
     image_chips = sorted(glob.glob('{dir}/*.png'.format(dir=args.image_dir)))
@@ -104,7 +107,8 @@ if __name__ == '__main__':
 
         with rio.open(image_filename, 'r') as ds:
             image_chip = ds.read()
-            nodata = (image_chip[0] == 0) * (image_chip[1] == 0) * (image_chip[2] == 0)
+            nodata = (image_chip[0] == 0) * \
+                (image_chip[1] == 0) * (image_chip[2] == 0)
             images[:, x:(x+chip_width), y:(y+chip_height)] = image_chip
         with rio.open(label_filename, 'r') as ds:
             label_chip = ds.read()

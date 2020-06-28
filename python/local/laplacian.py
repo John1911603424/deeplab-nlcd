@@ -43,6 +43,7 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Apply the Laplacian operator to a given image (for edge detection).
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 

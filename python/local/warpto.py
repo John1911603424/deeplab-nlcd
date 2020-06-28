@@ -40,6 +40,9 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Input given an input file and a metadata-donor file, produce an
+# output file with the contents of the input file clipped the extent
+# of the donor file.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
     command = 'gdalinfo -proj4 -json {}'.format(args.metadata_file)

@@ -116,6 +116,8 @@ def polygon_to_linestrings(shape):
         return None
 
 
+# Given GeoJSON input, produce GeoJSON output containing the medial
+# axis of the given geometry.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 

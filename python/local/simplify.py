@@ -42,6 +42,8 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Given a GeoJSON file containing geometry, simplify it (using
+# shapely's simplify functionality).
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
