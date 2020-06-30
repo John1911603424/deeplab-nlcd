@@ -45,6 +45,8 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Given imagery, predictions, and ground-truth labels, compute the
+# spectral discrimination index of the predictions.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
@@ -95,11 +97,11 @@ if __name__ == '__main__':
     class0_array = np.concatenate(class0_array, axis=None)
     class1_array = np.concatenate(class1_array, axis=None)
 
-    mu0 = np.mean(class0_array)
-    sigma0 = np.std(class0_array)
-    mu1 = np.mean(class1_array)
-    sigma1 = np.std(class1_array)
+    μ0 = np.mean(class0_array)
+    σ0 = np.std(class0_array)
+    μ1 = np.mean(class1_array)
+    σ1 = np.std(class1_array)
 
-    print('mu0 = {}, sigma0 = {}'.format(mu0, sigma0))
-    print('mu1 = {}, sigma1 = {}'.format(mu1, sigma1))
-    print('sdi = {}'.format(np.abs(mu0 - mu1)/(sigma0 + sigma1)))
+    print('mu0 = {}, sigma0 = {}'.format(μ0, σ0))
+    print('mu1 = {}, sigma1 = {}'.format(μ1, σ1))
+    print('sdi = {}'.format(np.abs(μ0 - μ1)/(σ0 + σ1)))

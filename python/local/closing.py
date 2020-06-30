@@ -44,6 +44,8 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Given an input image and a number n, apply the morphological
+# "closing" operation.
 if __name__ == '__main__':
     args = cli_parser().parse_args()
 
