@@ -72,7 +72,7 @@ if __name__ == '__main__':
     gdalinfo = json.loads(os.popen(command).read())
     [x1, y1] = list(map(float, gdalinfo['cornerCoordinates']['upperLeft']))
     [x2, y2] = list(map(float, gdalinfo['cornerCoordinates']['lowerRight']))
-    [xmin, xmax] = sorted([x1, x2])
+    [xmin, xmax] = sorted([x1, x2])  # XXX might need to reverse
     [ymin, ymax] = sorted([y1, y2])
 
     # Ensure subject data
