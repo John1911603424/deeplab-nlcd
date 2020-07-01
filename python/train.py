@@ -645,6 +645,8 @@ if True:
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
+                while (args.reroll > 0.0) and (not (batch[1] == 1).any()) and (args.reroll > random.random()):
+                    batch = get_batch(libchips, args, batch_multiplier=batch_mult)
                 pred = model(batch[0].to(device))
 
                 if isinstance(pred, dict):
@@ -871,6 +873,9 @@ if True:
         parser.add_argument('--shm',
                             help='Use /dev/shm memory for scratch space instead of /tmp',
                             action='store_true')
+        parser.add_argument('--preclean',
+                            help='Clean /tmp before using',
+                            action='store_true')
         parser.add_argument('--output',
                             required=False, type=str,
                             help='Model output location')
@@ -925,6 +930,11 @@ if __name__ == '__main__':
     arg_hash = hash_string(str(hashed_args))
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
+
+    if args.preclean:
+        for tif in glob.glob('/tmp/mul*.tif') + glob.glob('/tmp/mask*.tif') + glob.glob('/tmp/*.pth'):
+            os.remove(tif)
+
 
     # XXX If args.shm is set to true and /dev/shm on the host is
     # mounted to /dev/shm in the container, then it is assumed that
@@ -1258,7 +1268,7 @@ if __name__ == '__main__':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
             if args.epochs2 > 0:
                 sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                        epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+                                          epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
             else:
                 sched: SCHED = None
 
@@ -1365,7 +1375,7 @@ if __name__ == '__main__':
                 opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
             if args.epochs4 > 0:
                 sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate4,
-                                epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
+                                          epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
             else:
                 sched: SCHED = None
 
