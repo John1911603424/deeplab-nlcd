@@ -870,9 +870,6 @@ if True:
         parser.add_argument('--shm',
                             help='Use /dev/shm memory for scratch space instead of /tmp',
                             action='store_true')
-        parser.add_argument('--preclean',
-                            help='Clean /tmp before using',
-                            action='store_true')
         parser.add_argument('--output',
                             required=False, type=str,
                             help='Model output location')
@@ -928,9 +925,6 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
-    if args.preclean:
-        for tif in glob.glob('/tmp/mul*.tif') + glob.glob('/tmp/mask*.tif') + glob.glob('/tmp/*.pth'):
-            os.remove(tif)
 
     # XXX If args.shm is set to true and /dev/shm on the host is
     # mounted to /dev/shm in the container, then it is assumed that
