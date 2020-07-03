@@ -446,16 +446,22 @@ if True:
         rasters = []
         labels = []
         for _ in range(args.batch_size * batch_multiplier):
-            libchips.get_next(temp1_ptr, temp2_ptr)
-            if args.forbidden_imagery_value is not None and args.forbidden_label_value is None:
-                while np.any(temp1 == args.forbidden_imagery_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
-            elif args.forbidden_label_value is not None and args.forbidden_imagery_value is None:
-                while np.any(temp2 == args.forbidden_label_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
-            elif args.forbidden_imagery_value is not None and args.forbidden_label_value is not None:
-                while np.any(temp1 == args.forbidden_imagery_value) or np.any(temp2 == args.forbidden_label_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
+
+            while True:
+                again = False
+                libchips.get_next(temp1_ptr, temp2_ptr)
+                if args.forbidden_imagery_value is not None:
+                    again = again or np.any(
+                        temp1 == args.forbidden_imagery_value)
+                if args.forbidden_label_value is not None:
+                    again = again or np.any(
+                        temp2 == args.forbidden_label_value)
+                if args.desired_label_value is not None:
+                    if not np.any(temp2 == args.desired_label_value):
+                        again = again or (args.reroll > random.random())
+                if not again:
+                    break
+
             if args.color_jitter:
                 jitter = np.random.rand(
                     len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
@@ -478,7 +484,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # NODATA from rasters
+            # NODATA from NaNs in rasters
             image_nds += np.isnan(raster).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
@@ -528,8 +534,6 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
-                while (args.reroll > 0.0) and (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 loss = None
@@ -555,14 +559,15 @@ if True:
                 elif pred_2seg is not None and pred_reg is None:
                     # binary segmentation only
                     labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    # XXX the above assumes that background and target are 0 and 1, respectively
                     pred_2seg = pred_2seg[:, 0, :, :]
                     loss = obj.get('2seg')(pred_2seg, labels)
                 elif pred_2seg is not None and pred_reg is not None:
                     # binary segmentation with percent regression
                     labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    # XXX the above and below assume that background and target are 0 and 1, respectively
                     pcts = []
                     for label in batch[1].cpu().numpy():
-                        # XXX assumes that background and target are 0 and 1, respectively
                         ones = float((label == 1).sum())
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
@@ -645,9 +650,7 @@ if True:
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
-                while (args.reroll > 0.0) and (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args, batch_multiplier=batch_mult)
-                pred = model(batch[0].to(device))
+                pred: PRED = model(batch[0].to(device))
 
                 if isinstance(pred, dict):
                     pred_seg = pred.get('seg', pred.get('out', None))
@@ -829,6 +832,7 @@ if True:
                             default=None, type=float)
         parser.add_argument('--forbidden-label-value',
                             default=None, type=int)
+        parser.add_argument('--desired-label-value', default=None, type=int)
         parser.add_argument('--image-nd',
                             default=None, type=float,
                             help='image value to ignore - must be on the first band')
@@ -883,7 +887,7 @@ if True:
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', type=int)
-        parser.add_argument('--reroll', default=0.90, type=float)
+        parser.add_argument('--reroll', default=0.25, type=float)
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--s3-bucket',
                             required=True,
@@ -934,7 +938,6 @@ if __name__ == '__main__':
     if args.preclean:
         for tif in glob.glob('/tmp/mul*.tif') + glob.glob('/tmp/mask*.tif') + glob.glob('/tmp/*.pth'):
             os.remove(tif)
-
 
     # XXX If args.shm is set to true and /dev/shm on the host is
     # mounted to /dev/shm in the container, then it is assumed that
