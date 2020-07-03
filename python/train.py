@@ -430,7 +430,6 @@ if True:
 
         Keyword Arguments:
             batch_multiplier {int} -- How many base batches to fetch at once
-            should_jitter {bool} -- Whether to apply color jitter
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
@@ -462,12 +461,7 @@ if True:
                 if not again:
                     break
 
-            if args.color_jitter:
-                jitter = np.random.rand(
-                    len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
-                rasters.append(temp1.copy() * jitter)
-            else:
-                rasters.append(temp1.copy())
+            rasters.append(temp1.copy())
             labels.append(temp2.copy())
 
         raster_batch = []
@@ -823,7 +817,6 @@ if True:
         parser.add_argument('--bands', required=True, nargs='+', type=int,
                             help='list of bands to train on (1 indexed)')
         parser.add_argument('--batch-size', default=16, type=int)
-        parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
