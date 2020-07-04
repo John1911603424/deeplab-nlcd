@@ -1053,7 +1053,7 @@ if __name__ == '__main__':
     libchips.init()
     libchips.start_multi(
         args.read_threads,  # Number of threads
-        max(args.read_threads, args.batch_size * 8),  # Number of slots
+        args.read_threads * 2,  # Number of slots
         len(args.pairs),  # The number of pairs
         b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
         b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
@@ -1335,7 +1335,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         libchips.start_multi(
             args.read_threads,  # Number of threads
-            args.read_threads,  # The number of read slots
+            args.read_threads * 2,  # The number of read slots
             len(args.pairs),  # The number of pairs
             b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
             b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
