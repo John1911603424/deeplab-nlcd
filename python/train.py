@@ -430,7 +430,6 @@ if True:
 
         Keyword Arguments:
             batch_multiplier {int} -- How many base batches to fetch at once
-            should_jitter {bool} -- Whether to apply color jitter
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
@@ -446,22 +445,23 @@ if True:
         rasters = []
         labels = []
         for _ in range(args.batch_size * batch_multiplier):
-            libchips.get_next(temp1_ptr, temp2_ptr)
-            if args.forbidden_imagery_value is not None and args.forbidden_label_value is None:
-                while np.any(temp1 == args.forbidden_imagery_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
-            elif args.forbidden_label_value is not None and args.forbidden_imagery_value is None:
-                while np.any(temp2 == args.forbidden_label_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
-            elif args.forbidden_imagery_value is not None and args.forbidden_label_value is not None:
-                while np.any(temp1 == args.forbidden_imagery_value) or np.any(temp2 == args.forbidden_label_value):
-                    libchips.get_next(temp1_ptr, temp2_ptr)
-            if args.color_jitter:
-                jitter = np.random.rand(
-                    len(args.bands), 1, 1).astype(np.float32)/5.0 + 0.90
-                rasters.append(temp1.copy() * jitter)
-            else:
-                rasters.append(temp1.copy())
+
+            while True:
+                again = False
+                libchips.get_next(temp1_ptr, temp2_ptr)
+                if args.forbidden_imagery_value is not None:
+                    again = again or np.any(
+                        temp1 == args.forbidden_imagery_value)
+                if args.forbidden_label_value is not None:
+                    again = again or np.any(
+                        temp2 == args.forbidden_label_value)
+                if args.desired_label_value is not None:
+                    if not np.any(temp2 == args.desired_label_value):
+                        again = again or (args.reroll > random.random())
+                if not again:
+                    break
+
+            rasters.append(temp1.copy())
             labels.append(temp2.copy())
 
         raster_batch = []
@@ -478,7 +478,7 @@ if True:
             if args.image_nd is not None:
                 image_nds += (raster == args.image_nd).sum(axis=0)
 
-            # NODATA from rasters
+            # NODATA from NaNs in rasters
             image_nds += np.isnan(raster).sum(axis=0)
 
             # Set label NODATA, remove NaNs from rasters
@@ -528,8 +528,6 @@ if True:
             avg_loss = 0.0
             for _ in range(args.max_epoch_size):
                 batch = get_batch(libchips, args)
-                while (args.reroll > 0.0) and (not (batch[1] == 1).any()) and (args.reroll > random.random()):
-                    batch = get_batch(libchips, args)
                 opt.zero_grad()
                 pred: PRED = model(batch[0].to(device))
                 loss = None
@@ -555,14 +553,15 @@ if True:
                 elif pred_2seg is not None and pred_reg is None:
                     # binary segmentation only
                     labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    # XXX the above assumes that background and target are 0 and 1, respectively
                     pred_2seg = pred_2seg[:, 0, :, :]
                     loss = obj.get('2seg')(pred_2seg, labels)
                 elif pred_2seg is not None and pred_reg is not None:
                     # binary segmentation with percent regression
                     labels = (batch[1] == 1).to(device, dtype=torch.float)
+                    # XXX the above and below assume that background and target are 0 and 1, respectively
                     pcts = []
                     for label in batch[1].cpu().numpy():
-                        # XXX assumes that background and target are 0 and 1, respectively
                         ones = float((label == 1).sum())
                         zeros = float((label == 0).sum())
                         pcts.append([(ones/(ones + zeros + 1e-8))])
@@ -610,8 +609,9 @@ if True:
                 if not args.no_upload:
                     torch.save(model.state_dict(), 'weights.pth')
                     s3 = boto3.client('s3')
-                    s3.upload_file('weights.pth', args.s3_bucket,
-                                   '{}/{}/weights_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i))
+                    checkpoint_name = '{}/{}/weights_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i)
+                    print('\t\t checkpoint_name={}'.format(checkpoint_name))
+                    s3.upload_file('weights.pth', args.s3_bucket, checkpoint_name)
                     del s3
 
 # Evaluation
@@ -645,7 +645,7 @@ if True:
             batch_mult = 2
             for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
                 batch = get_batch(libchips, args, batch_multiplier=batch_mult)
-                pred = model(batch[0].to(device))
+                pred: PRED = model(batch[0].to(device))
 
                 if isinstance(pred, dict):
                     pred_seg = pred.get('seg', pred.get('out', None))
@@ -818,7 +818,6 @@ if True:
         parser.add_argument('--bands', required=True, nargs='+', type=int,
                             help='list of bands to train on (1 indexed)')
         parser.add_argument('--batch-size', default=16, type=int)
-        parser.add_argument('--color-jitter', action='store_true')
         parser.add_argument('--epochs1', default=0, type=int)
         parser.add_argument('--epochs2', default=13, type=int)
         parser.add_argument('--epochs3', default=0, type=int)
@@ -827,6 +826,7 @@ if True:
                             default=None, type=float)
         parser.add_argument('--forbidden-label-value',
                             default=None, type=int)
+        parser.add_argument('--desired-label-value', default=None, type=int)
         parser.add_argument('--image-nd',
                             default=None, type=float,
                             help='image value to ignore - must be on the first band')
@@ -878,7 +878,7 @@ if True:
                             choices=['sgd', 'adam', 'adamw'])
         parser.add_argument('--radius', default=10000)
         parser.add_argument('--read-threads', type=int)
-        parser.add_argument('--reroll', default=0.90, type=float)
+        parser.add_argument('--reroll', default=0.25, type=float)
         parser.add_argument('--resolution-divisor', default=1, type=int)
         parser.add_argument('--s3-bucket',
                             required=True,
@@ -896,7 +896,6 @@ if True:
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
         parser.add_argument('--weights', nargs='+', type=float)
         parser.add_argument('--window-size', default=32, type=int)
-        parser.add_argument('--inner-model', required=False, type=str)
         return parser
 
 # Architectures
@@ -939,14 +938,13 @@ if __name__ == '__main__':
     tmp_label = '/tmp/mask{}.tif' if not args.shm else '/dev/shm/mask{}.tif'
     tmp_libchips = '/tmp/libchips.so'
 
-    sigmas_ptr = ctypes.POINTER(ctypes.c_double)()
-    mus_ptr = ctypes.POINTER(ctypes.c_double)()
-
     args.band_count = len(args.bands)
 
     load_architecture(args.architecture)
 
     # ---------------------------------
+    print('VALUES')
+
     if '-regression' in args.architecture and args.forbidden_imagery_value is None and args.image_nd is not None:
         print('WARNING: FORBIDDEN IMAGERY VALUE NOT SET, SETTING TO {}'.format(
             args.image_nd))
@@ -962,6 +960,24 @@ if __name__ == '__main__':
     if '-regression' in args.architecture and args.forbidden_label_value is None:
         print('WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE')
 
+    if not args.weights:
+        if '-binary' in args.architecture:
+            args.weights = [1.0] * 2
+        else:
+            args.weights = [1.0] * (len(args.label_map)-1)
+    class_count = len(args.weights)
+
+    if args.label_nd is None:
+        args.label_nd = class_count
+        print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
+
+    if args.image_nd is None:
+        print('\t WARNING: IMAGE NODATA NOT SET')
+
+    if args.batch_size < 2:
+        args.batch_size = 2
+        print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
+
     # ---------------------------------
     print('DATA')
 
@@ -975,6 +991,7 @@ if __name__ == '__main__':
         args.label_img = list(
             filter(lambda line: len(line) > 0, text.split('\n')))
 
+    # Image⨯label pairs
     args.pairs = list(zip(args.training_img, args.label_img))
     for i in range(len(args.pairs)):
         training_img = args.training_img[i]
@@ -1036,14 +1053,14 @@ if __name__ == '__main__':
     libchips.init()
     libchips.start_multi(
         args.read_threads,  # Number of threads
-        max(args.read_threads, args.batch_size * 8),  # Number of slots
+        args.read_threads * 2,  # Number of slots
         len(args.pairs),  # The number of pairs
         b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
         b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
-        mus_ptr,  # means
-        sigmas_ptr,  # standard deviations
+        None,  # means
+        None,  # standard deviations
         args.radius,  # typical radius of a component
         1,  # Training mode
         args.window_size,
@@ -1063,9 +1080,8 @@ if __name__ == '__main__':
         del s3
 
     # ---------------------------------
-    print('INITIALIZING')
+    print('CONSIDERING PREVIOUS PROGRESS')
 
-    complete_thru = -1
     current_epoch = 0
     current_pth = None
 
@@ -1075,43 +1091,20 @@ if __name__ == '__main__':
                     bucket=args.s3_bucket,
                     prefix='{}/{}/'.format(args.s3_prefix, arg_hash),
                     suffix='pth'):
-                m1 = re.match('.*weights_(\d+).pth$', pth)
-                m2 = re.match('.*weights_checkpoint_(\d+).pth', pth)
+                m1 = re.match('.*weights_checkpoint_(\d+).pth', pth)
                 if m1:
-                    phase = int(m1.group(1))
-                    if phase > complete_thru:
-                        complete_thru = phase
-                        current_pth = pth
-                if m2:
-                    checkpoint_epoch = int(m2.group(1))
+                    checkpoint_epoch = int(m1.group(1))
                     if checkpoint_epoch > current_epoch:
-                        complete_thru = 4
                         current_epoch = checkpoint_epoch+1
                         current_pth = pth
     elif args.start_from is not None:
-        complete_thru = 4
-        current_epoch = 0
+        current_epoch = 1
         current_pth = args.start_from
 
+    # ---------------------------------
+    print('INITIALIZING')
+
     device = torch.device(args.backend)
-
-    if not args.weights:
-        if '-binary' in args.architecture:
-            args.weights = [1.0] * 2
-        else:
-            args.weights = [1.0] * (len(args.label_map)-1)
-    class_count = len(args.weights)
-
-    if args.label_nd is None:
-        args.label_nd = class_count
-        print('\t WARNING: LABEL NODATA NOT SET, SETTING TO {}'.format(args.label_nd))
-
-    if args.image_nd is None:
-        print('\t WARNING: IMAGE NODATA NOT SET')
-
-    if args.batch_size < 2:
-        args.batch_size = 2
-        print('\t WARNING: BATCH SIZE MUST BE AT LEAST 2, SETTING TO 2')
 
     natural_epoch_size = 0.0
     for i in range(len(args.pairs)):
@@ -1135,6 +1128,8 @@ if __name__ == '__main__':
     }
 
     # ---------------------------------
+    # WATCHDOG
+
     if args.watchdog_seconds > 0:
         print('STARTING WATCHDOG')
         w_th = threading.Thread(target=watchdog_thread,
@@ -1147,324 +1142,192 @@ if __name__ == '__main__':
     # ---------------------------------
     print('TRAINING')
 
-    if complete_thru == -1:
-        if not os.path.exists('/tmp/inner-weights.pth') and args.inner_model is not None:
-            s3 = boto3.client('s3')
-            bucket, prefix = parse_s3_url(args.inner_model)
-            print('Inner model bucket and prefix: {}, {}'.format(bucket, prefix))
-            s3.download_file(bucket, prefix, '/tmp/inner-weights.pth')
-            del s3
+    model = make_model(
+        args.band_count,
+        input_stride=args.input_stride,
+        class_count=class_count,
+        divisor=args.resolution_divisor,
+        pretrained=(current_epoch == 0)
+    ).to(device)
+
+    # Phase 1, 2, 3
+    if current_epoch == 0:
+        print('\t TRAINING FIRST AND LAST LAYERS (1/2)')
+
+        for p in model.parameters():
+            p.requires_grad = False
+        for layer in model.input_layers + model.output_layers:
+            for p in layer.parameters():
+                p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
+
+        ps = []
+        for n, p in model.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        if args.optimizer == 'sgd':
+            opt: OPT = torch.optim.SGD(
+                ps, lr=args.learning_rate1, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate1)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
+
+        train(model,
+              opt,
+              None,
+              obj,
+              args.epochs1,
+              libchips,
+              device,
+              copy.deepcopy(args),
+              arg_hash)
+
+        print('\t TRAINING FIRST AND LAST LAYERS (2/2)')
+
+        for p in model.parameters():
+            p.requires_grad = False
+        for layer in model.input_layers + model.output_layers:
+            for p in layer.parameters():
+                p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
+
+        ps = []
+        for n, p in model.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate2)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
+        if args.epochs2 > 0:
+            sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
+                                      epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+        else:
+            sched: SCHED = None
+
+        train(model,
+              opt,
+              sched,
+              obj,
+              args.epochs2,
+              libchips,
+              device,
+              copy.deepcopy(args),
+              arg_hash)
+
+        print('\t TRAINING ALL LAYERS (1/2)')
+
+        for p in model.parameters():
+            p.requires_grad = True
+        if hasattr(model, 'immutable_layers'):
+            for layer in model.immutable_layers:
+                for p in layer.parameters():
+                    p.requires_grad = False
+
+        ps = []
+        for n, p in model.named_parameters():
+            if p.requires_grad == True:
+                ps.append(p)
+            else:
+                p.grad = None
+        if args.optimizer == 'sgd':
+            opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
+        elif args.optimizer == 'adam':
+            opt = torch.optim.Adam(ps, lr=args.learning_rate3)
+        elif args.optimizer == 'adamw':
+            opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
+
+        train(model,
+              opt,
+              None,
+              obj,
+              args.epochs3,
+              libchips,
+              device,
+              copy.deepcopy(args),
+              arg_hash)
+
+    # Phase 4
+    print('\t TRAINING ALL LAYERS (2/2)')
+
+    if current_epoch != 0:
+        s3 = boto3.client('s3')
+        s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model = make_model(
             args.band_count,
             input_stride=args.input_stride,
             class_count=class_count,
-            divisor=args.resolution_divisor,
-            pretrained=True
+            divisor=args.resolution_divisor
         ).to(device)
-        if args.inner_model is not None:
-            model.mask.load_state_dict(torch.load('/tmp/inner-weights.pth'))
+        model.load_state_dict(torch.load('weights.pth'))
+        del s3
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
 
-    # Phase 1
-    if True:
-        if complete_thru == 0:
-            s3 = boto3.client('s3')
-            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-            model = make_model(
-                args.band_count,
-                input_stride=args.input_stride,
-                class_count=class_count,
-                divisor=args.resolution_divisor,
-                pretrained=True
-            ).to(device)
-            model.load_state_dict(torch.load('weights.pth'))
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-        elif complete_thru < 0:
-            print('\t TRAINING FIRST AND LAST LAYERS (1/2)')
-
-            for p in model.parameters():
+    for p in model.parameters():
+        p.requires_grad = True
+    if hasattr(model, 'immutable_layers'):
+        for layer in model.immutable_layers:
+            for p in layer.parameters():
                 p.requires_grad = False
-            for layer in model.input_layers + model.output_layers:
-                for p in layer.parameters():
-                    p.requires_grad = True
-            if hasattr(model, 'immutable_layers'):
-                for layer in model.immutable_layers:
-                    for p in layer.parameters():
-                        p.requires_grad = False
 
-            ps = []
-            for n, p in model.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            if args.optimizer == 'sgd':
-                opt: OPT = torch.optim.SGD(
-                    ps, lr=args.learning_rate1, momentum=0.9)
-            elif args.optimizer == 'adam':
-                opt = torch.optim.Adam(ps, lr=args.learning_rate1)
-            elif args.optimizer == 'adamw':
-                opt = torch.optim.AdamW(ps, lr=args.learning_rate1)
+    ps = []
+    for n, p in model.named_parameters():
+        if p.requires_grad == True:
+            ps.append(p)
+        else:
+            p.grad = None
+    if args.optimizer == 'sgd':
+        opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
+    elif args.optimizer == 'adam':
+        opt = torch.optim.Adam(ps, lr=args.learning_rate4)
+    elif args.optimizer == 'adamw':
+        opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
+    if args.epochs4 > 0:
+        sched: SCHED = OneCycleLR(
+            opt,
+            max_lr=args.learning_rate4,
+            epochs=args.epochs4,
+            steps_per_epoch=args.max_epoch_size
+        )
+    else:
+        sched: SCHED = None
 
-            train(model,
-                  opt,
-                  None,
-                  obj,
-                  args.epochs1,
-                  libchips,
-                  device,
-                  copy.deepcopy(args),
-                  arg_hash)
+    train(model,
+          opt,
+          sched,
+          obj,
+          args.epochs4 - current_epoch,
+          libchips,
+          device,
+          copy.deepcopy(args),
+          arg_hash,
+          no_checkpoints=False)
 
-    # Phase 2
-    if True:
-        if complete_thru == 1:
-            s3 = boto3.client('s3')
-            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-            model = make_model(
-                args.band_count,
-                input_stride=args.input_stride,
-                class_count=class_count,
-                divisor=args.resolution_divisor,
-                pretrained=True
-            ).to(device)
-            model.load_state_dict(torch.load('weights.pth'))
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-        elif complete_thru < 1:
-            print('\t TRAINING FIRST AND LAST LAYERS (2/2)')
-
-            for p in model.parameters():
-                p.requires_grad = False
-            for layer in model.input_layers + model.output_layers:
-                for p in layer.parameters():
-                    p.requires_grad = True
-            if hasattr(model, 'immutable_layers'):
-                for layer in model.immutable_layers:
-                    for p in layer.parameters():
-                        p.requires_grad = False
-
-            ps = []
-            for n, p in model.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            if args.optimizer == 'sgd':
-                opt = torch.optim.SGD(ps, lr=args.learning_rate2, momentum=0.9)
-            elif args.optimizer == 'adam':
-                opt = torch.optim.Adam(ps, lr=args.learning_rate2)
-            elif args.optimizer == 'adamw':
-                opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
-            if args.epochs2 > 0:
-                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                        epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
-            else:
-                sched: SCHED = None
-
-            train(model,
-                  opt,
-                  sched,
-                  obj,
-                  args.epochs2,
-                  libchips,
-                  device,
-                  copy.deepcopy(args),
-                  arg_hash)
-
-            if not args.no_upload:
-                print('\t UPLOADING')
-                torch.save(model.state_dict(), 'weights.pth')
-                s3 = boto3.client('s3')
-                s3.upload_file('weights.pth', args.s3_bucket,
-                               '{}/{}/weights_1.pth'.format(args.s3_prefix, arg_hash))
-                del s3
-
-    # Phase 3
-    if True:
-        if complete_thru == 2:
-            s3 = boto3.client('s3')
-            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-            model = make_model(
-                args.band_count,
-                input_stride=args.input_stride,
-                class_count=class_count,
-                divisor=args.resolution_divisor
-            ).to(device)
-            model.load_state_dict(torch.load('weights.pth'))
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-        elif complete_thru < 2:
-            print('\t TRAINING ALL LAYERS (1/2)')
-
-            for p in model.parameters():
-                p.requires_grad = True
-            if hasattr(model, 'immutable_layers'):
-                for layer in model.immutable_layers:
-                    for p in layer.parameters():
-                        p.requires_grad = False
-
-            ps = []
-            for n, p in model.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            if args.optimizer == 'sgd':
-                opt = torch.optim.SGD(ps, lr=args.learning_rate3, momentum=0.9)
-            elif args.optimizer == 'adam':
-                opt = torch.optim.Adam(ps, lr=args.learning_rate3)
-            elif args.optimizer == 'adamw':
-                opt = torch.optim.AdamW(ps, lr=args.learning_rate3)
-
-            train(model,
-                  opt,
-                  None,
-                  obj,
-                  args.epochs3,
-                  libchips,
-                  device,
-                  copy.deepcopy(args),
-                  arg_hash)
-
-    # Phase 4
-    if True:
-        if complete_thru == 3:
-            s3 = boto3.client('s3')
-            s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-            model = make_model(
-                args.band_count,
-                input_stride=args.input_stride,
-                class_count=class_count,
-                divisor=args.resolution_divisor
-            ).to(device)
-            model.load_state_dict(torch.load('weights.pth'))
-            del s3
-            print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
-        elif complete_thru < 3:
-            print('\t TRAINING ALL LAYERS (2/2)')
-
-            for p in model.parameters():
-                p.requires_grad = True
-            if hasattr(model, 'immutable_layers'):
-                for layer in model.immutable_layers:
-                    for p in layer.parameters():
-                        p.requires_grad = False
-
-            ps = []
-            for n, p in model.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            if args.optimizer == 'sgd':
-                opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
-            elif args.optimizer == 'adam':
-                opt = torch.optim.Adam(ps, lr=args.learning_rate4)
-            elif args.optimizer == 'adamw':
-                opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-            if args.epochs4 > 0:
-                sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate4,
-                                epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
-            else:
-                sched: SCHED = None
-
-            train(model,
-                  opt,
-                  sched,
-                  obj,
-                  args.epochs4,
-                  libchips,
-                  device,
-                  copy.deepcopy(args),
-                  arg_hash,
-                  no_checkpoints=False)
-
-            if not args.no_upload:
-                print('\t UPLOADING')
-                torch.save(model.state_dict(), 'weights.pth')
-                s3 = boto3.client('s3')
-                s3.upload_file('weights.pth', args.s3_bucket,
-                               '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
-                if args.output is not None and args.output.startswith('s3://'):
-                    parts = args.output[5:].split('/')
-                    s3_bucket = parts[0]
-                    s3_prefix = '/'.join(parts[1:])
-                    s3.upload_file('weights.pth', s3_bucket, s3_prefix)
-                del s3
-
-    # Restart in Phase 4
-    if True:
-        if complete_thru == 4:
-            print('\t TRAINING ALL LAYERS FROM CHECKPOINT')
-
-            s3 = boto3.client('s3')
-            if current_pth[0:5] == 's3://':
-                things = current_pth[5:].split('/')
-                args_s3_bucket = things[0]
-                current_pth = ''.join(map(lambda s: s + '/', things[1:]))
-                while current_pth[-1] == '/':
-                    current_pth = current_pth[:-1]
-                s3.download_file(args_s3_bucket, current_pth, 'weights.pth')
-            else:
-                s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-            model = make_model(
-                args.band_count,
-                input_stride=args.input_stride,
-                class_count=class_count,
-                divisor=args.resolution_divisor
-            ).to(device)
-            model.load_state_dict(torch.load('weights.pth'))
-            del s3
-
-            for p in model.parameters():
-                p.requires_grad = True
-            if hasattr(model, 'immutable_layers'):
-                for layer in model.immutable_layers:
-                    for p in layer.parameters():
-                        p.requires_grad = False
-
-            ps = []
-            for n, p in model.named_parameters():
-                if p.requires_grad == True:
-                    ps.append(p)
-                else:
-                    p.grad = None
-            if args.optimizer == 'sgd':
-                opt = torch.optim.SGD(ps, lr=args.learning_rate4, momentum=0.9)
-            elif args.optimizer == 'adam':
-                opt = torch.optim.Adam(ps, lr=args.learning_rate4)
-            elif args.optimizer == 'adamw':
-                opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
-            sched = OneCycleLR(opt, max_lr=args.learning_rate4,
-                               epochs=args.epochs4, steps_per_epoch=args.max_epoch_size)
-            for _ in range(current_epoch):
-                sched.step()
-
-            train(model,
-                  opt,
-                  sched,
-                  obj,
-                  args.epochs4,
-                  libchips,
-                  device,
-                  copy.deepcopy(args),
-                  arg_hash,
-                  no_checkpoints=False,
-                  starting_epoch=current_epoch)
-
-            if not args.no_upload:
-                print('\t UPLOADING')
-                torch.save(model.state_dict(), 'weights.pth')
-                s3 = boto3.client('s3')
-                s3.upload_file('weights.pth', args.s3_bucket,
-                               '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
-                if args.output is not None and args.output.startswith('s3://'):
-                    parts = args.output[5:].split('/')
-                    s3_bucket = parts[0]
-                    s3_prefix = '/'.join(parts[1:])
-                    s3.upload_file('weights.pth', s3_bucket, s3_prefix)
-                del s3
+    if not args.no_upload:
+        print('\t UPLOADING')
+        torch.save(model.state_dict(), 'weights.pth')
+        s3 = boto3.client('s3')
+        s3.upload_file('weights.pth', args.s3_bucket,
+                       '{}/{}/weights.pth'.format(args.s3_prefix, arg_hash))
+        if args.output is not None and args.output.startswith('s3://'):
+            parts = args.output[5:].split('/')
+            s3_bucket = parts[0]
+            s3_prefix = '/'.join(parts[1:])
+            s3.upload_file('weights.pth', s3_bucket, s3_prefix)
+        del s3
 
     libchips.stop()
 
@@ -1472,7 +1335,7 @@ if __name__ == '__main__':
         print('\t EVALUATING')
         libchips.start_multi(
             args.read_threads,  # Number of threads
-            args.read_threads,  # The number of read slots
+            args.read_threads * 2,  # The number of read slots
             len(args.pairs),  # The number of pairs
             b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
             b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data

@@ -35,7 +35,15 @@ import shapely.geometry
 
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    parser.add_argument('--bbox-geojson', required=False, type=str)
+    parser.add_argument('--bizarro-world', action='store_true')
+    parser.add_argument('--correlate-geojson', required=False, type=str)
+    parser.add_argument('--correlate-query', required=False,
+                        type=str, default='way[highway=*]')
+    parser.add_argument('--correlate-type', required=False,
+                        type=str, default='lines')
     parser.add_argument('--dataset-name', required=False, type=str)
+    parser.add_argument('--metadata-file', required=True, type=str)
     parser.add_argument('--output-directory',
                         required=False, type=str, default='/tmp')
     parser.add_argument('--subject-geojson', required=False, type=str)
@@ -43,13 +51,6 @@ def cli_parser() -> argparse.ArgumentParser:
                         type=str, default='way[building=yes]')
     parser.add_argument('--subject-type', required=False,
                         type=str, default='multipolygons')
-    parser.add_argument('--correlate-geojson', required=False, type=str)
-    parser.add_argument('--correlate-query', required=False,
-                        type=str, default='way[highway=*]')
-    parser.add_argument('--correlate-type', required=False,
-                        type=str, default='lines')
-    parser.add_argument('--metadata-file', required=True, type=str)
-    parser.add_argument('--bbox-geojson', required=False, type=str)
     return parser
 
 
@@ -72,8 +73,17 @@ if __name__ == '__main__':
     gdalinfo = json.loads(os.popen(command).read())
     [x1, y1] = list(map(float, gdalinfo['cornerCoordinates']['upperLeft']))
     [x2, y2] = list(map(float, gdalinfo['cornerCoordinates']['lowerRight']))
-    [xmin, xmax] = sorted([x1, x2])  # XXX might need to reverse
+    [xmin, xmax] = sorted([x1, x2])
     [ymin, ymax] = sorted([y1, y2])
+    if args.bizarro_world:
+        xdiff = xmax - xmin
+        xmean = (xmax + xmin)/2.0
+        ydiff = ymax - ymin
+        ymean = (ymax + ymin)/2.0
+        xmin = xmean - .618*xdiff*.5
+        xmax = xmean + .618*xdiff*.5
+        ymin = ymean - .618*ydiff*.5
+        ymax = ymean + .618*ydiff*.5
 
     # Ensure subject data
     if not os.path.isfile(args.subject_geojson):
@@ -81,16 +91,18 @@ if __name__ == '__main__':
             command = ''.join([
                 'wget ',
                 '-O {}.osm '.format(args.subject_geojson),
-                'http://overpass.openstreetmap.ru/cgi/xapi_meta?',
+                'http://www.overpass-api.de/api/xapi_meta?',
                 '{}'.format(args.subject_query),
                 '[bbox={},{},{},{}]'.format(xmin, ymin, xmax, ymax)
             ])
+            print(command)
             os.system(command)
         command = ''.join([
             'ogr2ogr -f GeoJSON ',
             '{} {}.osm '.format(args.subject_geojson, args.subject_geojson),
             '{}'.format(args.subject_type)
         ])
+        print(command)
         os.system(command)
 
     # Ensure correlate data
@@ -99,10 +111,11 @@ if __name__ == '__main__':
             command = ''.join([
                 'wget ',
                 '-O {}.osm '.format(args.correlate_geojson),
-                'http://overpass.openstreetmap.ru/cgi/xapi_meta?',
+                'http://www.overpass-api.de/api/xapi_meta?',
                 '{}'.format(args.correlate_query),
                 '[bbox={},{},{},{}]'.format(xmin, ymin, xmax, ymax)
             ])
+            print(command)
             os.system(command)
         command = ''.join([
             'ogr2ogr -f GeoJSON ',
@@ -110,6 +123,7 @@ if __name__ == '__main__':
                                 args.correlate_geojson),
             '{}'.format(args.correlate_type)
         ])
+        print(command)
         os.system(command)
 
     # Ensure bbox

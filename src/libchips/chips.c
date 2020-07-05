@@ -115,7 +115,7 @@ void deinit()
 }
 
 /**
- * Given a GDAL datat type, return the word length of that type.
+ * Given a GDAL data type, return the word length of that type.
  *
  * @param GDALDataType dt The data type
  * @return The word length
@@ -332,34 +332,6 @@ static void *reader(void *_id)
 
     while (operation_mode == training || operation_mode == evaluation)
     {
-        int wradius = radius / window_size;
-
-        // Get a suitable training or evaluation window
-        if (operation_mode == training) // Training chip
-        {
-            x_offset = y_offset = -1;
-            while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
-            {
-                const int rand_x = rand_r(&state) % (2 * wradius);
-                const int rand_y = rand_r(&state) % (2 * wradius);
-                x_offset = center_xs[id] + rand_x - wradius;
-                y_offset = center_ys[id] + rand_y - wradius;
-            }
-        }
-        else if (operation_mode == evaluation) // Evaluation chip
-        {
-            x_offset = y_offset = -1;
-            while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
-            {
-                const int rand_x = rand_r(&state) % (2 * wradius);
-                const int rand_y = rand_r(&state) % (2 * wradius);
-                x_offset = center_xs[id] + rand_x - wradius;
-                y_offset = center_ys[id] + rand_y - wradius;
-            }
-        }
-        x_offset *= window_size;
-        y_offset *= window_size;
-
         // Find an unused data slot
         for (slot = rand_r(&state) % M; (operation_mode == training || operation_mode == evaluation); slot = (slot + 1) % M)
         {
@@ -380,35 +352,125 @@ static void *reader(void *_id)
 
     read_things:
 
-        // Read imagery
-        pthread_mutex_lock(&dataset_mutexes[id]);
-        err = GDALDatasetRasterIO(imagery_datasets[id], 0,
-                                  x_offset, y_offset, window_size, window_size,
-                                  imagery_slots[slot],
-                                  window_size, window_size,
-                                  imagery_data_type, band_count, bands,
-                                  0, 0, 0);
-        pthread_mutex_unlock(&dataset_mutexes[id]);
-        if (err != CE_None)
+#if defined(CHAMPION_EDITION)
+        for (int i = 0; i < (1 << 7); ++i)
+#else
+        for (int i = 0; i < 1; ++i)
+#endif
         {
-            fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
-            UNLOCK_CONTINUE(slot, 1000)
-        }
+            int wradius = radius / window_size;
 
-        // Read labels
-        if (label_datasets[id] != NULL)
-        {
-            err = GDALDatasetRasterIO(label_datasets[id], 0,
+            // Get a suitable training or evaluation window
+            if (operation_mode == training) // Training chip
+            {
+                x_offset = y_offset = -1;
+                while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
+                {
+                    const int rand_x = rand_r(&state) % (2 * wradius);
+                    const int rand_y = rand_r(&state) % (2 * wradius);
+                    x_offset = center_xs[id] + rand_x - wradius;
+                    y_offset = center_ys[id] + rand_y - wradius;
+                }
+            }
+            else if (operation_mode == evaluation) // Evaluation chip
+            {
+                x_offset = y_offset = -1;
+                while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
+                {
+                    const int rand_x = rand_r(&state) % (2 * wradius);
+                    const int rand_y = rand_r(&state) % (2 * wradius);
+                    x_offset = center_xs[id] + rand_x - wradius;
+                    y_offset = center_ys[id] + rand_y - wradius;
+                }
+            }
+            else
+            {
+                break;
+            }
+
+            x_offset *= window_size;
+            y_offset *= window_size;
+
+            // Read imagery
+            pthread_mutex_lock(&dataset_mutexes[id]);
+            err = GDALDatasetRasterIO(imagery_datasets[id], 0,
                                       x_offset, y_offset, window_size, window_size,
-                                      label_slots[slot],
+                                      imagery_slots[slot],
                                       window_size, window_size,
-                                      label_data_type, 1, NULL,
+                                      imagery_data_type, band_count, bands,
                                       0, 0, 0);
+            pthread_mutex_unlock(&dataset_mutexes[id]);
             if (err != CE_None)
             {
-                fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
+                fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
                 UNLOCK_CONTINUE(slot, 1000)
             }
+
+            // Read labels
+            if (label_datasets[id] != NULL)
+            {
+                err = GDALDatasetRasterIO(label_datasets[id], 0,
+                                          x_offset, y_offset, window_size, window_size,
+                                          label_slots[slot],
+                                          window_size, window_size,
+                                          label_data_type, 1, NULL,
+                                          0, 0, 0);
+                if (err != CE_None)
+                {
+                    fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
+                    UNLOCK_CONTINUE(slot, 1000)
+                }
+            }
+
+#if defined(CHAMPION_EDITION)
+            // Imagery and labels have been read, at this point.  Now
+            // see if they have the desired characteristics.  If not,
+            // continue.
+            int should_go_again = 0;
+
+            // Check to ensure that zero is not present in the labels
+            // (that value is forbidden) and 2 is present (as
+            // desired).
+            uint32_t label_word_desired = 0;
+            for (int j = 0; j < 1 * window_size * window_size; ++j)
+            {
+                uint32_t word = ((uint32_t *)(label_slots[slot]))[j];
+                if (!word)
+                {
+                    should_go_again |= 1;
+                }
+                label_word_desired |= word;
+            }
+            if (should_go_again)
+            {
+                continue;
+            }
+
+#if 0
+            // Check ensure that IEEE-754 zero is not present in the
+            // imagery (the value is forbidden).
+            for (int j = 0; j < band_count * window_size * window_size; ++j)
+            {
+                uint32_t word = ((uint32_t *)imagery_slots[slot])[j];
+                if (!(word & 0x7fffffff))
+                {
+                    should_go_again |= 1;
+                }
+            }
+            if (should_go_again)
+            {
+                continue;
+            }
+#endif
+
+            // Check to see whether label value 2 was found earlier.
+            // If so, this pair is okay.  If not, fall through and
+            // (probably) do the for-loop again.
+            if (0x02 & label_word_desired)
+            {
+                break;
+            }
+#endif
         }
 
         // The slot is now ready for reading

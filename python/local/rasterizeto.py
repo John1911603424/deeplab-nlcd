@@ -37,11 +37,11 @@ import rasterio as rio
 
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--metadata-file', required=True, type=str)
     parser.add_argument('--bbox-geojson', required=True, type=str)
-    parser.add_argument('--subject-geojson', required=True, type=str)
     parser.add_argument('--correlate-geojson', required=True, type=str)
+    parser.add_argument('--metadata-file', required=True, type=str)
     parser.add_argument('--output', required=True, type=str)
+    parser.add_argument('--subject-geojson', required=True, type=str)
     return parser
 
 
@@ -90,7 +90,7 @@ if __name__ == '__main__':
             '-init 0 ',
             '-at ',
             '-te {} {} {} {} '.format(xmin, ymin, xmax, ymax),
-            '-ts {} {} '.format(width // 16, height // 16),
+            '-ts {} {} '.format(width // 8, height // 8),
             '-ot Byte ',
             '{} /tmp/subject2.tif'.format(args.subject_geojson)
         ])
