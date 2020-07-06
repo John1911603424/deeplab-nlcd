@@ -199,6 +199,14 @@ tmp_pred_raw = '/tmp/pred-raw.tif'
 tmp_pred_reg = '/tmp/pred-reg.tif'
 
 
+def gcd(a, b):
+    while b != 0:
+        t = b
+        b = a % b
+        a = t
+    return a
+
+
 if __name__ == '__main__':
 
     parser = inference_cli_parser()
@@ -289,28 +297,45 @@ if __name__ == '__main__':
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
+        window_gcd = gcd(args.window_size, 16)
         with rio.open(inference_img) as ds:
             profile_final = copy.deepcopy(ds.profile)
             profile_final.update(
                 dtype=rio.uint8,
                 count=1,
                 compress='lzw',
-                nodata=None
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
             profile_raw = copy.deepcopy(ds.profile)
             profile_raw.update(
                 dtype=rio.float32,
                 count=args.classes,
                 compress='lzw',
-                nodata=None
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
             profile_reg = copy.deepcopy(ds.profile)
             profile_reg.update(
                 dtype=rio.float32,
                 count=1,
                 compress='lzw',
-                nodata=None
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
+
         model.eval()
         start_time = datetime.now()
         with torch.no_grad():
@@ -350,7 +375,8 @@ if __name__ == '__main__':
                                     ds_raw.write(
                                         out[0, i], window=window, indexes=i+1)
                                 if args.classes > 1:
-                                    out = torch.max(out_torch, 1)[1].cpu().numpy().astype(np.uint8)
+                                    out = torch.max(out_torch, 1)[
+                                        1].cpu().numpy().astype(np.uint8)
                                     out = out * (0xff // (args.classes-1))
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
