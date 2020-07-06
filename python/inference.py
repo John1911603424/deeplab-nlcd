@@ -148,6 +148,8 @@ if True:
                             help='The number of prediction classes')
         parser.add_argument('--force-download',
                             type=ast.literal_eval, default=False)
+        parser.add_argument('--no-raw',
+                            type=ast.literal_eval, default=False)
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
         parser.add_argument('--image-nd',
@@ -304,6 +306,7 @@ if __name__ == '__main__':
                 dtype=rio.uint8,
                 count=1,
                 compress='lzw',
+                predictor=2,
                 tiled=True,
                 blockxsize=args.window_size * (16 // window_gcd),
                 blockysize=args.window_size * (16 // window_gcd),
@@ -316,6 +319,7 @@ if __name__ == '__main__':
                 dtype=rio.float32,
                 count=args.classes,
                 compress='lzw',
+                predictor=2,
                 tiled=True,
                 blockxsize=args.window_size * (16 // window_gcd),
                 blockysize=args.window_size * (16 // window_gcd),
@@ -328,6 +332,7 @@ if __name__ == '__main__':
                 dtype=rio.float32,
                 count=1,
                 compress='lzw',
+                predictor=2,
                 tiled=True,
                 blockxsize=args.window_size * (16 // window_gcd),
                 blockysize=args.window_size * (16 // window_gcd),
@@ -371,9 +376,10 @@ if __name__ == '__main__':
                             if out is not None:
                                 out_torch = out
                                 out = out.cpu().numpy()
-                                for i in range(0, args.classes):
-                                    ds_raw.write(
-                                        out[0, i], window=window, indexes=i+1)
+                                if not args.no_raw:
+                                    for i in range(0, args.classes):
+                                        ds_raw.write(
+                                            out[0, i], window=window, indexes=i+1)
                                 if args.classes > 1:
                                     out = torch.max(out_torch, 1)[
                                         1].cpu().numpy().astype(np.uint8)
