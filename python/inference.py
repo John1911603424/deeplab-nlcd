@@ -240,6 +240,7 @@ if __name__ == '__main__':
             filter(lambda line: len(line) > 0, text.split('\n')))
 
     for inference_img in args.inference_img:
+        inference_img_orig = inference_img
         if inference_img.startswith('s3://'):
             if not os.path.exists(tmp_mul) or len(args.inference_img) > 1 or args.force_download:
                 s3 = boto3.client('s3')
@@ -383,13 +384,11 @@ if __name__ == '__main__':
                                 if args.classes > 1:
                                     out = torch.max(out_torch, 1)[
                                         1].cpu().numpy().astype(np.uint8)
-                                    out = out * (0xff // (args.classes-1))
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
                                 else:
                                     out = np.array(
                                         out > args.threshold, dtype=np.uint8)
-                                    out = out * 0xff
                                     ds_final.write(
                                         out[0][0], window=window, indexes=1)
                     print('{:02.2f}% complete'.format(
@@ -401,12 +400,12 @@ if __name__ == '__main__':
             if args.final_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.final_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_final, bucket, prefix)
                 del s3
             else:
                 img = args.final_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_final, img)
                 os.system(command)
 
@@ -414,12 +413,12 @@ if __name__ == '__main__':
             if args.raw_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.raw_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_raw, bucket, prefix)
                 del s3
             else:
                 img = args.raw_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_raw, img)
                 os.system(command)
 
@@ -427,12 +426,12 @@ if __name__ == '__main__':
             if args.regression_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.regression_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_reg, bucket, prefix)
                 del s3
             else:
                 img = args.regression_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_reg, img)
                 os.system(command)
 
