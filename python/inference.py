@@ -148,6 +148,8 @@ if True:
                             help='The number of prediction classes')
         parser.add_argument('--force-download',
                             type=ast.literal_eval, default=False)
+        parser.add_argument('--no-raw',
+                            type=ast.literal_eval, default=False)
         parser.add_argument('--final-prediction-img',
                             help='The location where the final prediction image should be stored')
         parser.add_argument('--image-nd',
@@ -199,6 +201,14 @@ tmp_pred_raw = '/tmp/pred-raw.tif'
 tmp_pred_reg = '/tmp/pred-reg.tif'
 
 
+def gcd(a, b):
+    while b != 0:
+        t = b
+        b = a % b
+        a = t
+    return a
+
+
 if __name__ == '__main__':
 
     parser = inference_cli_parser()
@@ -230,6 +240,7 @@ if __name__ == '__main__':
             filter(lambda line: len(line) > 0, text.split('\n')))
 
     for inference_img in args.inference_img:
+        inference_img_orig = inference_img
         if inference_img.startswith('s3://'):
             if not os.path.exists(tmp_mul) or len(args.inference_img) > 1 or args.force_download:
                 s3 = boto3.client('s3')
@@ -289,28 +300,48 @@ if __name__ == '__main__':
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
+        window_gcd = gcd(args.window_size, 16)
         with rio.open(inference_img) as ds:
             profile_final = copy.deepcopy(ds.profile)
             profile_final.update(
                 dtype=rio.uint8,
                 count=1,
                 compress='lzw',
-                nodata=None
+                predictor=2,
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
             profile_raw = copy.deepcopy(ds.profile)
             profile_raw.update(
                 dtype=rio.float32,
                 count=args.classes,
                 compress='lzw',
-                nodata=None
+                predictor=2,
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
             profile_reg = copy.deepcopy(ds.profile)
             profile_reg.update(
                 dtype=rio.float32,
                 count=1,
                 compress='lzw',
-                nodata=None
+                predictor=2,
+                tiled=True,
+                blockxsize=args.window_size * (16 // window_gcd),
+                blockysize=args.window_size * (16 // window_gcd),
+                nodata=None,
+                bigtiff=True,
+                driver='GTiff'
             )
+
         model.eval()
         start_time = datetime.now()
         with torch.no_grad():
@@ -346,18 +377,18 @@ if __name__ == '__main__':
                             if out is not None:
                                 out_torch = out
                                 out = out.cpu().numpy()
-                                for i in range(0, args.classes):
-                                    ds_raw.write(
-                                        out[0, i], window=window, indexes=i+1)
+                                if not args.no_raw:
+                                    for i in range(0, args.classes):
+                                        ds_raw.write(
+                                            out[0, i], window=window, indexes=i+1)
                                 if args.classes > 1:
-                                    out = torch.max(out_torch, 1)[1].cpu().numpy().astype(np.uint8)
-                                    out = out * (0xff // (args.classes-1))
+                                    out = torch.max(out_torch, 1)[
+                                        1].cpu().numpy().astype(np.uint8)
                                     ds_final.write(
                                         out[0], window=window, indexes=1)
                                 else:
                                     out = np.array(
                                         out > args.threshold, dtype=np.uint8)
-                                    out = out * 0xff
                                     ds_final.write(
                                         out[0][0], window=window, indexes=1)
                     print('{:02.2f}% complete'.format(
@@ -369,12 +400,12 @@ if __name__ == '__main__':
             if args.final_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.final_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_final, bucket, prefix)
                 del s3
             else:
                 img = args.final_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_final, img)
                 os.system(command)
 
@@ -382,12 +413,12 @@ if __name__ == '__main__':
             if args.raw_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.raw_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_raw, bucket, prefix)
                 del s3
             else:
                 img = args.raw_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_raw, img)
                 os.system(command)
 
@@ -395,12 +426,12 @@ if __name__ == '__main__':
             if args.regression_prediction_img.startswith('s3://'):
                 s3 = boto3.client('s3')
                 bucket, prefix = parse_s3_url(args.regression_prediction_img)
-                prefix = prefix.replace('*', inference_img.split('/')[-1])
+                prefix = prefix.replace('*', inference_img_orig.split('/')[-1])
                 s3.upload_file(tmp_pred_reg, bucket, prefix)
                 del s3
             else:
                 img = args.regression_prediction_img.replace(
-                    '*', inference_img.split('/')[-1])
+                    '*', inference_img_orig.split('/')[-1])
                 command = 'cp -f {} {}'.format(tmp_pred_reg, img)
                 os.system(command)
 
