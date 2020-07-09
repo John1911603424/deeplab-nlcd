@@ -598,8 +598,8 @@ if True:
 
             last_time = current_time
             current_time = time.time()
-            print('\t\t epoch={} time={} avg_loss={}'.format(
-                i, current_time - last_time, avg_loss))
+            print('\t\t epoch={}/{} time={} avg_loss={}'.format(
+                i, epochs, current_time - last_time, avg_loss))
 
             with WATCHDOG_MUTEX:
                 global WATCHDOG_TIME
@@ -609,9 +609,11 @@ if True:
                 if not args.no_upload:
                     torch.save(model.state_dict(), 'weights.pth')
                     s3 = boto3.client('s3')
-                    checkpoint_name = '{}/{}/weights_checkpoint_{}.pth'.format(args.s3_prefix, arg_hash, i)
+                    checkpoint_name = '{}/{}/weights_checkpoint_{}.pth'.format(
+                        args.s3_prefix, arg_hash, i)
                     print('\t\t checkpoint_name={}'.format(checkpoint_name))
-                    s3.upload_file('weights.pth', args.s3_bucket, checkpoint_name)
+                    s3.upload_file(
+                        'weights.pth', args.s3_bucket, checkpoint_name)
                     del s3
 
 # Evaluation
@@ -1093,6 +1095,7 @@ if __name__ == '__main__':
                     suffix='pth'):
                 m1 = re.match('.*weights_checkpoint_(\d+).pth', pth)
                 if m1:
+                    print('\t found {}'.format(pth))
                     checkpoint_epoch = int(m1.group(1))
                     if checkpoint_epoch > current_epoch:
                         current_epoch = checkpoint_epoch+1
@@ -1100,6 +1103,9 @@ if __name__ == '__main__':
     elif args.start_from is not None:
         current_epoch = 1
         current_pth = args.start_from
+
+    print('\t current_epoch = {}'.format(current_epoch))
+    print('\t current_pth = {}'.format(current_pth))
 
     # ---------------------------------
     print('INITIALIZING')
@@ -1147,7 +1153,7 @@ if __name__ == '__main__':
         input_stride=args.input_stride,
         class_count=class_count,
         divisor=args.resolution_divisor,
-        pretrained=(current_epoch == 0)
+        pretrained=True
     ).to(device)
 
     # Phase 1, 2, 3
@@ -1266,12 +1272,6 @@ if __name__ == '__main__':
     if current_epoch != 0:
         s3 = boto3.client('s3')
         s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
-        model = make_model(
-            args.band_count,
-            input_stride=args.input_stride,
-            class_count=class_count,
-            divisor=args.resolution_divisor
-        ).to(device)
         model.load_state_dict(torch.load('weights.pth'))
         del s3
         print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
