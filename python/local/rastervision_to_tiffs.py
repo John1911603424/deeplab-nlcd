@@ -43,7 +43,7 @@ def cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Given a directory containingimagery chips and a directory containing
+# Given a directory containing imagery chips and a directory containing
 # label chips, produce one large imagery tiff and one large label
 # tiff.
 if __name__ == '__main__':
