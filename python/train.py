@@ -1274,7 +1274,7 @@ if __name__ == '__main__':
         s3.download_file(args.s3_bucket, current_pth, 'weights.pth')
         model.load_state_dict(torch.load('weights.pth'))
         del s3
-        print('\t\t SUCCESSFULLY RESTARTED {}'.format(pth))
+        print('\t\t SUCCESSFULLY RESTARTED {}'.format(current_pth))
 
     for p in model.parameters():
         p.requires_grad = True
