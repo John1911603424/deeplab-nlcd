@@ -1299,7 +1299,7 @@ if __name__ == '__main__':
         sched: SCHED = OneCycleLR(
             opt,
             max_lr=args.learning_rate4,
-            epochs=args.epochs4,
+            epochs=args.epochs4-current_epoch,
             steps_per_epoch=args.max_epoch_size
         )
     else:
@@ -1309,12 +1309,13 @@ if __name__ == '__main__':
           opt,
           sched,
           obj,
-          args.epochs4 - current_epoch,
+          args.epochs4,
           libchips,
           device,
           copy.deepcopy(args),
           arg_hash,
-          no_checkpoints=False)
+          no_checkpoints=False,
+          starting_epoch=current_epoch)
 
     if not args.no_upload:
         print('\t UPLOADING')
