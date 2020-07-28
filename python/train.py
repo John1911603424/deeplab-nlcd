@@ -88,7 +88,7 @@ if True:
         arch_code = compile(arch_str, uri, 'exec')
         exec(arch_code, globals())
 
-# S3
+# Stubs
 if True:
     def parse_s3_url(*argv):
         raise Exception()
@@ -96,26 +96,18 @@ if True:
     def get_matching_s3_keys(*argv):
         raise Exception()
 
-# Watchdog
-if True:
     def watchdog_thread(*argv):
         raise Exception()
 
-# Training
-if True:
     def get_batch(*argv):
         raise Exception()
 
     def train(*argv):
         raise Exception()
 
-# Architectures
-if True:
     def make_model(*argv):
         raise Exception()
 
-# Evaluation
-if True:
     def evaluate(*argv):
         raise Exception()
 
@@ -215,9 +207,6 @@ if True:
         parser.add_argument('--bce',
                             help='Use binary cross-entropy for binary-only regression',
                             action='store_true')
-        parser.add_argument('--shm',
-                            help='Use /dev/shm memory for scratch space instead of /tmp',
-                            action='store_true')
         parser.add_argument('--output',
                             required=False, type=str,
                             help='Model output location')
@@ -262,17 +251,8 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
-    # XXX If args.shm is set to true and /dev/shm on the host is
-    # mounted to /dev/shm in the container, then it is assumed that
-    # there is only one container per node.  The motivation for using
-    # /dev/shm is just to take advantage of the large amount of RAM
-    # (~60GiB) on a p3.2xlarge relative to the small storage given by
-    # the stock AMI (~10GiB).
-    if args.shm:
-        for tif in glob.glob('/dev/shm/mul*.tif') + glob.glob('/dev/shm/mask*.tif'):
-            os.remove(tif)
-    tmp_mul = '/tmp/mul{}.tif' if not args.shm else '/dev/shm/mul{}.tif'
-    tmp_label = '/tmp/mask{}.tif' if not args.shm else '/dev/shm/mask{}.tif'
+    tmp_mul = '/tmp/mul{}.tif'
+    tmp_label = '/tmp/mask{}.tif'
     tmp_libchips = '/tmp/libchips.so'
 
     args.band_count = len(args.bands)
@@ -396,8 +376,8 @@ if __name__ == '__main__':
         args.read_threads,  # Number of threads
         args.read_threads * 2,  # Number of slots
         len(args.pairs),  # The number of pairs
-        b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
-        b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
+        b'/tmp/mul%d.tif',  # Image data
+        b'/tmp/mask%d.tif',  # Label data
         6,  # Make all rasters float32
         5,  # Make all labels int32
         None,  # means
@@ -677,8 +657,8 @@ if __name__ == '__main__':
             args.read_threads,  # Number of threads
             args.read_threads * 2,  # The number of read slots
             len(args.pairs),  # The number of pairs
-            b'/tmp/mul%d.tif' if not args.shm else b'/dev/shm/mul%d.tif',  # Image data
-            b'/tmp/mask%d.tif' if not args.shm else b'/dev/shm/mask%d.tif',  # Label data
+            b'/tmp/mul%d.tif',  # Image data
+            b'/tmp/mask%d.tif',  # Label data
             6,  # Make all rasters float32
             5,  # Make all labels int32
             None,  # means
