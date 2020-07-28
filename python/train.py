@@ -46,12 +46,13 @@ import time
 from typing import *
 from urllib.parse import urlparse
 
-import numpy as np  # type: ignore
+import boto3
+import numpy as np
 import requests
-
-import boto3  # type: ignore
 import torch
-import torchvision  # type: ignore
+import torchvision
+from torch.optim.lr_scheduler import OneCycleLR
+
 
 WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
@@ -64,7 +65,7 @@ PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
 SCALER = Union[int, float]
 SCHED = Optional[OneCycleLR]
 
-# S3
+# Bootstrap
 if True:
     def read_text(uri: str) -> str:
         """A reader function that supports http, s3, and local files
@@ -89,462 +90,41 @@ if True:
             with codecs.open(uri, encoding='utf-8', mode='r') as f:
                 return f.read()
 
-    def parse_s3_url(url: str) -> Tuple[str, str]:
-        """Given an S3 URI, return the bucket and prefix
+    def load_code(uri: str) -> None:
+        arch_str = read_text(uri)
+        arch_code = compile(arch_str, uri, 'exec')
+        exec(arch_code, globals())
 
-        Arguments:
-            url {str} -- The S3 URI to parse
+# S3
+if True:
+    def parse_s3_url(*argv):
+        raise Exception()
 
-        Returns:
-            Tuple[str, str] -- The bucket and prefix as a tuple
-        """
-        parsed = urlparse(url, allow_fragments=False)
-        return (parsed.netloc, parsed.path.lstrip('/'))
-
-    def get_matching_s3_keys(bucket: str,
-                             prefix: str = '',
-                             suffix: str = '') -> Generator[str, None, None]:
-        """Generate all of the keys in a bucket with the given prefix and suffix
-
-        See https://alexwlchan.net/2017/07/listing-s3-keys/
-
-        Arguments:
-            bucket {str} -- The S3 bucket
-
-        Keyword Arguments:
-            prefix {str} -- The prefix to filter by (default: {''})
-            suffix {str} -- The suffix to filter by (default: {''})
-
-        Returns:
-            Generator[str, None, None] -- The list of keys
-        """
-        s3 = boto3.client('s3')
-        kwargs = {'Bucket': bucket}
-
-        # If the prefix is a single string (not a tuple of strings), we can
-        # do the filtering directly in the S3 API.
-        if isinstance(prefix, str):
-            kwargs['Prefix'] = prefix
-
-        while True:
-            # The S3 API response is a large blob of metadata.
-            # 'Contents' contains information about the listed objects.
-            resp = s3.list_objects_v2(**kwargs)
-            for obj in resp['Contents']:
-                key = obj['Key']
-                if key.startswith(prefix) and key.endswith(suffix):
-                    yield key
-
-            # The S3 API is paginated, returning up to 1000 keys at a time.
-            # Pass the continuation token into the next response, until we
-            # reach the final page (when this field is missing).
-            try:
-                kwargs['ContinuationToken'] = resp['NextContinuationToken']
-            except KeyError:
-                break
+    def get_matching_s3_keys(*argv):
+        raise Exception()
 
 # Watchdog
 if True:
-    def watchdog_thread(seconds: int):
-        """Code for the watchdog thread
-
-        Arguments:
-            seconds {int} -- The number of seconds of inactivity to allow before terminating
-        """
-        while True:
-            time.sleep(60)
-            if EVALUATIONS_BATCHES_DONE > 0:
-                print('EVALUATIONS_DONE={}'.format(EVALUATIONS_BATCHES_DONE))
-            with WATCHDOG_MUTEX:
-                gap = time.time() - WATCHDOG_TIME
-            if gap > seconds:
-                print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
-                    gap, seconds), file=sys.stderr)
-                os._exit(-1)
+    def watchdog_thread(*argv):
+        raise Exception()
 
 # Training
 if True:
-    def numpy_replace(np_arr: np.ndarray,
-                      replacement_dict: INT2INT,
-                      label_nd: SCALER) -> np.ndarray:
-        """Replace the contents of np_arr according to the mapping given in replacement_dict
+    def get_batch(*argv):
+        raise Exception()
 
-        Arguments:
-            np_arr {np.ndarray} -- The numpy array to alter
-            replacement_dict {INT2INT} -- The replacement mapping
-            label_nd {SCALER} -- The label nodata
+    def train(*argv):
+        raise Exception()
 
-        Returns:
-            np.ndarray -- The array with replacement performed
-        """
-        b = np.copy(np_arr)
-        b[~np.isin(np_arr, list(replacement_dict.keys()))] = label_nd
-        for k, v in replacement_dict.items():
-            b[np_arr == k] = v
-        return b
-
-    def get_batch(libchips: ctypes.CDLL,
-                  args: argparse.Namespace,
-                  batch_multiplier: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Read a batch of imagery and labels
-
-        Arguments:
-            libchips {ctypes.CDLL} -- A shared library handle used for reading data
-            args {argparse.Namespace} -- The arguments dictionary
-
-        Keyword Arguments:
-            batch_multiplier {int} -- How many base batches to fetch at once
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor] -- The raster data and label data as PyTorch tensors in a tuple
-        """
-        assert(args.label_nd is not None)
-
-        shape = (len(args.bands), args.window_size, args.window_size)
-        temp1 = np.zeros(shape, dtype=np.float32)
-        temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        temp2 = np.zeros((args.window_size, args.window_size), dtype=np.int32)
-        temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
-
-        rasters = []
-        labels = []
-        for _ in range(args.batch_size * batch_multiplier):
-
-            while True:
-                again = False
-                libchips.get_next(temp1_ptr, temp2_ptr)
-                if args.forbidden_imagery_value is not None:
-                    again = again or np.any(
-                        temp1 == args.forbidden_imagery_value)
-                if args.forbidden_label_value is not None:
-                    again = again or np.any(
-                        temp2 == args.forbidden_label_value)
-                if args.desired_label_value is not None:
-                    if not np.any(temp2 == args.desired_label_value):
-                        again = again or (args.reroll > random.random())
-                if not again:
-                    break
-
-            rasters.append(temp1.copy())
-            labels.append(temp2.copy())
-
-        raster_batch = []
-        label_batch = []
-        for raster, label in zip(rasters, labels):
-
-            # NODATA from labels
-            label = np.array(label, dtype=np.long)
-            label = numpy_replace(label, args.label_map, args.label_nd)
-            label_nds = (label == args.label_nd)
-
-            # NODATA from rasters
-            image_nds = np.zeros(raster[0].shape)
-            if args.image_nd is not None:
-                image_nds += (raster == args.image_nd).sum(axis=0)
-
-            # NODATA from NaNs in rasters
-            image_nds += np.isnan(raster).sum(axis=0)
-
-            # Set label NODATA, remove NaNs from rasters
-            nodata = ((image_nds + label_nds) > 0)
-            label[nodata == True] = args.label_nd
-            for i in range(len(raster)):
-                raster[i][nodata == True] = 0.0
-
-            raster_batch.append(raster)
-            label_batch.append(label)
-
-        raster_batch_tensor = torch.from_numpy(np.stack(raster_batch, axis=0))
-        label_batch_tensor = torch.from_numpy(np.stack(label_batch, axis=0))
-
-        return (raster_batch_tensor, label_batch_tensor)
-
-    def train(model: torch.nn.Module,
-              opt: OPT,
-              sched: SCHED,
-              obj: OBJ,
-              epochs: int,
-              libchips: ctypes.CDLL,
-              device: torch.device,
-              args: argparse.Namespace,
-              arg_hash: str,
-              no_checkpoints: bool = True,
-              starting_epoch: int = 0):
-        """Train the model according the supplied data and (implicit and explicit) hyperparameters
-
-        Arguments:
-            model {torch.nn.Module} -- The model to train
-            opt {OPT} -- The optimizer to use
-            obj {OBJ} -- The objective function to use
-            epochs {int} -- The number of "epochs"
-            libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            device {torch.device} -- The device to use
-            args {argparse.Namespace} -- The arguments dictionary
-            arg_hash {str} -- The arguments hash
-
-        Keyword Arguments:
-            no_checkpoints {bool} -- Whether to not write checkpoint files (default: {True})
-            starting_epoch {int} -- The starting epoch (default: {0})
-        """
-        current_time = time.time()
-        model.train()
-        for i in range(starting_epoch, epochs):
-            avg_loss = 0.0
-            for _ in range(args.max_epoch_size):
-                batch = get_batch(libchips, args)
-                opt.zero_grad()
-                pred: PRED = model(batch[0].to(device))
-                loss = None
-
-                if isinstance(pred, dict):
-                    pred_seg = pred.get('seg', pred.get('out', None))
-                    pred_aux = pred.get('aux', None)
-                    pred_2seg = pred.get('2seg', None)
-                    pred_reg = pred.get('reg', None)
-                else:
-                    pred_seg = pred
-                    pred_aux = pred_2seg = pred_reg = None
-
-                if pred_seg is not None and pred_aux is None:
-                    # segmentation only
-                    labels = batch[1].to(device)
-                    loss = obj.get('seg')(pred_seg, labels)
-                elif pred_seg is not None and pred_aux is not None:
-                    # segmentation with auxiliary output
-                    labels = batch[1].to(device)
-                    loss = obj.get('seg')(pred_seg, labels) + \
-                        0.4 * obj.get('seg')(pred_aux, labels)
-                elif pred_2seg is not None and pred_reg is None:
-                    # binary segmentation only
-                    labels = (batch[1] == 1).to(device, dtype=torch.float)
-                    # XXX the above assumes that background and target are 0 and 1, respectively
-                    pred_2seg = pred_2seg[:, 0, :, :]
-                    loss = obj.get('2seg')(pred_2seg, labels)
-                elif pred_2seg is not None and pred_reg is not None:
-                    # binary segmentation with percent regression
-                    labels = (batch[1] == 1).to(device, dtype=torch.float)
-                    # XXX the above and below assume that background and target are 0 and 1, respectively
-                    pcts = []
-                    for label in batch[1].cpu().numpy():
-                        ones = float((label == 1).sum())
-                        zeros = float((label == 0).sum())
-                        pcts.append([(ones/(ones + zeros + 1e-8))])
-                    pcts = torch.FloatTensor(pcts).to(device)
-                    pred_2seg = pred_2seg[:, 0, :, :]
-                    loss = obj.get('2seg')(pred_2seg, labels) + \
-                        obj.get('l1')(pred_reg, pcts)
-                elif pred_seg is None and pred_aux is None and pred_2seg is None and pred_reg is not None:
-                    # regression only
-                    pcts = []
-                    for label in batch[1].cpu().numpy():
-                        # XXX assumes that background and target are 0 and 1, respectively
-                        ones = float((label == 1).sum())
-                        zeros = float((label == 0).sum())
-                        pcts.append([(ones/(ones + zeros + 1e-8))])
-                    pcts = torch.FloatTensor(pcts).to(device)
-                    if args.bce:
-                        # Binary cross entropy
-                        loss = obj.get('2seg')(pred_reg, pcts)
-                    else:
-                        # l1 and l2
-                        loss = obj.get('l1')(pred_reg, pcts) + \
-                            obj.get('l2')(pred_reg, pcts)
-
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
-                opt.step()
-                if sched is not None:
-                    sched.step()
-                avg_loss = avg_loss + loss.item()
-
-            avg_loss = avg_loss / args.max_epoch_size
-            libchips.recenter(1)
-
-            last_time = current_time
-            current_time = time.time()
-            print('\t\t epoch={}/{} time={} avg_loss={}'.format(
-                i, epochs, current_time - last_time, avg_loss))
-
-            with WATCHDOG_MUTEX:
-                global WATCHDOG_TIME
-                WATCHDOG_TIME = time.time()
-
-            if ((i == epochs - 1) or ((i > 0) and (i % 13 == 0) and args.s3_bucket and args.s3_prefix)) and not no_checkpoints:
-                if not args.no_upload:
-                    torch.save(model.state_dict(), 'weights.pth')
-                    s3 = boto3.client('s3')
-                    checkpoint_name = '{}/{}/weights_checkpoint_{}.pth'.format(
-                        args.s3_prefix, arg_hash, i)
-                    print('\t\t checkpoint_name={}'.format(checkpoint_name))
-                    s3.upload_file(
-                        'weights.pth', args.s3_bucket, checkpoint_name)
-                    del s3
+# Architectures
+if True:
+    def make_model(*argv):
+        raise Exception()
 
 # Evaluation
 if True:
-    def evaluate(model: torch.nn.Module,
-                 libchips: ctypes.CDLL,
-                 device: torch.device,
-                 args: argparse.Namespace,
-                 arg_hash: str):
-        """Evaluate the performance of the model given the various data.  Results are stored in S3.
-
-        Arguments:
-            model {torch.nn.Module} -- The model to evaluate
-            libchips {ctypes.CDLL} -- A shared library handle through which data can be read
-            device {torch.device} -- The device to use for evaluation
-            args {argparse.Namespace} -- The arguments dictionary
-            arg_hash {str} -- The hashed arguments
-        """
-        model.eval()
-        with torch.no_grad():
-            class_count = len(args.weights)
-            tps = [0.0 for x in range(class_count)]
-            fps = [0.0 for x in range(class_count)]
-            fns = [0.0 for x in range(class_count)]
-            tns = [0.0 for x in range(class_count)]
-            pred_pcts = []
-            gt_pcts = []
-            l1s = []
-            l2s = []
-
-            batch_mult = 2
-            for _ in range(args.max_eval_windows // (batch_mult * args.batch_size)):
-                batch = get_batch(libchips, args, batch_multiplier=batch_mult)
-                pred: PRED = model(batch[0].to(device))
-
-                if isinstance(pred, dict):
-                    pred_seg = pred.get('seg', pred.get('out', None))
-                    pred_2seg = pred.get('2seg', None)
-                    pred_reg = pred.get('reg', None)
-                else:
-                    pred_seg = pred
-
-                # segmentation predictions
-                pred_seg_mask = None
-                if pred_seg is not None:
-                    pred_seg = torch.max(pred_seg, 1)[1].cpu().numpy()
-                    pred_seg_mask = pred_seg
-                if pred_2seg is not None:
-                    pred_2seg = pred_2seg.cpu().numpy()
-                    pred_2seg = np.array(pred_2seg > 0.5, dtype=np.long)
-                    pred_2seg = pred_2seg[:, 0, :, :]
-                    pred_seg_mask = pred_2seg
-                if pred_reg is not None:
-                    pred_reg = pred_reg.cpu().numpy()
-                    if args.bce:
-                        pred_reg = (pred_reg > 0).astype(np.float32)
-                    labels_reg = batch[1].cpu().numpy()
-                    if pred_reg.shape[-1] == 1:
-                        for (pred, actual) in zip(pred_reg, labels_reg):
-                            pred_pcts.append(float(pred))
-                            yes = float((actual == 1).sum())
-                            no = float((actual == 0).sum())
-                            gt_pct = yes/(yes + no + 1e-8)
-                            gt_pcts.append(gt_pct)
-                    else:
-                        for (pred, actual) in zip(pred_reg, labels_reg):
-                            diff = pred - actual
-                            l1s.append(diff)
-                            l2s.append(diff**2)
-                        pred_seg_mask = pred_reg.astype(np.long)
-
-                # segmentation labels
-                labels_seg = batch[1].cpu().numpy()
-
-                # don't care values
-                if args.label_nd is not None:
-                    dont_care = (labels_seg == args.label_nd)
-                else:
-                    dont_care = np.zeros(labels_seg.shape)
-
-                if pred_seg_mask is not None:
-                    for j in range(class_count):
-                        tps[j] = tps[j] + (
-                            (pred_seg_mask == j) *
-                            (labels_seg == j) *
-                            (dont_care != 1)
-                        ).sum()
-                        fps[j] = fps[j] + (
-                            (pred_seg_mask == j) *
-                            (labels_seg != j) *
-                            (dont_care != 1)
-                        ).sum()
-                        fns[j] = fns[j] + (
-                            (pred_seg_mask != j) *
-                            (labels_seg == j) *
-                            (dont_care != 1)
-                        ).sum()
-                        tns[j] = tns[j] + (
-                            (pred_seg_mask != j) *
-                            (labels_seg != j) *
-                            (dont_care != 1)
-                        ).sum()
-
-                if random.randint(0, args.batch_size * 4) == 0:
-                    libchips.recenter(1)
-
-                global EVALUATIONS_BATCHES_DONE
-                EVALUATIONS_BATCHES_DONE += 1
-                with WATCHDOG_MUTEX:
-                    global WATCHDOG_TIME
-                    WATCHDOG_TIME = time.time()
-
-        with open('/tmp/evaluations.txt', 'w') as evaluations:
-            if tps and fps and tns and fns:
-                recalls = []
-                precisions = []
-                f1s = []
-                for j in range(class_count):
-                    recall = tps[j] / (tps[j] + fns[j] + 1e-8)
-                    recalls.append(recall)
-                    precision = tps[j] / (tps[j] + fps[j] + 1e-8)
-                    precisions.append(precision)
-                for j in range(class_count):
-                    f1 = 2 * (precisions[j] * recalls[j]) / \
-                        (precisions[j] + recalls[j] + 1e-8)
-                    f1s.append(f1)
-                print('True Positives  {}'.format(tps))
-                print('False Positives {}'.format(fps))
-                print('False Negatives {}'.format(fns))
-                print('True Negatives  {}'.format(tns))
-                print('Recalls    {}'.format(recalls))
-                print('Precisions {}'.format(precisions))
-                print('f1 {}'.format(f1s))
-                evaluations.write('True positives: {}\n'.format(tps))
-                evaluations.write('False positives: {}\n'.format(fps))
-                evaluations.write('False negatives: {}\n'.format(fns))
-                evaluations.write('True negatives: {}\n'.format(tns))
-                evaluations.write('Recalls: {}\n'.format(recalls))
-                evaluations.write('Precisions: {}\n'.format(precisions))
-                evaluations.write('f1 scores: {}\n'.format(f1s))
-            if pred_pcts and gt_pcts:
-                pred_pcts = np.array(pred_pcts)
-                gt_pcts = np.array(gt_pcts)
-                errors = pred_pcts - gt_pcts
-                relative_errors = errors / (gt_pcts + 1e-8)
-                print('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
-                    np.abs(errors).mean(), (errors**2).mean(),
-                    relative_errors.mean(), np.abs(relative_errors).mean()))
-                print('mean prediction = {}, mean actual = {}'.format(
-                    pred_pcts.mean(), gt_pcts.mean()))
-                evaluations.write('MAE = {}, MSE = {}, MRE = {}, MARE = {}'.format(
-                    np.abs(errors).mean(), (errors**2).mean(),
-                    relative_errors.mean(), np.abs(relative_errors).mean()))
-                evaluations.write('mean prediction = {}, mean actual = {}'.format(
-                    pred_pcts.mean(), gt_pcts.mean()))
-            if l1s and l2s:
-                l1s = np.stack(l1s)
-                l2s = np.stack(l2s)
-                print('MAE = {}, MSE = {}'.format(l1s.mean(), l2s.mean()))
-                evaluations.write(
-                    'MAE = {}, MSE = {}'.format(l1s.mean(), l2s.mean()))
-
-        if not args.no_upload:
-            s3 = boto3.client('s3')
-            s3.upload_file('/tmp/evaluations.txt', args.s3_bucket,
-                           '{}/{}/evaluations.txt'.format(args.s3_prefix, arg_hash))
-            del s3
+    def evaluate(*argv):
+        raise Exception()
 
 # Arguments
 if True:
@@ -578,7 +158,15 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture', required=True)
+        parser.add_argument('--architecture-code', required=True, type=str)
+        parser.add_argument('--s3-code', required=False, type=str,
+                            default='https://raw.githubusercontent.com/geotrellis/deeplab-nlcd/master/python/code/s3.py')
+        parser.add_argument('--watchdog-code', required=False, type=str,
+                            default='https://raw.githubusercontent.com/geotrellis/deeplab-nlcd/master/python/code/watchdog.py')
+        parser.add_argument('--training-code', required=False, type=str,
+                            default='https://raw.githubusercontent.com/geotrellis/deeplab-nlcd/master/python/code/training.py')
+        parser.add_argument('--evaluation-code', required=False, type=str,
+                            default='https://raw.githubusercontent.com/geotrellis/deeplab-nlcd/master/python/code/evaluation.py')
         parser.add_argument('--backend',
                             choices=['cpu', 'cuda'], default='cuda')
         parser.add_argument('--bands', required=True, nargs='+', type=int,
@@ -660,19 +248,9 @@ if True:
         parser.add_argument('--watchdog-seconds',
                             default=0, type=int,
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
-        parser.add_argument('--weights', nargs='+', type=float)
+        parser.add_argument('--class-weights', nargs='+', type=float)
         parser.add_argument('--window-size', default=32, type=int)
         return parser
-
-# Architectures
-if True:
-    def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-        raise Exception()
-
-    def load_architecture(uri: str) -> None:
-        arch_str = read_text(uri)
-        arch_code = compile(arch_str, uri, 'exec')
-        exec(arch_code, globals())
 
 
 if __name__ == '__main__':
@@ -706,32 +284,36 @@ if __name__ == '__main__':
 
     args.band_count = len(args.bands)
 
-    load_architecture(args.architecture)
+    load_code(args.s3_code)
+    load_code(args.watchdog_code)
+    load_code(args.training_code)
+    load_code(args.evaluation_code)
+    load_code(args.architecture_code)
 
     # ---------------------------------
     print('VALUES')
 
-    if '-regression' in args.architecture and args.forbidden_imagery_value is None and args.image_nd is not None:
+    if '-regression' in args.architecture_code and args.forbidden_imagery_value is None and args.image_nd is not None:
         print('WARNING: FORBIDDEN IMAGERY VALUE NOT SET, SETTING TO {}'.format(
             args.image_nd))
         args.forbidden_imagery_value = args.image_nd
-    if '-regression' in args.architecture and args.forbidden_label_value is None and args.label_nd is not None:
+    if '-regression' in args.architecture_code and args.forbidden_label_value is None and args.label_nd is not None:
         for k, v in args.label_map.items():
             if v == args.label_nd:
                 print('WARNING: FORBIDDEN LABEL VALUE NOT SET, SETTING TO {}'.format(k))
                 args.forbidden_label_value = k
 
-    if '-regression' in args.architecture and args.forbidden_imagery_value is None:
+    if '-regression' in args.architecture_code and args.forbidden_imagery_value is None:
         print('WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN IMAGERY VALUE')
-    if '-regression' in args.architecture and args.forbidden_label_value is None:
+    if '-regression' in args.architecture_code and args.forbidden_label_value is None:
         print('WARNING: PERFORMING REGRESSION WITHOUT A FORBIDDEN LABEL VALUE')
 
-    if not args.weights:
-        if '-binary' in args.architecture:
-            args.weights = [1.0] * 2
+    if not args.class_weights:
+        if '-binary' in args.architecture_code:
+            args.class_weights = [1.0] * 2
         else:
-            args.weights = [1.0] * (len(args.label_map)-1)
-    class_count = len(args.weights)
+            args.class_weights = [1.0] * (len(args.label_map)-1)
+    class_count = len(args.class_weights)
 
     if args.label_nd is None:
         args.label_nd = class_count
@@ -890,7 +472,7 @@ if __name__ == '__main__':
     obj = {
         'seg': torch.nn.CrossEntropyLoss(
             ignore_index=args.label_nd,
-            weight=torch.FloatTensor(args.weights).to(device)
+            weight=torch.FloatTensor(args.class_weights).to(device)
         ).to(device),
         '2seg': torch.nn.BCEWithLogitsLoss().to(device),
         'l1': torch.nn.L1Loss().to(device),
@@ -941,7 +523,7 @@ if __name__ == '__main__':
             else:
                 p.grad = None
         if args.optimizer == 'sgd':
-            opt: OPT = torch.optim.SGD(
+            opt = torch.optim.SGD(
                 ps, lr=args.learning_rate1, momentum=0.9)
         elif args.optimizer == 'adam':
             opt = torch.optim.Adam(ps, lr=args.learning_rate1)
@@ -983,10 +565,10 @@ if __name__ == '__main__':
         elif args.optimizer == 'adamw':
             opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
         if args.epochs2 > 0:
-            sched: SCHED = OneCycleLR(opt, max_lr=args.learning_rate2,
+            sched = OneCycleLR(opt, max_lr=args.learning_rate2,
                                       epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
         else:
-            sched: SCHED = None
+            sched = None
 
         train(model,
               opt,
@@ -1060,14 +642,14 @@ if __name__ == '__main__':
     elif args.optimizer == 'adamw':
         opt = torch.optim.AdamW(ps, lr=args.learning_rate4)
     if args.epochs4 > 0:
-        sched: SCHED = OneCycleLR(
+        sched = OneCycleLR(
             opt,
             max_lr=args.learning_rate4,
             epochs=args.epochs4-current_epoch,
             steps_per_epoch=args.max_epoch_size
         )
     else:
-        sched: SCHED = None
+        sched = None
 
     train(model,
           opt,
