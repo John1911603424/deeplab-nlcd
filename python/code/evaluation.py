@@ -25,11 +25,11 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-def evaluate(model: torch.nn.Module,
-             libchips: ctypes.CDLL,
-             device: torch.device,
-             args: argparse.Namespace,
-             arg_hash: str):
+def evaluate(model,
+             libchips,
+             device,
+             args,
+             arg_hash):
     """Evaluate the performance of the model given the various data.  Results are stored in S3.
 
     Arguments:

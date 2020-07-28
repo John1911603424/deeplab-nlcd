@@ -25,9 +25,9 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-def numpy_replace(np_arr: np.ndarray,
-                  replacement_dict: INT2INT,
-                  label_nd: SCALER) -> np.ndarray:
+def numpy_replace(np_arr,
+                  replacement_dict,
+                  label_nd):
     """Replace the contents of np_arr according to the mapping given in replacement_dict
 
     Arguments:

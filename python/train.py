@@ -58,13 +58,6 @@ WATCHDOG_MUTEX: threading.Lock = threading.Lock()
 WATCHDOG_TIME: float = time.time()
 EVALUATIONS_BATCHES_DONE = 0
 
-INT2INT = Dict[int, int]
-OBJ = Dict[str, Any]
-OPT = Union[torch.optim.SGD, torch.optim.Adam, torch.optim.AdamW]
-PRED = Union[Dict[str, torch.Tensor], torch.Tensor]
-SCALER = Union[int, float]
-SCHED = Optional[OneCycleLR]
-
 # Bootstrap
 if True:
     def read_text(uri: str) -> str:

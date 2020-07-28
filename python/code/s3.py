@@ -25,7 +25,7 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-def parse_s3_url(url: str) -> Tuple[str, str]:
+def parse_s3_url(url):
     """Given an S3 URI, return the bucket and prefix
 
     Arguments:
@@ -38,9 +38,9 @@ def parse_s3_url(url: str) -> Tuple[str, str]:
     return (parsed.netloc, parsed.path.lstrip('/'))
 
 
-def get_matching_s3_keys(bucket: str,
-                         prefix: str = '',
-                         suffix: str = '') -> Generator[str, None, None]:
+def get_matching_s3_keys(bucket,
+                         prefix = '',
+                         suffix = ''):
     """Generate all of the keys in a bucket with the given prefix and suffix
 
     See https://alexwlchan.net/2017/07/listing-s3-keys/

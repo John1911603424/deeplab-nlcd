@@ -25,7 +25,7 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-def watchdog_thread(seconds: int):
+def watchdog_thread(seconds):
     """Code for the watchdog thread
 
     Arguments:
