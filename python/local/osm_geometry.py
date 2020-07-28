@@ -36,7 +36,7 @@ import shapely.geometry
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--bbox-geojson', required=True, type=str)
-    parser.add_argument('--bizarro-world', action='store_true')
+    parser.add_argument('--bizarro-world', required=False, type=int)
     parser.add_argument('--subject-geojson', required=True, type=str)
     parser.add_argument('--subject-query', required=False,
                         type=str, default='way[building=yes]')
@@ -52,15 +52,26 @@ if __name__ == '__main__':
         g = json.load(f).get('features')[0].get('geometry')
         xmin, ymin, xmax, ymax = shapely.geometry.shape(g).bounds
 
-    if args.bizarro_world:
+    if args.bizarro_world == 1:
         xdiff = (xmax - xmin)/2.0
         xmean = (xmax + xmin)/2.0
         ydiff = (ymax - ymin)/2.0
         ymean = (ymax + ymin)/2.0
-        # xmin = xmean - .618*xdiff
-        # xmax = xmean + .618*xdiff
-        #ymin = ymean - .618*ydiff
-        ymax = ymean + .80*ydiff
+        ymax = ymean + .70*ydiff
+    elif args.bizarro_world == 2:
+        xdiff = (xmax - xmin)/2.0
+        xmean = (xmax + xmin)/2.0
+        ydiff = (ymax - ymin)/2.0
+        ymean = (ymax + ymin)/2.0
+        xmin = xmean
+        ymin = ymean + .70*ydiff
+    elif args.bizarro_world == 3:
+        xdiff = (xmax - xmin)/2.0
+        xmean = (xmax + xmin)/2.0
+        ydiff = (ymax - ymin)/2.0
+        ymean = (ymax + ymin)/2.0
+        xmax = xmean
+        ymin = ymean + .70*ydiff
 
     # Ensure subject data
     if not os.path.isfile(args.subject_geojson):
