@@ -4,6 +4,7 @@
 *.pth
 *.pyc
 *.so
+*.so.*
 *.tif
 *.vrt
 .vscode/

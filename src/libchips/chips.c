@@ -2,7 +2,7 @@
  * The MIT License (MIT)
  * =====================
  *
- * Copyright © 2019 Azavea
+ * Copyright © 2019-2020 Azavea
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -37,43 +37,7 @@
 
 #include <gdal.h>
 
-enum op_mode
-{
-    stopped = 0,
-    training = 1,
-    evaluation = 2,
-    inference = 3,
-};
-
-// Global variables
-int N = 0;
-int M = 0;
-int L = 0;
-GDALDataType imagery_data_type = -1;
-GDALDataType label_data_type = -1;
-int operation_mode = stopped;
-int window_size = 0;
-int band_count = 0;
-int *bands = NULL;
-int *widths = NULL;
-int *heights = NULL;
-int radius = 0;
-int *center_xs = NULL;
-int *center_ys = NULL;
-uint64_t current = 0;
-
-// Thread-related variables
-pthread_mutex_t *dataset_mutexes = NULL;
-pthread_t *threads = NULL;
-GDALDatasetH *imagery_datasets = NULL;
-GDALRasterBandH *imagery_first_bands = NULL;
-GDALDatasetH *label_datasets = NULL;
-
-// Slot-related variables
-pthread_mutex_t *slot_mutexes = NULL;
-void **imagery_slots = NULL;
-void **label_slots = NULL;
-int *ready = NULL;
+#include "globals.h"
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
