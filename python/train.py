@@ -539,7 +539,7 @@ if __name__ == '__main__':
             opt = torch.optim.AdamW(ps, lr=args.learning_rate2)
         if args.epochs2 > 0:
             sched = OneCycleLR(opt, max_lr=args.learning_rate2,
-                                      epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
+                               epochs=args.epochs2, steps_per_epoch=args.max_epoch_size)
         else:
             sched = None
 

@@ -39,8 +39,8 @@ def parse_s3_url(url):
 
 
 def get_matching_s3_keys(bucket,
-                         prefix = '',
-                         suffix = ''):
+                         prefix='',
+                         suffix=''):
     """Generate all of the keys in a bucket with the given prefix and suffix
 
     See https://alexwlchan.net/2017/07/listing-s3-keys/
