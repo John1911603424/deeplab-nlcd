@@ -2,7 +2,7 @@ CFLAGS ?= -Wall -Werror -Os
 LDFLAGS ?= $(shell pkg-config gdal --libs) -lstdc++ -lpthread
 GDALCFLAGS ?= $(shell pkg-config gdal --cflags)
 
-all: libchips.so libchips_ce.so
+all: libchips.so.1.1 libchips_ce.so.1.1
 
 %.o: %.c
 	$(CC) $(GDALCFLAGS) $(CFLAGS) -fPIC $< -c -o $@
@@ -13,11 +13,11 @@ chips_ce.o: chips.c
 %.o: %.cpp
 	$(CXX) $(GDALCFLAGS) $(CXXFLAGS) $(CFLAGS) -fPIC $< -c -o $@
 
-libchips.so: chips.o
+libchips.so.1.1: chips.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-libchips_ce.so: chips_ce.o
+libchips_ce.so.1.1: chips_ce.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
@@ -30,5 +30,5 @@ clean:
 cleaner: clean
 
 cleanest: cleaner
-	rm -f libchips*.so
+	rm -f libchips*.so*
 	rm -f main
