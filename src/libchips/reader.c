@@ -149,23 +149,19 @@ void *reader(void *_id)
             }
 
 #if defined(CHAMPION_EDITION)
+#define DESIRED (0x02)
             // Imagery and labels have been read, at this point.  Now
             // see if they have the desired characteristics.  If not,
             // continue.
             int should_go_again = 0;
 
-            // Check to ensure that zero is not present in the labels
-            // (that value is forbidden) and 2 is present (as
-            // desired).
-            uint32_t label_word_desired = 0;
-            for (int j = 0; j < 1 * window_size * window_size; ++j)
+            // Inventory of labels
+            uint32_t label_words_found = 0;
+            uint64_t num_label_words = 1 * window_size_labels * window_size_labels;
+            for (int j = 0; j < num_label_words; ++j)
             {
                 uint32_t word = ((uint32_t *)(label_slots[slot]))[j];
-                if (!word)
-                {
-                    should_go_again |= 1;
-                }
-                label_word_desired |= word;
+                label_words_found |= word;
             }
             if (should_go_again)
             {
@@ -175,7 +171,7 @@ void *reader(void *_id)
 #if 0
             // Check ensure that IEEE-754 zero is not present in the
             // imagery (the value is forbidden).
-            for (int j = 0; j < band_count * window_size * window_size; ++j)
+            for (int j = 0; j < band_count * window_size_imagery * window_size_imagery; ++j)
             {
                 uint32_t word = ((uint32_t *)imagery_slots[slot])[j];
                 if (!(word & 0x7fffffff))
@@ -192,7 +188,7 @@ void *reader(void *_id)
             // Check to see whether label value 2 was found earlier.
             // If so, this pair is okay.  If not, fall through and
             // (probably) do the for-loop again.
-            if (0x02 & label_word_desired)
+            if (DESIRED & label_words_found)
             {
                 break;
             }

@@ -7,7 +7,7 @@ all: libchips.so.1.1 libchips_ce.so.1.1
 %.o: %.c
 	$(CC) $(GDALCFLAGS) $(CFLAGS) -fPIC $< -c -o $@
 
-chips_ce.o: chips.c
+reader_ce.o: reader.c
 	$(CC) $(GDALCFLAGS) $(CFLAGS) -DCHAMPION_EDITION=1 -fPIC $< -c -o $@
 
 %.o: %.cpp
@@ -17,7 +17,7 @@ libchips.so.1.1: chips.o globals.o reader.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
-libchips_ce.so.1.1: chips_ce.o globals.o reader.o
+libchips_ce.so.1.1: chips.o globals.o reader_ce.o
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -shared -o $@
 	strip $@
 
