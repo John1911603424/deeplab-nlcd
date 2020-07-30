@@ -53,12 +53,12 @@ int main(int argc, char **argv)
     }
 
     init();
-    start_multi(N, M, L,
-                "/tmp/mul%d.tif", "/tmp/mask%d.tif",
-                6, 5,
-                mus, sigmas,
-                10000,
-                1, window_size, BAND_COUNT, bands);
+    start(N, M, L,
+          "/tmp/mul%d.tif", "/tmp/mask%d.tif",
+          6, 5,
+          mus, sigmas,
+          10000,
+          1, window_size, BAND_COUNT, bands);
     fprintf(stderr, "%d %d\n", get_width(0), get_height(0));
 
     get_statistics("/tmp/mul0.tif", BAND_COUNT, bands, mus, sigmas);
