@@ -231,7 +231,8 @@ if True:
                             default=0, type=int,
                             help='The number of seconds that can pass without activity before the program is terminated (0 to disable)')
         parser.add_argument('--class-weights', nargs='+', type=float)
-        parser.add_argument('--window-size', default=32, type=int)
+        parser.add_argument('--window-size-imagery', default=32, type=int)
+        parser.add_argument('--window-size-labels', default=32, type=int)
         return parser
 
 
@@ -251,9 +252,13 @@ if __name__ == '__main__':
     print('provided args: {}'.format(hashed_args))
     print('hash: {}'.format(arg_hash))
 
+    assert(args.window_size_labels % args.window_size_imagery == 0)
+    if args.window_size_labels != args.window_size_imagery:
+        import scipy.ndimage  # Get ready to use scipy.ndimage.zoom
+
     tmp_mul = '/tmp/mul{}.tif'
     tmp_label = '/tmp/mask{}.tif'
-    tmp_libchips = '/tmp/libchips.so'
+    tmp_libchips = '/tmp/libchips.so.1.1'
 
     args.band_count = len(args.bands)
 
@@ -361,18 +366,18 @@ if __name__ == '__main__':
         ctypes.POINTER(ctypes.c_float),
         ctypes.POINTER(ctypes.c_int)
     ]
-    libchips.start_multi.argtypes = [
+    libchips.start.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.c_char_p, ctypes.c_char_p,
         ctypes.c_int, ctypes.c_int,
         ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
         ctypes.c_int,
         ctypes.c_int,
-        ctypes.c_int,
+        ctypes.c_int, ctypes.c_int,
         ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
 
     libchips.init()
-    libchips.start_multi(
+    libchips.start(
         args.read_threads,  # Number of threads
         args.read_threads * 2,  # Number of slots
         len(args.pairs),  # The number of pairs
@@ -384,7 +389,8 @@ if __name__ == '__main__':
         None,  # standard deviations
         args.radius,  # typical radius of a component
         1,  # Training mode
-        args.window_size,
+        args.window_size_imagery,
+        args.window_size_labels,
         len(args.bands),
         np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
@@ -436,7 +442,7 @@ if __name__ == '__main__':
         natural_epoch_size = natural_epoch_size + \
             (libchips.get_width(i) * libchips.get_height(i))
     natural_epoch_size = (6.0 * natural_epoch_size) / \
-        (7.0 * args.window_size * args.window_size)
+        (7.0 * args.window_size_imagery * args.window_size_imagery)
     natural_epoch_size = int(natural_epoch_size)
     print('\t NATURAL EPOCH SIZE={}'.format(natural_epoch_size))
     args.max_epoch_size = min(args.max_epoch_size, natural_epoch_size)
@@ -653,7 +659,7 @@ if __name__ == '__main__':
 
     if not args.no_eval:
         print('\t EVALUATING')
-        libchips.start_multi(
+        libchips.start(
             args.read_threads,  # Number of threads
             args.read_threads * 2,  # The number of read slots
             len(args.pairs),  # The number of pairs
@@ -665,7 +671,8 @@ if __name__ == '__main__':
             None,  # standard deviations
             args.radius,  # typical radius of a component
             2,  # Evaluation mode
-            args.window_size,
+            args.window_size_imagery,
+            args.window_size_labels,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
         evaluate(model,

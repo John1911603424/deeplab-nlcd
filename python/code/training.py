@@ -62,10 +62,13 @@ def get_batch(libchips,
     """
     assert(args.label_nd is not None)
 
-    shape = (len(args.bands), args.window_size, args.window_size)
-    temp1 = np.zeros(shape, dtype=np.float32)
+    shape_imagery = (len(args.bands), args.window_size_imagery,
+                     args.window_size_imagery)
+    shape_labels = (args.window_size_labels, args.window_size_labels)
+
+    temp1 = np.zeros(shape_imagery, dtype=np.float32)
     temp1_ptr = temp1.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-    temp2 = np.zeros((args.window_size, args.window_size), dtype=np.int32)
+    temp2 = np.zeros(shape_labels, dtype=np.int32)
     temp2_ptr = temp2.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
 
     rasters = []
@@ -108,10 +111,19 @@ def get_batch(libchips,
         image_nds += np.isnan(raster).sum(axis=0)
 
         # Set label NODATA, remove NaNs from rasters
-        nodata = ((image_nds + label_nds) > 0)
-        label[nodata == True] = args.label_nd
+        if args.window_size_imagery == args.window_size_labels:
+            nodata1 = nodata2 = ((image_nds + label_nds) > 0)
+        else:
+            ratio = float(args.window_size_labels) / args.window_size_imagery
+            image_nds2 = scipy.ndimage.zoom(
+                image_nds, ratio, order=0, prefilter=False)
+            label_nds2 = scipy.ndimage.zoom(
+                label_nds, 1/ratio, order=0, prefilter=False)
+            nodata1 = ((image_nds2 + label_nds) > 0)
+            nodata2 = ((image_nds + label_nds2) > 0)
+        label[nodata1 == True] = args.label_nd
         for i in range(len(raster)):
-            raster[i][nodata == True] = 0.0
+            raster[i][nodata2 == True] = 0.0
 
         raster_batch.append(raster)
         label_batch.append(label)
@@ -156,7 +168,7 @@ def train(model,
         for _ in range(args.max_epoch_size):
             batch = get_batch(libchips, args)
             opt.zero_grad()
-            pred: PRED = model(batch[0].to(device))
+            pred = model(batch[0].to(device))
             loss = None
 
             if isinstance(pred, dict):
@@ -167,6 +179,17 @@ def train(model,
             else:
                 pred_seg = pred
                 pred_aux = pred_2seg = pred_reg = None
+
+            if args.window_size_labels != args.window_size_imagery:
+                if pred_seg is not None:
+                    pred_seg = torch.nn.functional.interpolate(
+                        pred_seg, args.window_size_labels, mode='bilinear', align_corners=False)
+                if pred_aux is not None:
+                    pred_aux = torch.nn.functional.interpolate(
+                        pred_aux, args.window_size_labels, mode='bilinear', align_corners=False)
+                if pred_2seg is not None:
+                    pred_2seg = torch.nn.functional.interpolate(
+                        pred_2seg, args.window_size_labels, mode='bilinear', align_corners=False)
 
             if pred_seg is not None and pred_aux is None:
                 # segmentation only
@@ -221,7 +244,7 @@ def train(model,
             avg_loss = avg_loss + loss.item()
 
         avg_loss = avg_loss / args.max_epoch_size
-        libchips.recenter(1)
+        libchips.recenter(0)
 
         last_time = current_time
         current_time = time.time()

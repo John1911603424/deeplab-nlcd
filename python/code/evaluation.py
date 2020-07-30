@@ -62,6 +62,15 @@ def evaluate(model,
                 pred_reg = pred.get('reg', None)
             else:
                 pred_seg = pred
+                pred_2seg = pred_reg = None
+
+            if args.window_size_labels != args.window_size_imagery:
+                if pred_seg is not None:
+                    pred_seg = torch.nn.functional.interpolate(
+                        pred_seg, args.window_size_labels, mode='bilinear', align_corners=False)
+                if pred_2seg is not None:
+                    pred_2seg = torch.nn.functional.interpolate(
+                        pred_2seg, args.window_size_labels, mode='bilinear', align_corners=False)
 
             # segmentation predictions
             pred_seg_mask = None
