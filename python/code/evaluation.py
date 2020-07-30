@@ -79,7 +79,7 @@ def evaluate(model,
                 pred_seg_mask = pred_seg
             if pred_2seg is not None:
                 pred_2seg = pred_2seg.cpu().numpy()
-                pred_2seg = np.array(pred_2seg > 0.5, dtype=np.long)
+                pred_2seg = np.array(pred_2seg > 0.0, dtype=np.long)
                 pred_2seg = pred_2seg[:, 0, :, :]
                 pred_seg_mask = pred_2seg
             if pred_reg is not None:
