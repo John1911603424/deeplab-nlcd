@@ -43,8 +43,8 @@
 void *reader(void *_id)
 {
     uint64_t id = (uint64_t)_id;
-    int x_offset = 0;
-    int y_offset = 0;
+    int x_windows = 0;
+    int y_windows = 0;
     int slot = -1;
     CPLErr err = CE_None;
     unsigned int state = (unsigned long)id;
@@ -77,29 +77,29 @@ void *reader(void *_id)
         for (int i = 0; i < 1; ++i)
 #endif
         {
-            int wradius = radius / window_size;
+            int wradius = radius / window_size_imagery;
 
             // Get a suitable training or evaluation window
             if (operation_mode == training) // Training chip
             {
-                x_offset = y_offset = -1;
+                x_windows = y_windows = -1;
                 while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
                 {
                     const int rand_x = rand_r(&state) % (2 * wradius);
                     const int rand_y = rand_r(&state) % (2 * wradius);
-                    x_offset = center_xs[id] + rand_x - wradius;
-                    y_offset = center_ys[id] + rand_y - wradius;
+                    x_windows = center_xs[id] + rand_x - wradius;
+                    y_windows = center_ys[id] + rand_y - wradius;
                 }
             }
             else if (operation_mode == evaluation) // Evaluation chip
             {
-                x_offset = y_offset = -1;
+                x_windows = y_windows = -1;
                 while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
                 {
                     const int rand_x = rand_r(&state) % (2 * wradius);
                     const int rand_y = rand_r(&state) % (2 * wradius);
-                    x_offset = center_xs[id] + rand_x - wradius;
-                    y_offset = center_ys[id] + rand_y - wradius;
+                    x_windows = center_xs[id] + rand_x - wradius;
+                    y_windows = center_ys[id] + rand_y - wradius;
                 }
             }
             else
@@ -107,36 +107,43 @@ void *reader(void *_id)
                 break;
             }
 
-            x_offset *= window_size;
-            y_offset *= window_size;
-
             // Read imagery
-            pthread_mutex_lock(&dataset_mutexes[id]);
-            err = GDALDatasetRasterIO(imagery_datasets[id], 0,
-                                      x_offset, y_offset, window_size, window_size,
-                                      imagery_slots[slot],
-                                      window_size, window_size,
-                                      imagery_data_type, band_count, bands,
-                                      0, 0, 0);
-            pthread_mutex_unlock(&dataset_mutexes[id]);
-            if (err != CE_None)
             {
-                fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
-                UNLOCK_CONTINUE(slot, 1000)
+                int x = x_windows * window_size_imagery;
+                int y = y_windows * window_size_imagery;
+
+                pthread_mutex_lock(&dataset_mutexes[id]);
+                err = GDALDatasetRasterIO(imagery_datasets[id], 0,
+                                          x, y, window_size_imagery, window_size_imagery,
+                                          imagery_slots[slot],
+                                          window_size_imagery, window_size_imagery,
+                                          imagery_data_type, band_count, bands,
+                                          0, 0, 0);
+                pthread_mutex_unlock(&dataset_mutexes[id]);
+                if (err != CE_None)
+                {
+                    fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x, y);
+                    UNLOCK_CONTINUE(slot, 1000)
+                }
             }
 
             // Read labels
             if (label_datasets[id] != NULL)
             {
+                int x = x_windows * window_size_labels;
+                int y = y_windows * window_size_labels;
+
+                pthread_mutex_lock(&dataset_mutexes[id]);
                 err = GDALDatasetRasterIO(label_datasets[id], 0,
-                                          x_offset, y_offset, window_size, window_size,
+                                          x, y, window_size_labels, window_size_labels,
                                           label_slots[slot],
-                                          window_size, window_size,
+                                          window_size_labels, window_size_labels,
                                           label_data_type, 1, NULL,
                                           0, 0, 0);
+                pthread_mutex_unlock(&dataset_mutexes[id]);
                 if (err != CE_None)
                 {
-                    fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
+                    fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x, y);
                     UNLOCK_CONTINUE(slot, 1000)
                 }
             }

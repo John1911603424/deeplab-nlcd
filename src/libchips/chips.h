@@ -44,7 +44,7 @@ void get_statistics(const char *imagery_filename,
                     double *sigmas);
 
 int get_inference_chip(void *imagery_buffer,
-                       int x_offset, int y_offset,
+                       int x, int y,
                        int attempts);
 
 void recenter(int verbose);
@@ -59,7 +59,8 @@ void start(int _N,
            double *mus, double *sigmas,
            int _radius,
            int _operation_mode,
-           int _window_size,
+           int _window_size_imagery,
+           int _window_size_labels,
            int _band_count, int *_bands);
 
 void stop();

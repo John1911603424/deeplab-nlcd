@@ -58,7 +58,7 @@ int main(int argc, char **argv)
           6, 5,
           mus, sigmas,
           10000,
-          1, window_size, BAND_COUNT, bands);
+          1, window_size, window_size, BAND_COUNT, bands);
     fprintf(stderr, "%d %d\n", get_width(0), get_height(0));
 
     get_statistics("/tmp/mul0.tif", BAND_COUNT, bands, mus, sigmas);

@@ -26,7 +26,6 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-
 #ifndef __MACROS_H__
 #define __MACROS_H__
 
@@ -48,9 +47,16 @@
         continue;                        \
     }
 
-#define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
-#define BAD_WINDOW (x_offset < 0 || x_offset > ((widths[id] / window_size) - 1) || y_offset < 0 || y_offset > ((heights[id] / window_size) - 1))
-#define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
-#define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
+#define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(           \
+                                                            imagery_first_bands[id],         \
+                                                            window_size_imagery * x_windows, \
+                                                            window_size_imagery * y_windows, \
+                                                            window_size_imagery,             \
+                                                            window_size_imagery,             \
+                                                            0, NULL))
+#define BAD_WINDOW ((x_windows < 0 || x_windows > ((widths[id] / window_size_imagery) - 1) || \
+                     (y_windows < 0 || y_windows > ((heights[id] / window_size_imagery) - 1))))
+#define BAD_TRAINING_WINDOW (((x_windows + y_windows) % 7) == 0)
+#define BAD_EVALUATION_WINDOW (((x_windows + y_windows) % 7) != 0)
 
 #endif

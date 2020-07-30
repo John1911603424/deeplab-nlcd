@@ -121,7 +121,7 @@ int get_height(int index)
  *
  * @param imagery_filename The imagery from which to get the statistics
  * @param band_count The number of bands
- * @param mus The return-location of the means
+ * @param mus The return-location of the mus
  * @param sigmas The return-location of the sigmas
  */
 void get_statistics(const char *imagery_filename,
@@ -147,8 +147,8 @@ void get_statistics(const char *imagery_filename,
  * is active.
  *
  * @param imagery_buffer The return-pointer for the imagery data
- * @param x_offset The x-offset for the window (in pixels)
- * @param y_offset The y-offset for the window (in pixels)
+ * @param x The x-offset for the window (in pixels)
+ * @param y The y-offset for the window (in pixels)
  * @param attempts The maximum number of attempts to make to read the window
  * @return 1 for success, 0 for failure
  */
@@ -157,12 +157,13 @@ int get_inference_chip(void *imagery_buffer,
                        int attempts)
 {
     int id = 0;
-    int x_offset = x / window_size;
-    int y_offset = y / window_size;
+    int x_windows = x / window_size_imagery;
+    int y_windows = y / window_size_imagery;
 
     if ((operation_mode != inference) || EMPTY_WINDOW)
     {
-        memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
+        uint64_t num_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+        memset(imagery_buffer, 0, num_bytes);
         return 0;
     }
 
@@ -172,9 +173,11 @@ int get_inference_chip(void *imagery_buffer,
 
         // Read imagery
         err = GDALDatasetRasterIO(imagery_datasets[id], 0,
-                                  x, y, window_size, window_size,
+                                  x_windows * window_size_imagery,
+                                  y_windows * window_size_imagery,
+                                  window_size_imagery, window_size_imagery,
                                   imagery_buffer,
-                                  window_size, window_size,
+                                  window_size_imagery, window_size_imagery,
                                   imagery_data_type, band_count, bands,
                                   0, 0, 0);
         if (err != CE_None)
@@ -199,17 +202,17 @@ void recenter(int verbose)
     {
         struct timespec tp;
         clock_gettime(CLOCK_REALTIME, &tp);
-        int x_offset = -1;
-        int y_offset = -1;
+        int x_windows = -1;
+        int y_windows = -1;
 
         pthread_mutex_lock(&dataset_mutexes[id]);
         while (BAD_WINDOW || EMPTY_WINDOW)
         {
-            x_offset = rand_r((unsigned int *)&tp.tv_nsec) % (widths[id] / window_size);
-            y_offset = rand_r((unsigned int *)&tp.tv_nsec) % (heights[id] / window_size);
+            x_windows = rand_r((unsigned int *)&tp.tv_nsec) % (widths[id] / window_size_imagery);
+            y_windows = rand_r((unsigned int *)&tp.tv_nsec) % (heights[id] / window_size_imagery);
         }
-        center_xs[id] = x_offset;
-        center_ys[id] = y_offset;
+        center_xs[id] = x_windows;
+        center_ys[id] = y_windows;
         pthread_mutex_unlock(&dataset_mutexes[id]);
     }
 
@@ -218,7 +221,9 @@ void recenter(int verbose)
         fprintf(stderr, "RECENTERED:");
         for (int id = 0; id < N; ++id)
         {
-            fprintf(stderr, " {id = %d: x = %d y = %d}", id, center_xs[id] * window_size, center_ys[id] * window_size);
+            int center_x = center_xs[id] * window_size_imagery;
+            int center_y = center_ys[id] * window_size_imagery;
+            fprintf(stderr, " {id = %d: x = %d y = %d}", id, center_x, center_y);
         }
         fprintf(stderr, "\n");
     }
@@ -245,10 +250,12 @@ void get_next(void *imagery_buffer, void *label_buffer)
             }
             else if (ready[slot] == 1)
             {
-                memcpy(imagery_buffer, imagery_slots[slot], word_size(imagery_data_type) * band_count * window_size * window_size);
+                uint64_t num_imagery_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+                memcpy(imagery_buffer, imagery_slots[slot], num_imagery_bytes);
                 if (label_buffer != NULL)
                 {
-                    memcpy(label_buffer, label_slots[slot], word_size(label_data_type) * 1 * window_size * window_size);
+                    uint64_t num_label_bytes = word_size(label_data_type) * 1 * window_size_labels * window_size_labels;
+                    memcpy(label_buffer, label_slots[slot], num_label_bytes);
                 }
                 ready[slot] = 0;
                 pthread_mutex_unlock(&slot_mutexes[slot]);
@@ -270,7 +277,8 @@ void get_next(void *imagery_buffer, void *label_buffer)
  * @param sigmas return-location for the (approximate) standard deviations of the bands
  * @param _radius The approximate radius (in pixels) of the typical component of the image
  * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
- * @param _window_size The desired window size
+ * @param _window_size_imagery The desired window size for imagery
+ * @param _window_size_labels The desired window size for labels
  * @param _band_count The number of bands
  * @param _bands An array of integers containing the desired bands
  */
@@ -283,7 +291,8 @@ void start(int _N,
            double *mus, double *sigmas,
            int _radius,
            int _operation_mode,
-           int _window_size,
+           int _window_size_imagery,
+           int _window_size_labels,
            int _band_count, int *_bands)
 {
     // Set globals
@@ -293,7 +302,8 @@ void start(int _N,
     imagery_data_type = _imagery_data_type;
     label_data_type = _label_data_type;
     operation_mode = _operation_mode;
-    window_size = _window_size;
+    window_size_imagery = _window_size_imagery;
+    window_size_labels = _window_size_labels;
     band_count = _band_count;
     bands = (int *)malloc(sizeof(int) * band_count);
     radius = _radius;
@@ -328,8 +338,10 @@ void start(int _N,
     // Fill arrays
     for (int64_t i = 0; i < M; ++i)
     {
-        imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
-        label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
+        uint64_t num_imagery_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+        uint64_t num_label_bytes = word_size(label_data_type) * 1 * window_size_labels * window_size_labels;
+        imagery_slots[i] = malloc(num_imagery_bytes);
+        label_slots[i] = malloc(num_label_bytes);
         pthread_mutex_init(&slot_mutexes[i], NULL);
     }
     for (int i = 0; mus && sigmas && (i < band_count); ++i)
