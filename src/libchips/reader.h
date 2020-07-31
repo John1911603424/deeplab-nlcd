@@ -26,43 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef __CHIPS_H__
-#define __CHIPS_H__
+#ifndef __READER_H__
+#define __READER_H__
 
-void init();
-
-void deinit();
-
-int get_width();
-
-int get_height();
-
-void get_statistics(const char *imagery_filename,
-                    int band_count,
-                    int *bands,
-                    double *mus,
-                    double *sigmas);
-
-int get_inference_chip(void *imagery_buffer,
-                       int x, int y,
-                       int attempts);
-
-void recenter(int verbose);
-
-void get_next(void *imagery_buffer, void *label_buffer);
-
-void start(int _N,
-           int _M,
-           int _L,
-           const char *imagery_filename, const char *label_filename,
-           int _imagery_data_type, int _label_data_type,
-           double *mus, double *sigmas,
-           int _radius,
-           int _operation_mode,
-           int _window_size_imagery,
-           int _window_size_labels,
-           int _band_count, int *_bands);
-
-void stop();
+void *reader(void *_id);
 
 #endif

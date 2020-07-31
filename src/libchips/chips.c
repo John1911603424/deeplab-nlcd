@@ -2,7 +2,7 @@
  * The MIT License (MIT)
  * =====================
  *
- * Copyright © 2019 Azavea
+ * Copyright © 2019-2020 Azavea
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -37,66 +37,9 @@
 
 #include <gdal.h>
 
-enum op_mode
-{
-    stopped = 0,
-    training = 1,
-    evaluation = 2,
-    inference = 3,
-};
-
-// Global variables
-int N = 0;
-int M = 0;
-int L = 0;
-GDALDataType imagery_data_type = -1;
-GDALDataType label_data_type = -1;
-int operation_mode = stopped;
-int window_size = 0;
-int band_count = 0;
-int *bands = NULL;
-int *widths = NULL;
-int *heights = NULL;
-int radius = 0;
-int *center_xs = NULL;
-int *center_ys = NULL;
-uint64_t current = 0;
-
-// Thread-related variables
-pthread_mutex_t *dataset_mutexes = NULL;
-pthread_t *threads = NULL;
-GDALDatasetH *imagery_datasets = NULL;
-GDALRasterBandH *imagery_first_bands = NULL;
-GDALDatasetH *label_datasets = NULL;
-
-// Slot-related variables
-pthread_mutex_t *slot_mutexes = NULL;
-void **imagery_slots = NULL;
-void **label_slots = NULL;
-int *ready = NULL;
-
-#define unlikely(x) __builtin_expect(!!(x), 0)
-
-#define UNLOCK(index, useconds)                     \
-    {                                               \
-        pthread_mutex_unlock(&slot_mutexes[index]); \
-        usleep(useconds);                           \
-    }
-#define UNLOCK_BREAK(index, useconds) \
-    {                                 \
-        UNLOCK(index, useconds)       \
-        break;                        \
-    }
-#define UNLOCK_CONTINUE(index, useconds) \
-    {                                    \
-        UNLOCK(index, useconds)          \
-        continue;                        \
-    }
-
-#define EMPTY_WINDOW (GDAL_DATA_COVERAGE_STATUS_EMPTY & GDALGetDataCoverageStatus(imagery_first_bands[id], window_size * x_offset, window_size * y_offset, window_size, window_size, 0, NULL))
-#define BAD_WINDOW (x_offset < 0 || x_offset > ((widths[id] / window_size) - 1) || y_offset < 0 || y_offset > ((heights[id] / window_size) - 1))
-#define BAD_TRAINING_WINDOW (((x_offset + y_offset) % 7) == 0)
-#define BAD_EVALUATION_WINDOW (((x_offset + y_offset) % 7) != 0)
+#include "globals.h"
+#include "reader.h"
+#include "macros.h"
 
 /**
  * Initialize the library.
@@ -178,7 +121,7 @@ int get_height(int index)
  *
  * @param imagery_filename The imagery from which to get the statistics
  * @param band_count The number of bands
- * @param mus The return-location of the means
+ * @param mus The return-location of the mus
  * @param sigmas The return-location of the sigmas
  */
 void get_statistics(const char *imagery_filename,
@@ -204,8 +147,8 @@ void get_statistics(const char *imagery_filename,
  * is active.
  *
  * @param imagery_buffer The return-pointer for the imagery data
- * @param x_offset The x-offset for the window (in pixels)
- * @param y_offset The y-offset for the window (in pixels)
+ * @param x The x-offset for the window (in pixels)
+ * @param y The y-offset for the window (in pixels)
  * @param attempts The maximum number of attempts to make to read the window
  * @return 1 for success, 0 for failure
  */
@@ -214,12 +157,13 @@ int get_inference_chip(void *imagery_buffer,
                        int attempts)
 {
     int id = 0;
-    int x_offset = x / window_size;
-    int y_offset = y / window_size;
+    int x_windows = x / window_size_imagery;
+    int y_windows = y / window_size_imagery;
 
     if ((operation_mode != inference) || EMPTY_WINDOW)
     {
-        memset(imagery_buffer, 0, word_size(imagery_data_type) * band_count * window_size * window_size);
+        uint64_t num_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+        memset(imagery_buffer, 0, num_bytes);
         return 0;
     }
 
@@ -229,9 +173,11 @@ int get_inference_chip(void *imagery_buffer,
 
         // Read imagery
         err = GDALDatasetRasterIO(imagery_datasets[id], 0,
-                                  x, y, window_size, window_size,
+                                  x_windows * window_size_imagery,
+                                  y_windows * window_size_imagery,
+                                  window_size_imagery, window_size_imagery,
                                   imagery_buffer,
-                                  window_size, window_size,
+                                  window_size_imagery, window_size_imagery,
                                   imagery_data_type, band_count, bands,
                                   0, 0, 0);
         if (err != CE_None)
@@ -256,17 +202,17 @@ void recenter(int verbose)
     {
         struct timespec tp;
         clock_gettime(CLOCK_REALTIME, &tp);
-        int x_offset = -1;
-        int y_offset = -1;
+        int x_windows = -1;
+        int y_windows = -1;
 
         pthread_mutex_lock(&dataset_mutexes[id]);
         while (BAD_WINDOW || EMPTY_WINDOW)
         {
-            x_offset = rand_r((unsigned int *)&tp.tv_nsec) % (widths[id] / window_size);
-            y_offset = rand_r((unsigned int *)&tp.tv_nsec) % (heights[id] / window_size);
+            x_windows = rand_r((unsigned int *)&tp.tv_nsec) % (widths[id] / window_size_imagery);
+            y_windows = rand_r((unsigned int *)&tp.tv_nsec) % (heights[id] / window_size_imagery);
         }
-        center_xs[id] = x_offset;
-        center_ys[id] = y_offset;
+        center_xs[id] = x_windows;
+        center_ys[id] = y_windows;
         pthread_mutex_unlock(&dataset_mutexes[id]);
     }
 
@@ -275,7 +221,9 @@ void recenter(int verbose)
         fprintf(stderr, "RECENTERED:");
         for (int id = 0; id < N; ++id)
         {
-            fprintf(stderr, " {id = %d: x = %d y = %d}", id, center_xs[id] * window_size, center_ys[id] * window_size);
+            int center_x = center_xs[id] * window_size_imagery;
+            int center_y = center_ys[id] * window_size_imagery;
+            fprintf(stderr, " {id = %d: x = %d y = %d}", id, center_x, center_y);
         }
         fprintf(stderr, "\n");
     }
@@ -302,10 +250,12 @@ void get_next(void *imagery_buffer, void *label_buffer)
             }
             else if (ready[slot] == 1)
             {
-                memcpy(imagery_buffer, imagery_slots[slot], word_size(imagery_data_type) * band_count * window_size * window_size);
+                uint64_t num_imagery_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+                memcpy(imagery_buffer, imagery_slots[slot], num_imagery_bytes);
                 if (label_buffer != NULL)
                 {
-                    memcpy(label_buffer, label_slots[slot], word_size(label_data_type) * 1 * window_size * window_size);
+                    uint64_t num_label_bytes = word_size(label_data_type) * 1 * window_size_labels * window_size_labels;
+                    memcpy(label_buffer, label_slots[slot], num_label_bytes);
                 }
                 ready[slot] = 0;
                 pthread_mutex_unlock(&slot_mutexes[slot]);
@@ -313,174 +263,6 @@ void get_next(void *imagery_buffer, void *label_buffer)
             }
         }
     }
-}
-
-/**
- * The code behind the reader threads.
- *
- * @param _id The id of this particular thread
- * @return Unused
- */
-static void *reader(void *_id)
-{
-    uint64_t id = (uint64_t)_id;
-    int x_offset = 0;
-    int y_offset = 0;
-    int slot = -1;
-    CPLErr err = CE_None;
-    unsigned int state = (unsigned long)id;
-
-    while (operation_mode == training || operation_mode == evaluation)
-    {
-        // Find an unused data slot
-        for (slot = rand_r(&state) % M; (operation_mode == training || operation_mode == evaluation); slot = (slot + 1) % M)
-        {
-            // If slot is unlocked and slot is empty, read
-            if ((pthread_mutex_trylock(&slot_mutexes[slot]) == 0) && (ready[slot] == 0))
-            {
-                goto read_things;
-            }
-            UNLOCK_CONTINUE(slot, 100);
-        }
-
-        // If search for slot terminated because the mode changed,
-        // break out of the loop
-        if (operation_mode != training && operation_mode != evaluation)
-        {
-            UNLOCK_BREAK((slot + M - 1) % M, 0);
-        }
-
-    read_things:
-
-#if defined(CHAMPION_EDITION)
-        for (int i = 0; i < (1 << 7); ++i)
-#else
-        for (int i = 0; i < 1; ++i)
-#endif
-        {
-            int wradius = radius / window_size;
-
-            // Get a suitable training or evaluation window
-            if (operation_mode == training) // Training chip
-            {
-                x_offset = y_offset = -1;
-                while (BAD_WINDOW || BAD_TRAINING_WINDOW || EMPTY_WINDOW)
-                {
-                    const int rand_x = rand_r(&state) % (2 * wradius);
-                    const int rand_y = rand_r(&state) % (2 * wradius);
-                    x_offset = center_xs[id] + rand_x - wradius;
-                    y_offset = center_ys[id] + rand_y - wradius;
-                }
-            }
-            else if (operation_mode == evaluation) // Evaluation chip
-            {
-                x_offset = y_offset = -1;
-                while (BAD_WINDOW || BAD_EVALUATION_WINDOW || EMPTY_WINDOW)
-                {
-                    const int rand_x = rand_r(&state) % (2 * wradius);
-                    const int rand_y = rand_r(&state) % (2 * wradius);
-                    x_offset = center_xs[id] + rand_x - wradius;
-                    y_offset = center_ys[id] + rand_y - wradius;
-                }
-            }
-            else
-            {
-                break;
-            }
-
-            x_offset *= window_size;
-            y_offset *= window_size;
-
-            // Read imagery
-            pthread_mutex_lock(&dataset_mutexes[id]);
-            err = GDALDatasetRasterIO(imagery_datasets[id], 0,
-                                      x_offset, y_offset, window_size, window_size,
-                                      imagery_slots[slot],
-                                      window_size, window_size,
-                                      imagery_data_type, band_count, bands,
-                                      0, 0, 0);
-            pthread_mutex_unlock(&dataset_mutexes[id]);
-            if (err != CE_None)
-            {
-                fprintf(stderr, "FAILED IMAGERY READ AT %d %d\n", x_offset, y_offset);
-                UNLOCK_CONTINUE(slot, 1000)
-            }
-
-            // Read labels
-            if (label_datasets[id] != NULL)
-            {
-                err = GDALDatasetRasterIO(label_datasets[id], 0,
-                                          x_offset, y_offset, window_size, window_size,
-                                          label_slots[slot],
-                                          window_size, window_size,
-                                          label_data_type, 1, NULL,
-                                          0, 0, 0);
-                if (err != CE_None)
-                {
-                    fprintf(stderr, "FAILED LABEL READ AT %d %d\n", x_offset, y_offset);
-                    UNLOCK_CONTINUE(slot, 1000)
-                }
-            }
-
-#if defined(CHAMPION_EDITION)
-            // Imagery and labels have been read, at this point.  Now
-            // see if they have the desired characteristics.  If not,
-            // continue.
-            int should_go_again = 0;
-
-            // Check to ensure that zero is not present in the labels
-            // (that value is forbidden) and 2 is present (as
-            // desired).
-            uint32_t label_word_desired = 0;
-            for (int j = 0; j < 1 * window_size * window_size; ++j)
-            {
-                uint32_t word = ((uint32_t *)(label_slots[slot]))[j];
-                if (!word)
-                {
-                    should_go_again |= 1;
-                }
-                label_word_desired |= word;
-            }
-            if (should_go_again)
-            {
-                continue;
-            }
-
-#if 0
-            // Check ensure that IEEE-754 zero is not present in the
-            // imagery (the value is forbidden).
-            for (int j = 0; j < band_count * window_size * window_size; ++j)
-            {
-                uint32_t word = ((uint32_t *)imagery_slots[slot])[j];
-                if (!(word & 0x7fffffff))
-                {
-                    should_go_again |= 1;
-                }
-            }
-            if (should_go_again)
-            {
-                continue;
-            }
-#endif
-
-            // Check to see whether label value 2 was found earlier.
-            // If so, this pair is okay.  If not, fall through and
-            // (probably) do the for-loop again.
-            if (0x02 & label_word_desired)
-            {
-                break;
-            }
-#endif
-        }
-
-        // The slot is now ready for reading
-        ready[slot] = 1;
-
-        // Done
-        UNLOCK(slot, 1000)
-    }
-
-    return NULL;
 }
 
 /**
@@ -495,21 +277,23 @@ static void *reader(void *_id)
  * @param sigmas return-location for the (approximate) standard deviations of the bands
  * @param _radius The approximate radius (in pixels) of the typical component of the image
  * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
- * @param _window_size The desired window size
+ * @param _window_size_imagery The desired window size for imagery
+ * @param _window_size_labels The desired window size for labels
  * @param _band_count The number of bands
  * @param _bands An array of integers containing the desired bands
  */
-void start_multi(int _N,
-                 int _M,
-                 int _L,
-                 const char *imagery_filename_template,
-                 const char *label_filename_template,
-                 GDALDataType _imagery_data_type, GDALDataType _label_data_type,
-                 double *mus, double *sigmas,
-                 int _radius,
-                 int _operation_mode,
-                 int _window_size,
-                 int _band_count, int *_bands)
+void start(int _N,
+           int _M,
+           int _L,
+           const char *imagery_filename_template,
+           const char *label_filename_template,
+           GDALDataType _imagery_data_type, GDALDataType _label_data_type,
+           double *mus, double *sigmas,
+           int _radius,
+           int _operation_mode,
+           int _window_size_imagery,
+           int _window_size_labels,
+           int _band_count, int *_bands)
 {
     // Set globals
     N = _N;
@@ -518,7 +302,8 @@ void start_multi(int _N,
     imagery_data_type = _imagery_data_type;
     label_data_type = _label_data_type;
     operation_mode = _operation_mode;
-    window_size = _window_size;
+    window_size_imagery = _window_size_imagery;
+    window_size_labels = _window_size_labels;
     band_count = _band_count;
     bands = (int *)malloc(sizeof(int) * band_count);
     radius = _radius;
@@ -553,8 +338,10 @@ void start_multi(int _N,
     // Fill arrays
     for (int64_t i = 0; i < M; ++i)
     {
-        imagery_slots[i] = malloc(word_size(imagery_data_type) * band_count * window_size * window_size);
-        label_slots[i] = malloc(word_size(label_data_type) * 1 * window_size * window_size);
+        uint64_t num_imagery_bytes = word_size(imagery_data_type) * band_count * window_size_imagery * window_size_imagery;
+        uint64_t num_label_bytes = word_size(label_data_type) * 1 * window_size_labels * window_size_labels;
+        imagery_slots[i] = malloc(num_imagery_bytes);
+        label_slots[i] = malloc(num_label_bytes);
         pthread_mutex_init(&slot_mutexes[i], NULL);
     }
     for (int i = 0; mus && sigmas && (i < band_count); ++i)
@@ -594,46 +381,6 @@ void start_multi(int _N,
     }
 
     return;
-}
-
-/**
- * Given imagery and label filenames, start the reader threads.
- *
- * @param _N The number of reader threads to create
- * @param _M The number of slots
- * @param imagery_filename The filename for the imagery
- * @param label_filename The filename for the labels
- * @param mus Return-location for the (approximate) means of the bands
- * @param sigmas return-location for the (approximate) standard deviations of the bands
- * @param _radius The approximate radius (in pixels) of the typical component of the image
- * @param _operation_mode 1 for training mode, 2 for evaluation mode, 3 for inference mode
- * @param _window_size The desired window size
- * @param _band_count The number of bands
- * @param _bands An array of integers containing the desired bands
- */
-void start(int _N,
-           int _M,
-           const char *imagery_filename,
-           const char *label_filename,
-           GDALDataType _imagery_data_type,
-           GDALDataType _label_data_type,
-           double *mus, double *sigmas,
-           int _radius,
-           int _operation_mode,
-           int _window_size,
-           int _band_count, int *_bands)
-{
-    start_multi(_N, _M, 1,
-                imagery_filename,
-                label_filename,
-                _imagery_data_type,
-                _label_data_type,
-                mus, sigmas,
-                _radius,
-                _operation_mode,
-                _window_size,
-                _band_count,
-                _bands);
 }
 
 /**

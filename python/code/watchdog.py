@@ -1,7 +1,7 @@
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -25,32 +25,19 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-class Resnet18RegressionOnly(torch.nn.Module):
+def watchdog_thread(seconds):
+    """Code for the watchdog thread
 
-    def __init__(self, band_count, input_stride, pretrained):
-        super(Resnet18RegressionOnly, self).__init__()
-        self.backbone = torchvision.models.resnet.resnet18(
-            pretrained=pretrained)
-        if band_count != 3:
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-        inplanes = 512
-        self.backbone.fc = torch.nn.Linear(
-            in_features=512, out_features=1, bias=True)
-
-        self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.backbone.fc]
-
-    def forward(self, x):
-        [w, h] = x.shape[-2:]
-
-        regression = self.backbone(x)
-        regression = regression.reshape(-1, 1)
-
-        return {'reg': regression}
-
-
-def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-    deeplab = Resnet18RegressionOnly(
-        band_count, input_stride, pretrained)
-    return deeplab
+    Arguments:
+        seconds {int} -- The number of seconds of inactivity to allow before terminating
+    """
+    while True:
+        time.sleep(60)
+        if EVALUATIONS_BATCHES_DONE > 0:
+            print('EVALUATIONS_DONE={}'.format(EVALUATIONS_BATCHES_DONE))
+        with WATCHDOG_MUTEX:
+            gap = time.time() - WATCHDOG_TIME
+        if gap > seconds:
+            print('TERMINATING DUE TO INACTIVITY {} > {}\n'.format(
+                gap, seconds), file=sys.stderr)
+            os._exit(-1)

@@ -26,43 +26,41 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef __CHIPS_H__
-#define __CHIPS_H__
+#include <stdint.h>
 
-void init();
+#include <pthread.h>
 
-void deinit();
+#include <gdal.h>
 
-int get_width();
+#include "globals.h"
 
-int get_height();
+// Global variables
+int N = 0;
+int M = 0;
+int L = 0;
+GDALDataType imagery_data_type = -1;
+GDALDataType label_data_type = -1;
+int operation_mode = stopped;
+int window_size_imagery = 0;
+int window_size_labels = 0;
+int band_count = 0;
+int *bands = NULL;
+int *widths = NULL;
+int *heights = NULL;
+int radius = 0;
+int *center_xs = NULL;
+int *center_ys = NULL;
+uint64_t current = 0;
 
-void get_statistics(const char *imagery_filename,
-                    int band_count,
-                    int *bands,
-                    double *mus,
-                    double *sigmas);
+// Thread-related variables
+pthread_mutex_t *dataset_mutexes = NULL;
+pthread_t *threads = NULL;
+GDALDatasetH *imagery_datasets = NULL;
+GDALRasterBandH *imagery_first_bands = NULL;
+GDALDatasetH *label_datasets = NULL;
 
-int get_inference_chip(void *imagery_buffer,
-                       int x, int y,
-                       int attempts);
-
-void recenter(int verbose);
-
-void get_next(void *imagery_buffer, void *label_buffer);
-
-void start(int _N,
-           int _M,
-           int _L,
-           const char *imagery_filename, const char *label_filename,
-           int _imagery_data_type, int _label_data_type,
-           double *mus, double *sigmas,
-           int _radius,
-           int _operation_mode,
-           int _window_size_imagery,
-           int _window_size_labels,
-           int _band_count, int *_bands);
-
-void stop();
-
-#endif
+// Slot-related variables
+pthread_mutex_t *slot_mutexes = NULL;
+void **imagery_slots = NULL;
+void **label_slots = NULL;
+int *ready = NULL;

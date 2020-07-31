@@ -26,43 +26,50 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef __CHIPS_H__
-#define __CHIPS_H__
+#ifndef __GLOBALS_H__
+#define __GLOBALS_H__
 
-void init();
+#include <pthread.h>
 
-void deinit();
+#include <gdal.h>
 
-int get_width();
+enum op_mode
+{
+    stopped = 0,
+    training = 1,
+    evaluation = 2,
+    inference = 3,
+};
 
-int get_height();
+// Global variables
+extern int N;
+extern int M;
+extern int L;
+extern GDALDataType imagery_data_type;
+extern GDALDataType label_data_type;
+extern int operation_mode;
+extern int window_size_imagery;
+extern int window_size_labels;
+extern int band_count;
+extern int *bands;
+extern int *widths;
+extern int *heights;
+extern int radius;
+extern int *center_xs;
+extern int *center_ys;
+extern uint64_t current;
 
-void get_statistics(const char *imagery_filename,
-                    int band_count,
-                    int *bands,
-                    double *mus,
-                    double *sigmas);
+// Thread-related variables
+extern pthread_mutex_t *dataset_mutexes;
+extern pthread_t *threads;
+extern GDALDatasetH *imagery_datasets;
+extern GDALRasterBandH *imagery_first_bands;
+extern GDALDatasetH *label_datasets;
 
-int get_inference_chip(void *imagery_buffer,
-                       int x, int y,
-                       int attempts);
-
-void recenter(int verbose);
-
-void get_next(void *imagery_buffer, void *label_buffer);
-
-void start(int _N,
-           int _M,
-           int _L,
-           const char *imagery_filename, const char *label_filename,
-           int _imagery_data_type, int _label_data_type,
-           double *mus, double *sigmas,
-           int _radius,
-           int _operation_mode,
-           int _window_size_imagery,
-           int _window_size_labels,
-           int _band_count, int *_bands);
-
-void stop();
+// Slot-related variables
+extern pthread_mutex_t *slot_mutexes;
+extern void **imagery_slots;
+extern void **label_slots;
+extern int *ready;
 
 #endif

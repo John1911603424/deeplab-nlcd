@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
+
 # The MIT License (MIT)
 # =====================
 #
-# Copyright © 2019 Azavea
+# Copyright © 2020 Azavea
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -25,32 +27,32 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 
-class Resnet34RegressionOnly(torch.nn.Module):
-
-    def __init__(self, band_count, input_stride, pretrained):
-        super(Resnet34RegressionOnly, self).__init__()
-        self.backbone = torchvision.models.resnet.resnet34(
-            pretrained=pretrained)
-        if band_count != 3:
-            self.backbone.conv1 = torch.nn.Conv2d(
-                band_count, 64, kernel_size=7, stride=input_stride, padding=3, bias=False)
-        inplanes = 512
-        self.backbone.fc = torch.nn.Linear(
-            in_features=512, out_features=1, bias=True)
-
-        self.input_layers = [self.backbone.conv1]
-        self.output_layers = [self.backbone.fc]
-
-    def forward(self, x):
-        [w, h] = x.shape[-2:]
-
-        regression = self.backbone(x)
-        regression = regression.reshape(-1, 1)
-
-        return {'reg': regression}
+import argparse
+import copy
+import glob
+import json
 
 
-def make_model(band_count, input_stride=1, class_count=1, divisor=1, pretrained=False):
-    deeplab = Resnet34RegressionOnly(
-        band_count, input_stride, pretrained)
-    return deeplab
+def cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input-dir', required=True, type=str)
+    parser.add_argument('--output-geojson', required=True, type=str)
+    return parser
+
+
+# Given a directory full of GeoJSON files, produce a single aggregate
+# GeoJSON file.
+if __name__ == '__main__':
+
+    args = cli_parser().parse_args()
+
+    filenames = glob.glob('{}/*.*json'.format(args.input_dir))
+    with open(filenames[0], 'r') as f:
+        data = copy.deepcopy(json.load(f))
+
+    for filename in filenames[1:]:
+        with open(filename, 'r') as f:
+            data['features'] += copy.deepcopy(json.load(f)['features'])
+
+    with open(args.output_geojson, 'w') as f:
+        json.dump(data, f, sort_keys=True, indent=4)
