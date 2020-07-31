@@ -204,9 +204,6 @@ if True:
         parser.add_argument('--no-upload',
                             help='Do not upload anything to S3',
                             action='store_true')
-        parser.add_argument('--bce',
-                            help='Use binary cross-entropy for binary-only regression',
-                            action='store_true')
         parser.add_argument('--output',
                             required=False, type=str,
                             help='Model output location')
@@ -455,7 +452,7 @@ if __name__ == '__main__':
         ).to(device),
         '2seg': torch.nn.BCEWithLogitsLoss().to(device),
         'l1': torch.nn.L1Loss().to(device),
-        'l2': torch.nn.MSELoss().to(device)
+        'l2': torch.nn.MSELoss().to(device),
     }
 
     # ---------------------------------

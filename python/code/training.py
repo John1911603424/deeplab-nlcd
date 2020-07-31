@@ -180,6 +180,7 @@ def train(model,
                 pred_seg = pred
                 pred_aux = pred_2seg = pred_reg = None
 
+            # Scale predictions to labels if needed
             if args.window_size_labels != args.window_size_imagery:
                 if pred_seg is not None:
                     pred_seg = torch.nn.functional.interpolate(
@@ -191,6 +192,7 @@ def train(model,
                     pred_2seg = torch.nn.functional.interpolate(
                         pred_2seg, args.window_size_labels, mode='bilinear', align_corners=False)
 
+            # Various kinds of segmentation
             if pred_seg is not None and pred_aux is None:
                 # segmentation only
                 labels = batch[1].to(device)
@@ -200,27 +202,14 @@ def train(model,
                 labels = batch[1].to(device)
                 loss = obj.get('seg')(pred_seg, labels) + \
                     0.4 * obj.get('seg')(pred_aux, labels)
-            elif pred_2seg is not None and pred_reg is None:
+            elif pred_2seg is not None:
                 # binary segmentation only
                 labels = (batch[1] == 1).to(device, dtype=torch.float)
                 # XXX the above assumes that background and target are 0 and 1, respectively
                 pred_2seg = pred_2seg[:, 0, :, :]
                 loss = obj.get('2seg')(pred_2seg, labels)
-            elif pred_2seg is not None and pred_reg is not None:
-                # binary segmentation with percent regression
-                labels = (batch[1] == 1).to(device, dtype=torch.float)
-                # XXX the above and below assume that background and target are 0 and 1, respectively
-                pcts = []
-                for label in batch[1].cpu().numpy():
-                    ones = float((label == 1).sum())
-                    zeros = float((label == 0).sum())
-                    pcts.append([(ones/(ones + zeros + 1e-8))])
-                pcts = torch.FloatTensor(pcts).to(device)
-                pred_2seg = pred_2seg[:, 0, :, :]
-                loss = obj.get('2seg')(pred_2seg, labels) + \
-                    obj.get('l1')(pred_reg, pcts)
-            elif pred_seg is None and pred_aux is None and pred_2seg is None and pred_reg is not None:
-                # regression only
+
+            if pred_reg is not None:
                 pcts = []
                 for label in batch[1].cpu().numpy():
                     # XXX assumes that background and target are 0 and 1, respectively
@@ -228,13 +217,7 @@ def train(model,
                     zeros = float((label == 0).sum())
                     pcts.append([(ones/(ones + zeros + 1e-8))])
                 pcts = torch.FloatTensor(pcts).to(device)
-                if args.bce:
-                    # Binary cross entropy
-                    loss = obj.get('2seg')(pred_reg, pcts)
-                else:
-                    # l1 and l2
-                    loss = obj.get('l1')(pred_reg, pcts) + \
-                        obj.get('l2')(pred_reg, pcts)
+                loss += obj.get('l1')(pred_reg, pcts) + obj.get('l2')(pred_reg, pcts)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1000)
