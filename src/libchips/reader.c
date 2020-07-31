@@ -171,7 +171,8 @@ void *reader(void *_id)
 #if 0
             // Check ensure that IEEE-754 zero is not present in the
             // imagery (the value is forbidden).
-            for (int j = 0; j < band_count * window_size_imagery * window_size_imagery; ++j)
+            uint64_t num_imagery_words = band_count * window_size_imagery * window_size_imagery;
+            for (int j = 0; j < num_imagery_words; ++j)
             {
                 uint32_t word = ((uint32_t *)imagery_slots[slot])[j];
                 if (!(word & 0x7fffffff))
