@@ -84,8 +84,6 @@ def evaluate(model,
                 pred_seg_mask = pred_2seg
             if pred_reg is not None:
                 pred_reg = pred_reg.cpu().numpy()
-                if args.bce:
-                    pred_reg = (pred_reg > 0).astype(np.float32)
                 labels_reg = batch[1].cpu().numpy()
                 if pred_reg.shape[-1] == 1:
                     for (pred, actual) in zip(pred_reg, labels_reg):
