@@ -43,6 +43,7 @@ import rasterio.transform
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--imagery-dir', required=True, type=str)
+    parser.add_argument('--elevation-dir', required=False, type=str)
     parser.add_argument('--flood-label-dir', required=True, type=str)
     parser.add_argument('--perm-label-dir', required=False, type=str)
     parser.add_argument('--test-set-csv', required=False, type=str)
@@ -113,7 +114,11 @@ if __name__ == '__main__':
         transform=rasterio.transform.from_bounds(
             31.132830, 29.978150, 31.135448, 29.980260, width, height),
         crs='epsg:4326',
+        dtype=np.float32,
+        nodata=np.nan,
     )
+    if args.elevation_dir is not None:
+        images_profile.update(count=images_profile.get('count') + 1)
     labels_profile = copy.deepcopy(images_profile)
     labels_profile.update(
         count=1,
@@ -135,6 +140,15 @@ if __name__ == '__main__':
         y = (i % sqrt_chip_n) * args.chip_size
         with rio.open(t[0], 'r') as ds:
             chip = ds.read()
+            if args.elevation_dir:
+                dem_filename = t[0].replace(
+                    args.imagery_dir, args.elevation_dir)
+                with rio.open(dem_filename, 'r') as ds_dem:
+                    dem_chip = ds_dem.read().astype(np.float32)
+                nodata_mask = (dem_chip == -32768)
+                dem_chip -= np.min(np.extract(nodata_mask != True, dem_chip))
+                dem_chip[nodata_mask] = np.nan
+                chip = np.concatenate([chip, dem_chip], axis=0)
             ratiox = float(args.chip_size) / chip.shape[1]
             ratioy = float(args.chip_size) / chip.shape[2]
             if ratiox != 1.0 or ratioy != 1.0:
