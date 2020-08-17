@@ -34,6 +34,7 @@ import math
 import re
 
 import numpy as np
+import scipy.ndimage
 
 import rasterio as rio
 import rasterio.transform
@@ -42,6 +43,7 @@ import rasterio.transform
 def cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--imagery-dir', required=True, type=str)
+    parser.add_argument('--elevation-dir', required=False, type=str)
     parser.add_argument('--flood-label-dir', required=True, type=str)
     parser.add_argument('--perm-label-dir', required=False, type=str)
     parser.add_argument('--test-set-csv', required=False, type=str)
@@ -50,8 +52,7 @@ def cli_parser() -> argparse.ArgumentParser:
     parser.add_argument('--regexp', required=False,
                         type=str, default='[Bb]olivia')
     parser.add_argument('--mode', choices=['train', 'test'], default='train')
-    parser.add_argument('--chip-height', required=False, type=int, default=512)
-    parser.add_argument('--chip-width', required=False, type=int, default=512)
+    parser.add_argument('--chip-size', required=False, type=int, default=512)
     return parser
 
 
@@ -67,8 +68,10 @@ if __name__ == '__main__':
 
     if not len(imagery) == len(water):
         print('WARNING: different number of imagery and water chips')
-        water_set = set(map(lambda t: t.split('/')[-1].replace('_NoQC', ''), water))
-        imagery = list(filter(lambda t: t.split('/')[-1].replace('_S1', '') in water_set, imagery))
+        water_set = set(map(lambda t: t.split(
+            '/')[-1].replace('_NoQC', ''), water))
+        imagery = list(filter(lambda t: t.split(
+            '/')[-1].replace('_S1', '') in water_set, imagery))
     assert(len(imagery) == len(water))
     if perm is not None:
         assert(len(water) == len(perm))
@@ -94,8 +97,8 @@ if __name__ == '__main__':
 
     # Dimensions
     sqrt_chip_n = int(math.ceil(math.sqrt(len(filenames))))
-    width = sqrt_chip_n * args.chip_width
-    height = sqrt_chip_n * args.chip_height
+    width = sqrt_chip_n * args.chip_size
+    height = sqrt_chip_n * args.chip_size
 
     # Profiles
     with rio.open(imagery[0], 'r') as ds:
@@ -111,7 +114,11 @@ if __name__ == '__main__':
         transform=rasterio.transform.from_bounds(
             31.132830, 29.978150, 31.135448, 29.980260, width, height),
         crs='epsg:4326',
+        dtype=np.float32,
+        nodata=np.nan,
     )
+    if args.elevation_dir is not None:
+        images_profile.update(count=images_profile.get('count') + 1)
     labels_profile = copy.deepcopy(images_profile)
     labels_profile.update(
         count=1,
@@ -123,25 +130,49 @@ if __name__ == '__main__':
     images = np.zeros((images_profile.get('count'), width,
                        height), dtype=images_profile.get('dtype'))
     labels = np.zeros((1, width, height), dtype=labels_profile.get('dtype'))
- 
+
     # Data
     i = 0
     for t in filenames:
         if (i % 107) == 0:
             print('.')
-        x = (i // sqrt_chip_n) * args.chip_width
-        y = (i % sqrt_chip_n) * args.chip_height
+        x = (i // sqrt_chip_n) * args.chip_size
+        y = (i % sqrt_chip_n) * args.chip_size
         with rio.open(t[0], 'r') as ds:
-            chip = ds.read()[:, 0:args.chip_width, 0:args.chip_height]
-            images[:, x:(x+args.chip_width), y:(y+args.chip_height)] = chip
+            chip = ds.read()
+            if args.elevation_dir:
+                dem_filename = t[0].replace(
+                    args.imagery_dir, args.elevation_dir)
+                with rio.open(dem_filename, 'r') as ds_dem:
+                    dem_chip = ds_dem.read().astype(np.float32)
+                nodata_mask = (dem_chip == -32768)
+                dem_chip -= np.min(np.extract(nodata_mask != True, dem_chip))
+                dem_chip[nodata_mask] = np.nan
+                chip = np.concatenate([chip, dem_chip], axis=0)
+            ratiox = float(args.chip_size) / chip.shape[1]
+            ratioy = float(args.chip_size) / chip.shape[2]
+            if ratiox != 1.0 or ratioy != 1.0:
+                chip = scipy.ndimage.zoom(
+                    chip, [1.0, ratiox, ratioy], order=0, prefilter=False)
+            images[:, x:(x+args.chip_size), y:(y+args.chip_size)] = chip
         with rio.open(t[1], 'r') as ds:
-            chip = ds.read()[:, 0:args.chip_width, 0:args.chip_height] + 1
-            labels[:, x:(x+args.chip_width), y:(y+args.chip_height)] = chip
+            chip = ds.read() + 1
+            ratiox = float(args.chip_size) / chip.shape[1]
+            ratioy = float(args.chip_size) / chip.shape[2]
+            if ratiox != 1.0 or ratioy != 1.0:
+                chip = scipy.ndimage.zoom(
+                    chip, [1.0, ratiox, ratioy], order=0, prefilter=False)
+            labels[:, x:(x+args.chip_size), y:(y+args.chip_size)] = chip
         if len(t) == 3:
             with rio.open(t[2], 'r') as ds:
-                chip = ds.read()[:, 0:args.chip_width, 0:args.chip_height]
-                labels[:, x:(x+args.chip_width),
-                       y:(y+args.chip_height)] += chip
+                chip = ds.read()
+                ratiox = float(args.chip_size) / chip.shape[1]
+                ratioy = float(args.chip_size) / chip.shape[2]
+                if ratiox != 1.0 or ratioy != 1.0:
+                    chip = scipy.ndimage.zoom(
+                        chip, [1.0, ratiox, ratioy], order=0, prefilter=False)
+                labels[:, x:(x+args.chip_size),
+                       y:(y+args.chip_size)] += chip
         i += 1
 
     print('Writing ...')
