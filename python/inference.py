@@ -135,7 +135,7 @@ if True:
             argparse.ArgumentParser -- The parser
         """
         parser = argparse.ArgumentParser()
-        parser.add_argument('--architecture',
+        parser.add_argument('--architecture-code',
                             help='The desired model architecture', required=True)
         parser.add_argument('--backend',
                             help="Don't use this flag unless you know what you're doing: CPU is far slower than CUDA.",
@@ -216,7 +216,7 @@ if __name__ == '__main__':
 
     args.band_count = len(args.bands)
 
-    load_architectures(args.architecture)
+    load_architectures(args.architecture_code)
 
     # ---------------------------------
     print('MODEL')
@@ -288,6 +288,7 @@ if __name__ == '__main__':
         libchips.start(
             1,  # Number of threads
             0,  # Number of slots
+            1,  # Number of images
             inference_img.encode(),  # Image data
             None,  # Label data
             6,  # Make all rasters float32
@@ -296,7 +297,7 @@ if __name__ == '__main__':
             None,  # standard deviations
             args.radius,  # typical radius of component
             3,  # Inference mode
-            args.window_size,
+            args.window_size, args.window_size,
             len(args.bands),
             np.array(args.bands, dtype=np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int32)))
 
